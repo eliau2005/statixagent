@@ -44,7 +44,7 @@ systemd service (`Restart=always`).
 | `/cpu` `/mem` `/disk` `/net` `/temp` `/battery` | one metric in detail |
 | `/services` | systemd units, processes, ports, healthchecks |
 | `/docker` | containers with CPU/RAM and restart counts |
-| `/ssh` | live sessions · `/ssh history` · `/ssh fails` |
+| `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
 | `/update` | check for a new release · `/update confirm` installs it |
 
 Alerts (thresholds, power loss, SSH logins, brute force, key changes) arrive

@@ -153,6 +153,15 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 		}
 		return
 	}
+	if text, kb, toast, handled := a.handleSSHCallback(ctx, cb.Data); handled {
+		a.send.AnswerCallback(ctx, cb.ID, toast)
+		if text != "" {
+			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
+				log.Printf("agent: edit: %v", err)
+			}
+		}
+		return
+	}
 	if text, kb, toast, handled := a.handleSettingsCallback(ctx, cb.Data); handled {
 		a.send.AnswerCallback(ctx, cb.ID, toast)
 		if text != "" {

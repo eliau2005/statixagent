@@ -13,6 +13,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/collect"
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/procfs"
+	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
@@ -977,6 +978,174 @@ func TestFirewallInactiveHasNoActions(t *testing.T) {
 			if strings.HasPrefix(b.Data, "fw_") {
 				t.Errorf("inactive firewall must offer no actions: %+v", kb)
 			}
+		}
+	}
+}
+
+// kickRunner records invocations and reports success.
+type kickRunner struct {
+	calls [][]string
+}
+
+func (k *kickRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	k.calls = append(k.calls, append([]string{name}, args...))
+	return "", nil
+}
+
+func sshTestSessions() []sshwatch.Session {
+	return []sshwatch.Session{
+		{User: "alice", TTY: "pts/0", Host: "10.0.0.5", Since: time.Now().Add(-time.Hour)},
+		{User: "bob", TTY: "pts/1", Host: "10.0.0.6", Since: time.Now().Add(-time.Minute)},
+	}
+}
+
+func TestSSHKickFlow(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	runner := &kickRunner{}
+	a.src.Runner = runner
+	a.src.Sessions = func() ([]sshwatch.Session, error) { return sshTestSessions(), nil }
+	ctx := context.Background()
+
+	// /ssh lists sessions with one kick button per session plus nav rows.
+	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/ssh"})
+	if !strings.Contains(reply, "alice") || !strings.Contains(reply, "Active sessions") {
+		t.Fatalf("/ssh = %q", reply)
+	}
+	a.reply(ctx, cmd, reply)
+	send.mu.Lock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "sk:1" || kb[1][0].Data != "sk:2" {
+		t.Fatalf("ssh keyboard = %+v", kb)
+	}
+	if kb[2][0].Data != "status" {
+		t.Fatalf("nav rows must follow kick rows: %+v", kb)
+	}
+
+	// The ask step warns and does NOT signal anything.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: "sk:1"})
+	if len(runner.calls) != 0 {
+		t.Fatal("confirmation screen must not run pkill")
+	}
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "Disconnect SSH session?") || !strings.Contains(last.html, "alice") {
+		t.Fatalf("ask view = %q", last.html)
+	}
+	if last.kb[0][0].Data != "skk:1" || last.kb[0][1].Data != "ssh" {
+		t.Fatalf("ask keyboard = %+v", last.kb)
+	}
+
+	// Confirming kicks the chosen tty and re-renders the list.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: "skk:1"})
+	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != "pkill -KILL -t pts/0" {
+		t.Fatalf("runner calls = %v", runner.calls)
+	}
+	if last := send.lastEdit(); !strings.Contains(last.html, "Active sessions") {
+		t.Errorf("after kick view = %q", last.html)
+	}
+	send.mu.Lock()
+	toast := send.answered[len(send.answered)-1]
+	send.mu.Unlock()
+	if !strings.Contains(toast, "disconnected") {
+		t.Errorf("toast = %q", toast)
+	}
+}
+
+func TestSSHKickStaleIndex(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	runner := &kickRunner{}
+	a.src.Runner = runner
+	a.src.Sessions = func() ([]sshwatch.Session, error) { return sshTestSessions()[:1], nil }
+	ctx := context.Background()
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 7, Data: "ssh"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: "sk:5"})
+	if len(runner.calls) != 0 {
+		t.Fatal("stale index must not run pkill")
+	}
+	send.mu.Lock()
+	toast := send.answered[len(send.answered)-1]
+	send.mu.Unlock()
+	if !strings.Contains(toast, "list changed") {
+		t.Errorf("toast = %q", toast)
+	}
+	if last := send.lastEdit(); !strings.Contains(last.html, "Active sessions") {
+		t.Errorf("stale index must re-render the list: %q", last.html)
+	}
+}
+
+// failingKick mimics pkill matching a process it is not allowed to signal.
+type failingKick struct{}
+
+func (failingKick) Run(_ context.Context, _ string, _ ...string) (string, error) {
+	return "pkill: killing pid 4242 failed: Operation not permitted", errors.New("exit status 1")
+}
+
+func TestSSHKickFailureIsVisible(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.Runner = failingKick{}
+	a.src.Sessions = func() ([]sshwatch.Session, error) { return sshTestSessions()[:1], nil }
+	ctx := context.Background()
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 4, Data: "ssh"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "skk:1"})
+
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "Disconnect failed") || !strings.Contains(last.html, "Operation not permitted") {
+		t.Errorf("failure must be shown persistently in the message, got: %q", last.html)
+	}
+	if !strings.Contains(last.html, "lacks permission") {
+		t.Errorf("permission failure must include the hint, got: %q", last.html)
+	}
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.answered) == 0 || !strings.Contains(send.answered[len(send.answered)-1], "see message") {
+		t.Errorf("toast = %v", send.answered)
+	}
+}
+
+// goneKick mimics pkill exit 1 with no output: nothing matched the tty.
+type goneKick struct{}
+
+func (goneKick) Run(_ context.Context, _ string, _ ...string) (string, error) {
+	return "", errors.New("exit status 1")
+}
+
+func TestSSHKickAlreadyGone(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.Runner = goneKick{}
+	a.src.Sessions = func() ([]sshwatch.Session, error) { return sshTestSessions()[:1], nil }
+	ctx := context.Background()
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 4, Data: "ssh"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "skk:1"})
+
+	if last := send.lastEdit(); strings.Contains(last.html, "Disconnect failed") {
+		t.Errorf("vanished session is not a failure: %q", last.html)
+	}
+	send.mu.Lock()
+	toast := send.answered[len(send.answered)-1]
+	send.mu.Unlock()
+	if !strings.Contains(toast, "already gone") {
+		t.Errorf("toast = %q", toast)
+	}
+}
+
+func TestValidTTY(t *testing.T) {
+	cases := map[string]bool{
+		"pts/3":     true,
+		"tty1":      true,
+		"":          false,
+		"-t":        false,
+		"pts/3; rm": false,
+	}
+	for tty, want := range cases {
+		if got := validTTY(tty); got != want {
+			t.Errorf("validTTY(%q) = %v, want %v", tty, got, want)
 		}
 	}
 }
