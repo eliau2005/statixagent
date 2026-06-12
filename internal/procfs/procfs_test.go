@@ -145,6 +145,22 @@ func TestParseDiskStats(t *testing.T) {
 	}
 }
 
+const tcpFixture = `  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 24452 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:0CEA 00000000:0000 0A 00000000:00000000 00:00000000 00000000   112        0 25011 1 0000000000000000 100 0 0 10 0
+   2: AC120001:9C40 AC120002:01BB 01 00000000:00000000 00:00000000 00000000  1000        0 31337 1 0000000000000000 20 4 30 10 -1
+`
+
+func TestParseTCPListeners(t *testing.T) {
+	ports, err := ParseTCPListeners(strings.NewReader(tcpFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ports) != 2 || ports[0] != 22 || ports[1] != 3306 {
+		t.Errorf("ports = %v, want [22 3306] (established conns excluded)", ports)
+	}
+}
+
 func TestParseFileNR(t *testing.T) {
 	fn, err := ParseFileNR(strings.NewReader("9472\t0\t9223372036854775807\n"))
 	if err != nil {

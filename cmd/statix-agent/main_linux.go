@@ -73,7 +73,7 @@ func main() {
 	defer stop()
 
 	tg := telegram.New(cfg.Telegram.Token)
-	src := buildSources(ctx, cfg)
+	src := buildSources(ctx, cfg, *cfgPath)
 
 	if up := buildUpdater(cfg); up != nil {
 		src.UpdateCheck = up.Check
@@ -137,7 +137,7 @@ func autoUpdateLoop(ctx context.Context, up *update.Updater, interval time.Durat
 	}
 }
 
-func buildSources(ctx context.Context, cfg config.Config) agent.Sources {
+func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.Sources {
 	hostname, _ := os.Hostname()
 	src := agent.Sources{
 		Hostname: hostname,
@@ -146,10 +146,12 @@ func buildSources(ctx context.Context, cfg config.Config) agent.Sources {
 		Power:    func() (sysfs.Power, error) { return sysfs.ReadPower(os.DirFS("/sys")) },
 		Sessions: readSessions,
 		Runner:   services.ExecRunner{},
-		ProcFS: func() ([]services.Result, error) {
-			return services.CheckProcesses(os.DirFS("/proc"), cfg.Watch.Processes), nil
+		ProcFS: func(names []string) ([]services.Result, error) {
+			return services.CheckProcesses(os.DirFS("/proc"), names), nil
 		},
-		KeyPaths: findAuthorizedKeys(),
+		KeyPaths:      findAuthorizedKeys(),
+		ConfigPath:    cfgPath,
+		ListListeners: listListeners,
 	}
 	if cfg.Monitors.SSH {
 		src.AuthLines = tailAuthLog(ctx)
@@ -278,6 +280,22 @@ func runTail(ctx context.Context, ch chan<- string) error {
 		}
 	}
 	return cmd.Wait()
+}
+
+// listListeners merges LISTEN-state ports from /proc/net/tcp and tcp6.
+func listListeners() ([]int, error) {
+	var all []int
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		err := withFile(path, func(f *os.File) error {
+			ports, err := procfs.ParseTCPListeners(f)
+			all = append(all, ports...)
+			return err
+		})
+		if err != nil && path == "/proc/net/tcp" {
+			return nil, err // v4 must exist; v6 may not
+		}
+	}
+	return all, nil
 }
 
 // findAuthorizedKeys collects the key files of root and every /home user.

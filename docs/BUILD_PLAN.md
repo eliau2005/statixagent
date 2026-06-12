@@ -115,6 +115,16 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       zero-traffic interfaces hidden from `/status`, alerts as severity banners with
       `<blockquote>`, grouped `/help`.
 
+## v0.3.0 — bot command upgrades
+
+- [x] `/update_confirm` as a tappable single-token command (legacy `/update confirm`
+      still accepted). Command menu registered via setMyCommands for autocomplete.
+- [x] `/clear_chat`: blind ID-range sweep (anchor message − 300) via the
+      `deleteMessages` API; undeletable/older-than-48h IDs are skipped by Telegram.
+- [x] Runtime watch management, persisted to config: `/services_scan` (running units
+      via systemctl) + `/services_add|remove`, `/ports_scan` (LISTEN ports from
+      `/proc/net/tcp{,6}`) + `/ports_add|remove`, `/procs_add|remove`.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

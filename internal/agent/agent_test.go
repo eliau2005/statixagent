@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,14 +17,37 @@ import (
 )
 
 type fakeSender struct {
-	mu   sync.Mutex
-	sent []string
+	mu      sync.Mutex
+	sent    []string
+	deleted []int64
+	cmds    []telegram.BotCommand
+	nextID  int64
 }
 
-func (f *fakeSender) SendMessage(_ context.Context, _ int64, html string) error {
+func (f *fakeSender) SendMessage(ctx context.Context, chatID int64, html string) error {
+	_, err := f.SendMessageID(ctx, chatID, html)
+	return err
+}
+
+func (f *fakeSender) SendMessageID(_ context.Context, _ int64, html string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, html)
+	f.nextID++
+	return f.nextID + 1000, nil
+}
+
+func (f *fakeSender) DeleteMessages(_ context.Context, _ int64, ids []int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleted = append(f.deleted, ids...)
+	return nil
+}
+
+func (f *fakeSender) SetMyCommands(_ context.Context, cmds []telegram.BotCommand) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cmds = cmds
 	return nil
 }
 
@@ -178,12 +202,13 @@ func TestUpdateCommandFlow(t *testing.T) {
 	ctx := context.Background()
 
 	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
-	if !strings.Contains(reply, "v1.2.0") || !strings.Contains(reply, "/update confirm") {
+	if !strings.Contains(reply, "v1.2.0") || !strings.Contains(reply, "/update_confirm") {
 		t.Errorf("/update = %q", reply)
 	}
 	if applied {
 		t.Fatal("/update alone must not apply (MVP §7 confirmation rule)")
 	}
+	// The legacy "/update confirm" form keeps working for old habits.
 	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update confirm"})
 	if !applied || !strings.Contains(reply, "restart") {
 		t.Errorf("confirm: applied=%v reply=%q", applied, reply)
@@ -210,6 +235,147 @@ func TestRunStartsAndStops(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run did not stop on cancel")
+	}
+}
+
+type scanRunner struct{ listOutput string }
+
+func (s scanRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	if name == "systemctl" && args[0] == "list-units" {
+		return s.listOutput, nil
+	}
+	return "ActiveState=active\nSubState=running\nNRestarts=0\n", nil
+}
+
+func TestWatchManagement(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	a.src.ConfigPath = cfgPath
+	a.src.Runner = scanRunner{listOutput: "" +
+		"nginx.service loaded active running A high performance web server\n" +
+		"cron.service loaded active running Regular background jobs\n" +
+		"statix-agent.service loaded active running StatixAgent\n"}
+	a.src.ListListeners = func() ([]int, error) { return []int{22, 80, 22}, nil }
+	ctx := context.Background()
+	dispatch := func(text string) string {
+		reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: text})
+		return reply
+	}
+
+	// Scan excludes the agent itself and numbers candidates.
+	scan := dispatch("/services_scan")
+	if !strings.Contains(scan, "nginx.service") || !strings.Contains(scan, "cron.service") {
+		t.Fatalf("scan = %q", scan)
+	}
+	if strings.Contains(scan, "statix-agent.service") {
+		t.Error("scan must exclude the agent's own unit")
+	}
+
+	// Add by index from the scan, then by name.
+	if reply := dispatch("/services_add 1"); !strings.Contains(reply, "watching nginx.service") {
+		t.Errorf("add by index = %q", reply)
+	}
+	if reply := dispatch("/services_add postgresql"); !strings.Contains(reply, "watching postgresql.service") {
+		t.Errorf("add by name = %q", reply)
+	}
+	if reply := dispatch("/services_add 1"); !strings.Contains(reply, "already watched") {
+		t.Errorf("duplicate add = %q", reply)
+	}
+
+	// Ports: scan dedupes, add by port and by index, with label.
+	if scan := dispatch("/ports_scan"); !strings.Contains(scan, "port 22") || strings.Count(scan, "port 22") != 1 {
+		t.Errorf("port scan = %q", scan)
+	}
+	if reply := dispatch("/ports_add 80 web"); !strings.Contains(reply, "watching port 80") {
+		t.Errorf("ports_add = %q", reply)
+	}
+	if reply := dispatch("/procs_add node"); !strings.Contains(reply, "watching process node") {
+		t.Errorf("procs_add = %q", reply)
+	}
+
+	// Persistence: the saved config reloads with everything in place.
+	saved, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatalf("saved config does not load: %v", err)
+	}
+	if len(saved.Watch.Services) != 2 || saved.Watch.Services[0] != "nginx.service" {
+		t.Errorf("saved services = %v", saved.Watch.Services)
+	}
+	if len(saved.Watch.Ports) != 1 || saved.Watch.Ports[0].Port != 80 || saved.Watch.Ports[0].Label != "web" {
+		t.Errorf("saved ports = %+v", saved.Watch.Ports)
+	}
+	if len(saved.Watch.Processes) != 1 || saved.Watch.Processes[0] != "node" {
+		t.Errorf("saved processes = %v", saved.Watch.Processes)
+	}
+
+	// Remove by name and by port; persisted again.
+	if reply := dispatch("/services_remove nginx"); !strings.Contains(reply, "stopped watching nginx.service") {
+		t.Errorf("remove = %q", reply)
+	}
+	if reply := dispatch("/ports_remove 80"); !strings.Contains(reply, "stopped watching port 80") {
+		t.Errorf("ports_remove = %q", reply)
+	}
+	saved, _ = config.Load(cfgPath)
+	if len(saved.Watch.Services) != 1 || len(saved.Watch.Ports) != 0 {
+		t.Errorf("after removal: services=%v ports=%v", saved.Watch.Services, saved.Watch.Ports)
+	}
+
+	// Bare remove lists what is watched.
+	if reply := dispatch("/services_remove"); !strings.Contains(reply, "postgresql.service") {
+		t.Errorf("bare remove = %q", reply)
+	}
+}
+
+func TestWatchWithoutConfigPath(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/procs_add nginx"})
+	if !strings.Contains(reply, "not persisted") {
+		t.Errorf("no config path must warn: %q", reply)
+	}
+	if !strings.Contains(reply, "1 processes") {
+		t.Errorf("in-memory change must still apply: %q", reply)
+	}
+}
+
+func TestUpdateConfirmCommand(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	applied := false
+	a.src.UpdateCheck = func(ctx context.Context) (string, bool, error) { return "v9.9.9", true, nil }
+	a.src.UpdateApply = func(ctx context.Context) error { applied = true; return nil }
+	ctx := context.Background()
+
+	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
+	if !strings.Contains(reply, "/update_confirm") {
+		t.Errorf("/update must advertise the tappable command: %q", reply)
+	}
+	if applied {
+		t.Fatal("/update must not apply")
+	}
+	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update_confirm"})
+	if !applied || !strings.Contains(reply, "restart") {
+		t.Errorf("update_confirm: applied=%v reply=%q", applied, reply)
+	}
+}
+
+func TestClearChat(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/clear_chat"})
+	if reply != "🧹 cleared" {
+		t.Errorf("reply = %q", reply)
+	}
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.deleted) != 301 {
+		t.Fatalf("deleted %d ids, want 301", len(send.deleted))
+	}
+	if send.deleted[0] != 1001 { // anchor message id from the fake
+		t.Errorf("sweep must start at the anchor id, got %d", send.deleted[0])
 	}
 }
 
