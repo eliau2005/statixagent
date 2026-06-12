@@ -519,6 +519,83 @@ func TestUpdateOfferKeyboardAndInstallButton(t *testing.T) {
 	}
 }
 
+func (f *fakeSender) editCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.edits)
+}
+
+func (f *fakeSender) lastEdit() edit {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.edits[len(f.edits)-1]
+}
+
+// waitFor polls until cond holds or the deadline passes.
+func waitFor(t *testing.T, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestLiveModeAnimatesAndFinishes(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.liveInterval = 5 * time.Millisecond
+	a.liveDuration = 60 * time.Millisecond
+	ctx := context.Background()
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 7, Data: "live"})
+
+	// Session ends with a restore edit: no LIVE marker, nav keyboard back.
+	waitFor(t, func() bool {
+		return send.editCount() > 2 && !strings.Contains(send.lastEdit().html, "LIVE")
+	}, "live session to finish")
+
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	liveEdits := 0
+	stopButtonSeen := false
+	for _, e := range send.edits[:len(send.edits)-1] {
+		if strings.Contains(e.html, "🔴 <b>LIVE</b>") {
+			liveEdits++
+		}
+		if e.kb != nil && len(e.kb) == 1 && e.kb[0][0].Data == "live_stop" {
+			stopButtonSeen = true
+		}
+	}
+	if liveEdits < 2 {
+		t.Errorf("want multiple live frames, got %d of %d edits", liveEdits, len(send.edits))
+	}
+	if !stopButtonSeen {
+		t.Error("live frames must carry the ⏹ Stop button")
+	}
+	final := send.edits[len(send.edits)-1]
+	if final.messageID != 7 || final.kb == nil || final.kb[len(final.kb)-1][1].Data != "live" {
+		t.Errorf("final edit must restore the nav keyboard on msg 7: %+v", final)
+	}
+}
+
+func TestLiveModeStopButton(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.liveInterval = 5 * time.Millisecond
+	a.liveDuration = time.Hour // would run forever without the stop
+	ctx := context.Background()
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 9, Data: "live"})
+	waitFor(t, func() bool { return send.editCount() >= 2 }, "live frames")
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 9, Data: "live_stop"})
+	waitFor(t, func() bool {
+		return !strings.Contains(send.lastEdit().html, "LIVE")
+	}, "stop to restore the normal view")
+}
+
 func countNonNil(als []*alert.Alert) int {
 	n := 0
 	for _, a := range als {
