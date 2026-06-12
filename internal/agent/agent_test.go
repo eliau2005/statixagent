@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -924,6 +925,37 @@ func TestFirewallFlow(t *testing.T) {
 	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 8, Data: "fw_open"})
 	if ufw.state != "open" {
 		t.Fatalf("ufw state after reopen = %s", ufw.state)
+	}
+}
+
+// failingUFW reports active+open status but fails on any rule change,
+// mimicking the read-only-filesystem sandbox error.
+type failingUFW struct{}
+
+func (failingUFW) Run(_ context.Context, name string, args ...string) (string, error) {
+	if name == "ufw" && args[0] == "status" {
+		return "Status: active\n\n22/tcp  ALLOW  Anywhere\n", nil
+	}
+	return "ERROR: Could not open /etc/ufw/user.rules: read-only file system", errors.New("exit status 1")
+}
+
+func TestFirewallChangeFailureIsVisible(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.Runner = failingUFW{}
+	ctx := context.Background()
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "Change failed") || !strings.Contains(last.html, "read-only file system") {
+		t.Errorf("failure must be shown persistently in the message, got: %q", last.html)
+	}
+	// And the toast points at the message rather than carrying the detail.
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.answered) == 0 || !strings.Contains(send.answered[len(send.answered)-1], "see message") {
+		t.Errorf("toast = %v", send.answered)
 	}
 }
 
