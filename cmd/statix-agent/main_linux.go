@@ -149,6 +149,7 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		ProcFS: func(names []string) ([]services.Result, error) {
 			return services.CheckProcesses(os.DirFS("/proc"), names), nil
 		},
+		TopProcs:      topProcs,
 		KeyPaths:      findAuthorizedKeys(),
 		ConfigPath:    cfgPath,
 		ListListeners: listListeners,
@@ -207,6 +208,21 @@ func sampleLinux(ctx context.Context) (collect.Sample, error) {
 		s.Mounts = mounts
 	}
 	return s, nil
+}
+
+// topProcs samples every process twice, one second apart, so /top can
+// report real CPU percentages rather than since-boot averages.
+func topProcs(ctx context.Context) ([]collect.Proc, error) {
+	fsys := os.DirFS("/proc")
+	prev := collect.ReadProcStats(fsys)
+	start := time.Now()
+	select {
+	case <-time.After(time.Second):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	cur := collect.ReadProcStats(fsys)
+	return collect.TopProcs(prev, cur, time.Since(start), uint64(os.Getpagesize())), nil
 }
 
 func withFile(path string, f func(*os.File) error) error {

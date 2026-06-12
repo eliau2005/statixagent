@@ -17,6 +17,7 @@ import (
 var navViews = map[string]bool{
 	"status": true, "cpu": true, "mem": true, "disk": true, "net": true,
 	"temp": true, "battery": true, "services": true, "docker": true, "ssh": true,
+	"top": true,
 }
 
 // navKeyboard renders the navigation rows; the active view is highlighted.
@@ -26,7 +27,7 @@ func navKeyboard(active string) telegram.Keyboard {
 		{{"💾 Disk", "disk"}, {"🌐 Net", "net"}, {"🌡 Temp", "temp"}},
 		{{"🔋 Power", "battery"}, {"🧩 Svc", "services"}, {"🐳 Dock", "docker"}},
 		{{"🔐 SSH", "ssh"}, {"▶️ Live", "live"}, {"🔄 Refresh", active}},
-		{{"👁 Watching", "watching"}, {"⚙️ Settings", "settings"}},
+		{{"🔝 Top", "top"}, {"👁 Watching", "watching"}, {"⚙️ Settings", "settings"}},
 	}
 	var kb telegram.Keyboard
 	for _, row := range rows {
@@ -64,9 +65,17 @@ func alertKeyboard(key string) telegram.Keyboard {
 			{Text: "🛡 Firewall", Data: "firewall"},
 		}
 	case "cpu":
-		row = []telegram.Button{{Text: "🖥 CPU", Data: "cpu"}, {Text: "📊 Status", Data: "status"}}
+		row = []telegram.Button{
+			{Text: "🔝 Top", Data: "top"},
+			{Text: "🖥 CPU", Data: "cpu"},
+			{Text: "📊 Status", Data: "status"},
+		}
 	case "mem":
-		row = []telegram.Button{{Text: "🧠 Memory", Data: "mem"}, {Text: "📊 Status", Data: "status"}}
+		row = []telegram.Button{
+			{Text: "🔝 Top", Data: "top"},
+			{Text: "🧠 Memory", Data: "mem"},
+			{Text: "📊 Status", Data: "status"},
+		}
 	case "disk":
 		row = []telegram.Button{{Text: "💾 Disk", Data: "disk"}, {Text: "📊 Status", Data: "status"}}
 	case "temp":

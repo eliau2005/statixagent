@@ -699,12 +699,13 @@ func TestAlertActionButtons(t *testing.T) {
 		t.Fatalf("ssh alert keyboard = %+v", kb)
 	}
 
-	// CPU threshold alert carries the CPU button.
+	// CPU threshold alert leads with the Top button (find the culprit),
+	// then the CPU view.
 	a.pushAlert(ctx, alert.Alert{Key: "cpu", Title: "CPU usage", Body: "high"})
 	send.mu.Lock()
 	kb = send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "cpu" {
+	if kb == nil || kb[0][0].Data != "top" || kb[0][1].Data != "cpu" {
 		t.Fatalf("cpu alert keyboard = %+v", kb)
 	}
 
