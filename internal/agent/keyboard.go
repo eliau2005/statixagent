@@ -23,7 +23,7 @@ func navKeyboard(active string) telegram.Keyboard {
 		{{"📊 Status", "status"}, {"🖥 CPU", "cpu"}, {"🧠 Mem", "mem"}},
 		{{"💾 Disk", "disk"}, {"🌐 Net", "net"}, {"🌡 Temp", "temp"}},
 		{{"🔋 Power", "battery"}, {"🧩 Svc", "services"}, {"🐳 Dock", "docker"}},
-		{{"🔐 SSH", "ssh"}, {"🔄 Refresh", active}},
+		{{"🔐 SSH", "ssh"}, {"▶️ Live", "live"}, {"🔄 Refresh", active}},
 	}
 	var kb telegram.Keyboard
 	for _, row := range rows {
@@ -74,9 +74,18 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	if cb.ChatID != a.cfg.Telegram.ChatID {
 		return // foreign chat: ignore entirely, do not even answer
 	}
-	if cb.Data == "dismiss" {
+	switch cb.Data {
+	case "dismiss":
 		a.send.AnswerCallback(ctx, cb.ID, "")
 		a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, "Update postponed — /update any time.", nil)
+		return
+	case "live":
+		a.send.AnswerCallback(ctx, cb.ID, "Live for 30s")
+		a.startLive(ctx, cb.ChatID, cb.MessageID)
+		return
+	case "live_stop":
+		a.send.AnswerCallback(ctx, cb.ID, "")
+		a.stopLive()
 		return
 	}
 	reply, ok := a.router.Invoke(ctx, cb.Data, nil)

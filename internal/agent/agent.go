@@ -96,20 +96,28 @@ type Agent struct {
 	// /ports_add arguments. Guarded by mu.
 	lastServiceScan []string
 	lastPortScan    []int
+
+	// Live-mode session state (live.go). Guarded by mu; intervals are set
+	// once in New and overridden only by tests.
+	liveCancel   context.CancelFunc
+	liveInterval time.Duration
+	liveDuration time.Duration
 }
 
 // New assembles an Agent.
 func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	a := &Agent{
-		cfg:     cfg,
-		send:    send,
-		updates: updates,
-		src:     src,
-		engine:  alert.New(10 * time.Minute),
-		brute:   sshwatch.NewBruteDetector(2*time.Minute, 5),
-		hist:    sshwatch.NewHistory(500),
-		keys:    sshwatch.NewKeysWatcher(src.KeyPaths),
-		geo:     sshwatch.NewGeoResolver(),
+		cfg:          cfg,
+		send:         send,
+		updates:      updates,
+		src:          src,
+		engine:       alert.New(10 * time.Minute),
+		brute:        sshwatch.NewBruteDetector(2*time.Minute, 5),
+		hist:         sshwatch.NewHistory(500),
+		keys:         sshwatch.NewKeysWatcher(src.KeyPaths),
+		geo:          sshwatch.NewGeoResolver(),
+		liveInterval: 3 * time.Second,
+		liveDuration: 30 * time.Second,
 	}
 	a.router = a.buildRouter()
 	return a

@@ -135,6 +135,13 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       the active view is highlighted, 🔄 re-renders. Update offers carry
       ⬇️ Install now / Later buttons; foreign-chat callbacks fully ignored.
 
+## v0.5.0 — live mode (UX loop, iteration 2)
+
+- [x] ▶️ Live button on the nav keyboard: re-samples and re-renders the status card
+      in place every 3s for 30s with a spinner frame (◐◓◑◒) and countdown, ⏹ Stop
+      ends early, nav keyboard restored at the end. One session at a time; bound to
+      the agent context so shutdown cancels it.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.
