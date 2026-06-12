@@ -142,6 +142,13 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       ends early, nav keyboard restored at the end. One session at a time; bound to
       the agent context so shutdown cancels it.
 
+## v0.6.0 — button-driven watch management (UX loop, iteration 3)
+
+- [x] `/watching` hub: everything watched with a 🗑 button per item; scan views carry
+      ➕ buttons per candidate (services 2/row, ports 3/row, capped at 12 with typed
+      fallback); footer row links Watching ↔ scan views. All edits in place, all
+      changes persisted to config; typed commands still work.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

@@ -102,6 +102,11 @@ type Agent struct {
 	liveCancel   context.CancelFunc
 	liveInterval time.Duration
 	liveDuration time.Duration
+
+	// pendingKB is set by a handler that wants a custom keyboard on its
+	// reply and consumed by reply(). Safe because updates are processed
+	// sequentially. Guarded by mu.
+	pendingKB telegram.Keyboard
 }
 
 // New assembles an Agent.
@@ -404,10 +409,9 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/ssh history — recent logins\n" +
 			"/ssh fails — failed attempts\n\n" +
 			"👁 <b>Watching</b>\n" +
+			"/watching — manage everything with buttons\n" +
 			"/services_scan /ports_scan — find candidates\n" +
-			"/services_add /services_remove — manage units\n" +
-			"/ports_add /ports_remove — manage ports\n" +
-			"/procs_add /procs_remove — manage processes\n\n" +
+			"(/services_add, /ports_add, /procs_add … still work typed)\n\n" +
 			"⚙️ <b>Maintenance</b>\n" +
 			"/update — check · /update_confirm — install\n" +
 			"/clear_chat — wipe recent messages"
@@ -536,6 +540,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "services", Description: "watched services status"},
 	{Command: "docker", Description: "containers"},
 	{Command: "ssh", Description: "live SSH sessions"},
+	{Command: "watching", Description: "manage everything watched (buttons)"},
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},
