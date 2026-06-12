@@ -25,6 +25,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/collect"
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/dockermon"
+	"github.com/eliau2005/statixagent/internal/netcheck"
 	"github.com/eliau2005/statixagent/internal/procfs"
 	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
@@ -149,7 +150,10 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		ProcFS: func(names []string) ([]services.Result, error) {
 			return services.CheckProcesses(os.DirFS("/proc"), names), nil
 		},
-		TopProcs:      topProcs,
+		TopProcs: topProcs,
+		CheckCerts: func(ctx context.Context, hosts []string) []netcheck.CertStatus {
+			return netcheck.CheckCerts(ctx, hosts, time.Now())
+		},
 		KeyPaths:      findAuthorizedKeys(),
 		ConfigPath:    cfgPath,
 		ListListeners: listListeners,
