@@ -59,6 +59,10 @@ type Sources struct {
 	ProcFS   func(names []string) ([]services.Result, error) // process presence checks
 	KeyPaths []string
 
+	// TopProcs samples per-process CPU/memory over a short window (~1s);
+	// nil disables /top.
+	TopProcs func(ctx context.Context) ([]collect.Proc, error)
+
 	// ConfigPath is where watch-list changes are persisted; empty means
 	// in-memory only (replies say so).
 	ConfigPath string
@@ -426,6 +430,7 @@ func (a *Agent) buildRouter() *bot.Router {
 		return "🖥 <b>Metrics</b>\n" +
 			"/status — full dashboard\n" +
 			"/cpu /mem /disk /net — one metric\n" +
+			"/top — heaviest processes\n" +
 			"/temp /battery — hardware\n\n" +
 			"🧩 <b>Workloads</b>\n" +
 			"/services — units, processes, ports\n" +
@@ -458,6 +463,19 @@ func (a *Agent) buildRouter() *bot.Router {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		return bot.Mem(a.snap, bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.mem }), 100))
+	})
+	r.Handle("top", func(ctx context.Context, _ []string) string {
+		if a.src.TopProcs == nil {
+			return "Process inspection is not available in this build."
+		}
+		procs, err := a.src.TopProcs(ctx)
+		if err != nil {
+			return "Could not read processes: " + err.Error()
+		}
+		a.mu.Lock()
+		memTotal := a.snap.Mem.Total
+		a.mu.Unlock()
+		return bot.Top(procs, memTotal)
 	})
 	r.Handle("disk", a.snapHandler(bot.Disk))
 	r.Handle("net", a.snapHandler(bot.Net))
@@ -563,6 +581,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "mem", Description: "memory usage"},
 	{Command: "disk", Description: "disk space and I/O"},
 	{Command: "net", Description: "network rates and totals"},
+	{Command: "top", Description: "heaviest processes by CPU and memory"},
 	{Command: "temp", Description: "temperatures and fans"},
 	{Command: "battery", Description: "battery state"},
 	{Command: "services", Description: "watched services status"},

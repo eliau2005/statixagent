@@ -438,6 +438,36 @@ func Docker(cts []dockermon.Container) string {
 	return card(header, L)
 }
 
+// Top renders /top: the heaviest processes by CPU and by memory.
+func Top(procs []collect.Proc, memTotal uint64) string {
+	if len(procs) == 0 {
+		return "🔝 No process data — try again in a moment."
+	}
+	byCPU := append([]collect.Proc(nil), procs...)
+	sort.SliceStable(byCPU, func(i, j int) bool { return byCPU[i].CPUPercent > byCPU[j].CPUPercent })
+	byMem := append([]collect.Proc(nil), procs...)
+	sort.SliceStable(byMem, func(i, j int) bool { return byMem[i].RSSBytes > byMem[j].RSSBytes })
+
+	const n = 5
+	var L []string
+	L = append(L, " by CPU")
+	for _, p := range byCPU[:min(n, len(byCPU))] {
+		L = append(L, fmt.Sprintf(" %s %s pid %d", pad(p.Comm, 15),
+			pad(fmt.Sprintf("%.1f%%", p.CPUPercent), -6), p.PID))
+	}
+	L = append(L, divider, " by memory")
+	for _, p := range byMem[:min(n, len(byMem))] {
+		share := ""
+		if memTotal > 0 {
+			share = fmt.Sprintf(" %.0f%%", 100*float64(p.RSSBytes)/float64(memTotal))
+		}
+		L = append(L, fmt.Sprintf(" %s %s%s", pad(p.Comm, 15),
+			pad(BytesShort(p.RSSBytes), -6), share))
+	}
+	header := fmt.Sprintf("🔝 <b>Top processes</b> — %d running", len(procs))
+	return card(header, L)
+}
+
 // Sessions renders /ssh: live sessions with geo info.
 func Sessions(sessions []sshwatch.Session, geo map[string]sshwatch.GeoInfo, now time.Time) string {
 	if len(sessions) == 0 {
