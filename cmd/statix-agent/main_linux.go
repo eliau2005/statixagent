@@ -216,11 +216,17 @@ func withFile(path string, f func(*os.File) error) error {
 	return f(fh)
 }
 
+// readSessions lists live sessions from utmp when it exists, falling back
+// to systemd-logind on distros that dropped the utmp file (Ubuntu 24.10+).
 func readSessions() ([]sshwatch.Session, error) {
-	return withFileResult("/var/run/utmp")
+	if sessions, err := readUtmpSessions("/var/run/utmp"); err == nil && len(sessions) > 0 {
+		return sessions, nil
+	}
+	runner := services.ExecRunner{}
+	return sshwatch.SessionsFromLoginctl(context.Background(), runner.Run)
 }
 
-func withFileResult(path string) ([]sshwatch.Session, error) {
+func readUtmpSessions(path string) ([]sshwatch.Session, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
