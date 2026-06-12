@@ -9,15 +9,35 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// Update is one incoming message, reduced to what the bot needs.
+// Update is one incoming event, reduced to what the bot needs: either a
+// text message or a button press (Callback non-nil).
 type Update struct {
-	ID     int64 // update_id, used as the getUpdates offset cursor
-	ChatID int64
-	Text   string
+	ID       int64 // update_id, used as the getUpdates offset cursor
+	ChatID   int64
+	Text     string
+	Callback *Callback
 }
+
+// Callback is an inline-keyboard button press.
+type Callback struct {
+	ID        string // callback_query id, must be answered
+	ChatID    int64
+	MessageID int64 // the message carrying the keyboard
+	Data      string
+}
+
+// Button is one inline-keyboard button; Data is sent back on press.
+type Button struct {
+	Text string `json:"text"`
+	Data string `json:"callback_data"`
+}
+
+// Keyboard is rows of buttons.
+type Keyboard [][]Button
 
 // Client talks to the Bot API for one bot token.
 type Client struct {
@@ -80,13 +100,23 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) err
 // SendMessageID sends like SendMessage and returns the message_id of the
 // last chunk, used as the anchor for /clear_chat's deletion sweep.
 func (c *Client) SendMessageID(ctx context.Context, chatID int64, html string) (int64, error) {
+	return c.SendMessageKB(ctx, chatID, html, nil)
+}
+
+// SendMessageKB sends a message with an optional inline keyboard attached
+// to the last chunk, returning its message_id.
+func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, kb Keyboard) (int64, error) {
+	chunks := splitMessage(html, 4096)
 	var lastID int64
-	for _, chunk := range splitMessage(html, 4096) {
+	for i, chunk := range chunks {
 		payload := map[string]any{
 			"chat_id":                  chatID,
 			"text":                     chunk,
 			"parse_mode":               "HTML",
 			"disable_web_page_preview": true,
+		}
+		if kb != nil && i == len(chunks)-1 {
+			payload["reply_markup"] = map[string]any{"inline_keyboard": kb}
 		}
 		var sent struct {
 			MessageID int64 `json:"message_id"`
@@ -97,6 +127,37 @@ func (c *Client) SendMessageID(ctx context.Context, chatID int64, html string) (
 		lastID = sent.MessageID
 	}
 	return lastID, nil
+}
+
+// EditMessageKB replaces a message's text and keyboard in place — the
+// mechanism behind button navigation and live views. Telegram rejects
+// edits that change nothing; that case is reported as success.
+func (c *Client) EditMessageKB(ctx context.Context, chatID, messageID int64, html string, kb Keyboard) error {
+	payload := map[string]any{
+		"chat_id":                  chatID,
+		"message_id":               messageID,
+		"text":                     html,
+		"parse_mode":               "HTML",
+		"disable_web_page_preview": true,
+	}
+	if kb != nil {
+		payload["reply_markup"] = map[string]any{"inline_keyboard": kb}
+	}
+	err := c.call(ctx, "editMessageText", payload, nil)
+	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+// AnswerCallback acknowledges a button press (stops the client spinner).
+// text, when non-empty, shows as a small toast.
+func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) error {
+	payload := map[string]any{"callback_query_id": callbackID}
+	if text != "" {
+		payload["text"] = text
+	}
+	return c.call(ctx, "answerCallbackQuery", payload, nil)
 }
 
 // DeleteMessages deletes up to 48h-old messages by ID; IDs that cannot be
@@ -127,13 +188,13 @@ func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand) error
 	return c.call(ctx, "setMyCommands", map[string]any{"commands": commands}, nil)
 }
 
-// GetUpdates long-polls for new messages after offset. It returns plain
-// text messages only; the caller filters by chat ID.
+// GetUpdates long-polls for new messages and button presses after offset.
+// The caller filters by chat ID.
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Duration) ([]Update, error) {
 	payload := map[string]any{
 		"offset":          offset,
 		"timeout":         int(timeout.Seconds()),
-		"allowed_updates": []string{"message"},
+		"allowed_updates": []string{"message", "callback_query"},
 	}
 	var raw []struct {
 		UpdateID int64 `json:"update_id"`
@@ -143,6 +204,16 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 				ID int64 `json:"id"`
 			} `json:"chat"`
 		} `json:"message"`
+		CallbackQuery *struct {
+			ID      string `json:"id"`
+			Data    string `json:"data"`
+			Message *struct {
+				MessageID int64 `json:"message_id"`
+				Chat      struct {
+					ID int64 `json:"id"`
+				} `json:"chat"`
+			} `json:"message"`
+		} `json:"callback_query"`
 	}
 	if err := c.call(ctx, "getUpdates", payload, &raw); err != nil {
 		return nil, err
@@ -150,9 +221,18 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 	out := make([]Update, 0, len(raw))
 	for _, r := range raw {
 		u := Update{ID: r.UpdateID}
-		if r.Message != nil {
+		switch {
+		case r.Message != nil:
 			u.ChatID = r.Message.Chat.ID
 			u.Text = r.Message.Text
+		case r.CallbackQuery != nil && r.CallbackQuery.Message != nil:
+			u.Callback = &Callback{
+				ID:        r.CallbackQuery.ID,
+				Data:      r.CallbackQuery.Data,
+				ChatID:    r.CallbackQuery.Message.Chat.ID,
+				MessageID: r.CallbackQuery.Message.MessageID,
+			}
+			u.ChatID = u.Callback.ChatID
 		}
 		out = append(out, u)
 	}

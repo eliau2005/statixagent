@@ -125,6 +125,16 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       via systemctl) + `/services_add|remove`, `/ports_scan` (LISTEN ports from
       `/proc/net/tcp{,6}`) + `/ports_add|remove`, `/procs_add|remove`.
 
+## v0.4.0 — inline keyboards (UX loop, iteration 1)
+
+- [x] Telegram client: callback_query updates, inline keyboards on send,
+      editMessageText (in-place view morphing, "not modified" tolerated),
+      answerCallbackQuery.
+- [x] Navigation keyboard on every metric view (status/cpu/mem/disk/net/temp/
+      battery/services/docker/ssh) — buttons swap the SAME message between views,
+      the active view is highlighted, 🔄 re-renders. Update offers carry
+      ⬇️ Install now / Later buttons; foreign-chat callbacks fully ignored.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

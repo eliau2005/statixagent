@@ -23,27 +23,36 @@ func TestRouterAllowlistAndDispatch(t *testing.T) {
 		return "SSH:" + strings.Join(args, ",")
 	})
 
-	if _, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 999, Text: "/status"}); ok {
+	if _, _, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 999, Text: "/status"}); ok {
 		t.Fatal("foreign chat must be dropped silently")
 	}
-	if _, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "hello"}); ok {
+	if _, _, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "hello"}); ok {
 		t.Fatal("non-command text must be ignored")
 	}
-	reply, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/status"})
-	if !ok || reply != "STATUS" {
-		t.Fatalf("dispatch = %q, %v", reply, ok)
+	reply, cmd, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/status"})
+	if !ok || reply != "STATUS" || cmd != "status" {
+		t.Fatalf("dispatch = %q, %q, %v", reply, cmd, ok)
 	}
-	reply, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/ssh history extra"})
+	reply, _, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/ssh history extra"})
 	if reply != "SSH:history,extra" {
 		t.Fatalf("args = %q", reply)
 	}
-	reply, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/STATUS@mybot"})
-	if reply != "STATUS" {
-		t.Fatalf("case/@bot form = %q", reply)
+	reply, cmd, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/STATUS@mybot"})
+	if reply != "STATUS" || cmd != "status" {
+		t.Fatalf("case/@bot form = %q, %q", reply, cmd)
 	}
-	reply, ok = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/nope"})
+	reply, _, ok = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/nope"})
 	if !ok || !strings.Contains(reply, "Unknown command") {
 		t.Fatalf("unknown = %q, %v", reply, ok)
+	}
+
+	// Invoke runs handlers directly for keyboard callbacks.
+	reply, ok = r.Invoke(context.Background(), "status", nil)
+	if !ok || reply != "STATUS" {
+		t.Fatalf("Invoke = %q, %v", reply, ok)
+	}
+	if _, ok := r.Invoke(context.Background(), "ghost", nil); ok {
+		t.Fatal("Invoke of unknown command must report false")
 	}
 }
 

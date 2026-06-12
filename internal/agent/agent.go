@@ -29,6 +29,9 @@ import (
 type Sender interface {
 	SendMessage(ctx context.Context, chatID int64, html string) error
 	SendMessageID(ctx context.Context, chatID int64, html string) (int64, error)
+	SendMessageKB(ctx context.Context, chatID int64, html string, kb telegram.Keyboard) (int64, error)
+	EditMessageKB(ctx context.Context, chatID, messageID int64, html string, kb telegram.Keyboard) error
+	AnswerCallback(ctx context.Context, callbackID, text string) error
 	DeleteMessages(ctx context.Context, chatID int64, ids []int64) error
 	SetMyCommands(ctx context.Context, commands []telegram.BotCommand) error
 }
@@ -364,8 +367,12 @@ func (a *Agent) botLoop(ctx context.Context) {
 			if u.ID >= offset {
 				offset = u.ID + 1
 			}
-			if reply, ok := a.router.Dispatch(ctx, u); ok {
-				a.push(ctx, reply)
+			if u.Callback != nil {
+				a.handleCallback(ctx, u.Callback)
+				continue
+			}
+			if reply, cmd, ok := a.router.Dispatch(ctx, u); ok {
+				a.reply(ctx, cmd, reply)
 			}
 		}
 	}
