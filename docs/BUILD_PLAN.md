@@ -156,6 +156,14 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       Status. The alert message morphs into the chosen view in place. Startup hello
       carries 📊 Status / 👁 Watching quick buttons.
 
+## v0.8.0 — trends & settings (UX loop, iteration 5)
+
+- [x] Sparkline trends (▁▂▃▄▅▆▇█) on /cpu and /mem from a 40-point ring of samples
+      (~10 min at the default interval).
+- [x] ⚙️ /settings: every alert threshold tunable with ➖/➕ buttons (step 5, clamped
+      ranges), persisted to config and effective immediately in the alert engine.
+      Nav keyboard gained a 👁 Watching / ⚙️ Settings row.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

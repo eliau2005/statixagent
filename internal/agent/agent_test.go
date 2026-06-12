@@ -576,7 +576,13 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 		t.Error("live frames must carry the ⏹ Stop button")
 	}
 	final := send.edits[len(send.edits)-1]
-	if final.messageID != 7 || final.kb == nil || final.kb[len(final.kb)-1][1].Data != "live" {
+	flatNav := ""
+	for _, row := range final.kb {
+		for _, b := range row {
+			flatNav += b.Data + " "
+		}
+	}
+	if final.messageID != 7 || !strings.Contains(flatNav, "live") || !strings.Contains(flatNav, "status") {
 		t.Errorf("final edit must restore the nav keyboard on msg 7: %+v", final)
 	}
 }
@@ -738,6 +744,80 @@ func TestStartupHelloHasButtons(t *testing.T) {
 		}
 	}
 	t.Fatal("hello not found")
+}
+
+func TestSettingsButtons(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	a.src.ConfigPath = cfgPath
+	ctx := context.Background()
+
+	// /settings shows thresholds with tune buttons.
+	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/settings"})
+	if !strings.Contains(reply, "Alert thresholds") || !strings.Contains(reply, "90%") {
+		t.Fatalf("/settings = %q", reply)
+	}
+	a.reply(ctx, cmd, reply)
+	send.mu.Lock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "th:cpu:-5" || kb[0][2].Data != "th:cpu:+5" {
+		t.Fatalf("settings keyboard = %+v", kb)
+	}
+
+	// ➖ lowers CPU threshold, persists, re-renders.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "th:cpu:-5"})
+	if got := a.thresholds().CPUPercent; got != 85 {
+		t.Errorf("cpu threshold = %.0f, want 85", got)
+	}
+	saved, err := config.Load(cfgPath)
+	if err != nil || saved.Thresholds.CPUPercent != 85 {
+		t.Errorf("saved cpu threshold = %+v err=%v", saved.Thresholds, err)
+	}
+	if last := send.lastEdit(); !strings.Contains(last.html, "85%") {
+		t.Errorf("re-rendered settings = %q", last.html)
+	}
+
+	// Clamping: battery cannot go below its floor.
+	for i := 0; i < 10; i++ {
+		a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 4, Data: "th:batt:-5"})
+	}
+	if got := a.thresholds().BatteryPercent; got != 5 {
+		t.Errorf("battery threshold = %.0f, want clamped to 5", got)
+	}
+
+	// Live evaluation uses the tuned threshold: CPU at 87% now alerts.
+	als := a.evalSystem(collect.Snapshot{CPUTotal: collect.CPUUsage{Percent: 87}, Mem: procfs.MemInfo{Total: 100, Available: 60}}, time.Now())
+	if countNonNil(als) != 1 {
+		t.Errorf("tuned threshold must fire at 87%%: %+v", als)
+	}
+
+	// noop button answers without editing.
+	before := send.editCount()
+	a.handleCallback(ctx, &telegram.Callback{ID: "c3", ChatID: 42, MessageID: 4, Data: "noop"})
+	if send.editCount() != before {
+		t.Error("noop must not edit")
+	}
+}
+
+func TestCPUTrendSparkline(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	// Two samples populate the trend ring.
+	a.sampleOnce(ctx)
+	a.sampleOnce(ctx)
+	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/cpu"})
+	if !strings.Contains(reply, "trend") {
+		t.Errorf("/cpu after 2 samples must show a trend line: %q", reply)
+	}
+	// A fresh agent with <2 samples shows no trend.
+	b := testAgent(&fakeSender{})
+	reply, _, _ = b.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/cpu"})
+	if strings.Contains(reply, "trend") {
+		t.Errorf("no-history /cpu must omit trend: %q", reply)
+	}
 }
 
 func countNonNil(als []*alert.Alert) int {
