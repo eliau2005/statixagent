@@ -17,7 +17,7 @@ import (
 var navViews = map[string]bool{
 	"status": true, "cpu": true, "mem": true, "disk": true, "net": true,
 	"temp": true, "battery": true, "services": true, "docker": true, "ssh": true,
-	"top": true,
+	"top": true, "digest": true,
 }
 
 // navKeyboard renders the navigation rows; the active view is highlighted.
@@ -90,6 +90,7 @@ func alertKeyboard(key string) telegram.Keyboard {
 
 // pushAlert renders and sends an alert with its context buttons.
 func (a *Agent) pushAlert(ctx context.Context, al alert.Alert) {
+	a.noteAlert(al)
 	html := bot.AlertMsg(a.src.Hostname, al)
 	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, alertKeyboard(al.Key)); err != nil {
 		log.Printf("agent: alert push failed: %v", err)

@@ -24,6 +24,7 @@ type Config struct {
 	Thresholds Thresholds `toml:"thresholds"`
 	Watch      Watch      `toml:"watch"`
 	Update     Update     `toml:"update"`
+	Digest     Digest     `toml:"digest"`
 
 	// SampleInterval is the metrics sampling period.
 	SampleInterval Duration `toml:"sample_interval"`
@@ -82,6 +83,13 @@ type Update struct {
 	Repo          string   `toml:"repo"` // owner/name on GitHub
 }
 
+// Digest controls the daily summary message: a once-a-day recap of peaks,
+// SSH activity, and alert counts, so a healthy server is heard from too.
+type Digest struct {
+	Enabled bool `toml:"enabled"`
+	Hour    int  `toml:"hour"` // local hour (0-23) to send at
+}
+
 // Duration wraps time.Duration for TOML strings like "30s".
 type Duration struct{ time.Duration }
 
@@ -122,6 +130,10 @@ func Default() Config {
 			Auto:          false,
 			CheckInterval: Duration{6 * time.Hour},
 			Repo:          "eliau2005/statixagent",
+		},
+		Digest: Digest{
+			Enabled: true,
+			Hour:    9,
 		},
 		SampleInterval: Duration{15 * time.Second},
 	}
@@ -164,6 +176,9 @@ func (c Config) Validate() error {
 		if h.URL == "" {
 			errs = append(errs, errors.New("http_checks entry missing url"))
 		}
+	}
+	if c.Digest.Hour < 0 || c.Digest.Hour > 23 {
+		errs = append(errs, fmt.Errorf("digest.hour %d out of range 0-23", c.Digest.Hour))
 	}
 	if c.Update.Auto && c.Update.CheckInterval.Duration < time.Minute {
 		errs = append(errs, fmt.Errorf("update.check_interval %s is below 1m", c.Update.CheckInterval))
