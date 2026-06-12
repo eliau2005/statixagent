@@ -97,6 +97,11 @@ type Agent struct {
 	lastServiceScan []string
 	lastPortScan    []int
 
+	// lastSessions is the SSH session list as last rendered, so sk:/skk:
+	// kick callbacks resolve indexes against what the user saw. Guarded
+	// by mu.
+	lastSessions []sshwatch.Session
+
 	// Live-mode session state (live.go). Guarded by mu; intervals are set
 	// once in New and overridden only by tests.
 	liveCancel   context.CancelFunc
@@ -426,7 +431,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/services — units, processes, ports\n" +
 			"/docker — containers\n\n" +
 			"🔐 <b>Security</b>\n" +
-			"/ssh — live sessions\n" +
+			"/ssh — live sessions (disconnect buttons)\n" +
 			"/ssh history — recent logins\n" +
 			"/ssh fails — failed attempts\n" +
 			"/firewall — open/close SSH port 22\n\n" +
@@ -495,7 +500,9 @@ func (a *Agent) buildRouter() *bot.Router {
 		case "fails":
 			return a.sshFailsView()
 		default:
-			return a.sshSessionsView(ctx)
+			text, kb := a.sshSessionsView(ctx)
+			a.stashKB(kb)
+			return text
 		}
 	})
 	// Direct aliases for alert action buttons (callback data is one token).
@@ -560,7 +567,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "battery", Description: "battery state"},
 	{Command: "services", Description: "watched services status"},
 	{Command: "docker", Description: "containers"},
-	{Command: "ssh", Description: "live SSH sessions"},
+	{Command: "ssh", Description: "live SSH sessions (disconnect buttons)"},
 	{Command: "watching", Description: "manage everything watched (buttons)"},
 	{Command: "settings", Description: "tune alert thresholds (buttons)"},
 	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
@@ -580,21 +587,6 @@ func (a *Agent) sshFailsView() string {
 	return bot.SSHEvents("Failed attempts", a.hist.Recent(20, func(e sshwatch.Event) bool {
 		return e.Kind == sshwatch.EventFailed || e.Kind == sshwatch.EventInvalidUser
 	}))
-}
-
-func (a *Agent) sshSessionsView(ctx context.Context) string {
-	if a.src.Sessions == nil {
-		return "Session listing unavailable."
-	}
-	sessions, err := a.src.Sessions()
-	if err != nil {
-		return "Could not read sessions: " + err.Error()
-	}
-	geo := map[string]sshwatch.GeoInfo{}
-	for _, s := range sessions {
-		geo[s.Host] = a.geo.Lookup(ctx, s.Host)
-	}
-	return bot.Sessions(sessions, geo, time.Now())
 }
 
 // trendVals extracts one series from the ring; callers hold a.mu. Series
