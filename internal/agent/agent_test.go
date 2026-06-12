@@ -677,6 +677,69 @@ func TestWatchingCommand(t *testing.T) {
 	}
 }
 
+func TestAlertActionButtons(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+
+	// Root login alert carries the SSH action row.
+	a.handleAuthLine(ctx, "Accepted password for root from 203.0.113.7 port 22 ssh2", time.Now())
+	send.mu.Lock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || len(kb[0]) != 3 || kb[0][0].Data != "ssh" || kb[0][1].Data != "ssh_fails" {
+		t.Fatalf("ssh alert keyboard = %+v", kb)
+	}
+
+	// CPU threshold alert carries the CPU button.
+	a.pushAlert(ctx, alert.Alert{Key: "cpu", Title: "CPU usage", Body: "high"})
+	send.mu.Lock()
+	kb = send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "cpu" {
+		t.Fatalf("cpu alert keyboard = %+v", kb)
+	}
+
+	// Disk alerts have compound keys; the prefix selects the view.
+	a.pushAlert(ctx, alert.Alert{Key: "disk:/home", Title: "Disk space", Body: "low"})
+	send.mu.Lock()
+	kb = send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "disk" {
+		t.Fatalf("disk alert keyboard = %+v", kb)
+	}
+
+	// The fails button resolves to a real handler.
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 3, Data: "ssh_fails"})
+	if last := send.lastEdit(); !strings.Contains(last.html, "Failed attempts") && !strings.Contains(last.html, "Nothing recorded") {
+		t.Errorf("ssh_fails callback view = %q", last.html)
+	}
+}
+
+func TestStartupHelloHasButtons(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx) }()
+	waitFor(t, func() bool { return send.find("statix-agent started") }, "hello message")
+	cancel()
+	<-done
+
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	for i, s := range send.sent {
+		if strings.Contains(s, "statix-agent started") {
+			kb := send.keyboards[i]
+			if kb == nil || kb[0][0].Data != "status" || kb[0][1].Data != "watching" {
+				t.Errorf("hello keyboard = %+v", kb)
+			}
+			return
+		}
+	}
+	t.Fatal("hello not found")
+}
+
 func countNonNil(als []*alert.Alert) int {
 	n := 0
 	for _, a := range als {

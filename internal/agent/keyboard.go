@@ -5,6 +5,8 @@ import (
 	"log"
 	"strings"
 
+	"github.com/eliau2005/statixagent/internal/alert"
+	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
@@ -46,6 +48,42 @@ func updateKeyboard() telegram.Keyboard {
 		{Text: "⬇️ Install now", Data: "update_confirm"},
 		{Text: "Later", Data: "dismiss"},
 	}}
+}
+
+// alertKeyboard maps an alert to one-tap context actions: the alert message
+// itself becomes the relevant view when a button is pressed.
+func alertKeyboard(key string) telegram.Keyboard {
+	prefix, _, _ := strings.Cut(key, ":")
+	var row []telegram.Button
+	switch prefix {
+	case "ssh-login", "ssh-brute", "keys":
+		row = []telegram.Button{
+			{Text: "👥 Sessions", Data: "ssh"},
+			{Text: "🚫 Fails", Data: "ssh_fails"},
+			{Text: "🕐 History", Data: "ssh_history"},
+		}
+	case "cpu":
+		row = []telegram.Button{{Text: "🖥 CPU", Data: "cpu"}, {Text: "📊 Status", Data: "status"}}
+	case "mem":
+		row = []telegram.Button{{Text: "🧠 Memory", Data: "mem"}, {Text: "📊 Status", Data: "status"}}
+	case "disk":
+		row = []telegram.Button{{Text: "💾 Disk", Data: "disk"}, {Text: "📊 Status", Data: "status"}}
+	case "temp":
+		row = []telegram.Button{{Text: "🌡 Temp", Data: "temp"}, {Text: "📊 Status", Data: "status"}}
+	case "battery", "power-loss", "power-restored":
+		row = []telegram.Button{{Text: "🔋 Power", Data: "battery"}, {Text: "📊 Status", Data: "status"}}
+	default:
+		row = []telegram.Button{{Text: "📊 Status", Data: "status"}}
+	}
+	return telegram.Keyboard{row}
+}
+
+// pushAlert renders and sends an alert with its context buttons.
+func (a *Agent) pushAlert(ctx context.Context, al alert.Alert) {
+	html := bot.AlertMsg(a.src.Hostname, al)
+	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, alertKeyboard(al.Key)); err != nil {
+		log.Printf("agent: alert push failed: %v", err)
+	}
 }
 
 // stashKB lets a handler attach a custom keyboard to its pending reply.
