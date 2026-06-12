@@ -105,6 +105,16 @@ fixtures; everything that touches the live OS sits behind an interface and `//go
 **All phases complete — the MVP is built.** Future work beyond the MVP lives in
 mvp.md §8 (out of scope) and would start with bot-triggered remediation actions.
 
+## Post-MVP fixes (v0.2.0)
+
+- [x] `/ssh` on utmp-less distros (Ubuntu 24.10+): fall back to systemd-logind via
+      `loginctl` (`internal/sshwatch/loginctl.go`), keeping utmp as the primary source.
+- [x] Telegram redesign — dashboard cards: aligned `<pre>` layouts with bars and
+      dividers for every command, paths inside pre so Telegram stops rendering mounts
+      like `/boot` as bot commands, junk/duplicate temperature sensors filtered,
+      zero-traffic interfaces hidden from `/status`, alerts as severity banners with
+      `<blockquote>`, grouped `/help`.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

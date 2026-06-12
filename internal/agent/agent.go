@@ -357,10 +357,22 @@ func (a *Agent) botLoop(ctx context.Context) {
 func (a *Agent) buildRouter() *bot.Router {
 	r := bot.NewRouter(a.cfg.Telegram.ChatID)
 	r.Handle("start", func(ctx context.Context, _ []string) string {
-		return "statix-agent is watching " + a.src.Hostname + ". Try /status or /help"
+		return "🖥 Watching <b>" + a.src.Hostname + "</b> — alerts arrive here automatically.\nTry /status for the dashboard, /help for everything."
 	})
 	r.Handle("help", func(ctx context.Context, _ []string) string {
-		return "Commands:\n/status /cpu /mem /disk /net /temp /battery\n/services /docker\n/ssh [history|fails]\n/update [confirm]"
+		return "🖥 <b>Metrics</b>\n" +
+			"/status — full dashboard\n" +
+			"/cpu /mem /disk /net — one metric\n" +
+			"/temp /battery — hardware\n\n" +
+			"🧩 <b>Workloads</b>\n" +
+			"/services — units, processes, ports\n" +
+			"/docker — containers\n\n" +
+			"🔐 <b>Security</b>\n" +
+			"/ssh — live sessions\n" +
+			"/ssh history — recent logins\n" +
+			"/ssh fails — failed attempts\n\n" +
+			"⚙️ <b>Maintenance</b>\n" +
+			"/update — check · /update confirm — install"
 	})
 	r.Handle("status", func(ctx context.Context, _ []string) string {
 		a.mu.Lock()

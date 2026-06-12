@@ -153,7 +153,7 @@ func TestBotCommandsThroughRouter(t *testing.T) {
 		t.Errorf("/status = %q", reply)
 	}
 	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/help"})
-	if !strings.Contains(reply, "/ssh [history|fails]") {
+	if !strings.Contains(reply, "/ssh history") || !strings.Contains(reply, "<b>Security</b>") {
 		t.Errorf("/help = %q", reply)
 	}
 	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
