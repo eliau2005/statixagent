@@ -17,7 +17,7 @@ import (
 var navViews = map[string]bool{
 	"status": true, "cpu": true, "mem": true, "disk": true, "net": true,
 	"temp": true, "battery": true, "services": true, "docker": true, "ssh": true,
-	"top": true, "digest": true,
+	"top": true, "digest": true, "ssl": true,
 }
 
 // navKeyboard renders the navigation rows; the active view is highlighted.
@@ -80,6 +80,8 @@ func alertKeyboard(key string) telegram.Keyboard {
 		row = []telegram.Button{{Text: "💾 Disk", Data: "disk"}, {Text: "📊 Status", Data: "status"}}
 	case "temp":
 		row = []telegram.Button{{Text: "🌡 Temp", Data: "temp"}, {Text: "📊 Status", Data: "status"}}
+	case "ssl":
+		row = []telegram.Button{{Text: "🔒 Certs", Data: "ssl"}, {Text: "📊 Status", Data: "status"}}
 	case "battery", "power-loss", "power-restored":
 		row = []telegram.Button{{Text: "🔋 Power", Data: "battery"}, {Text: "📊 Status", Data: "status"}}
 	default:

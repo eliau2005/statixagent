@@ -19,6 +19,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/collect"
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/dockermon"
+	"github.com/eliau2005/statixagent/internal/netcheck"
 	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
@@ -62,6 +63,10 @@ type Sources struct {
 	// TopProcs samples per-process CPU/memory over a short window (~1s);
 	// nil disables /top.
 	TopProcs func(ctx context.Context) ([]collect.Proc, error)
+
+	// CheckCerts reports certificate expiry for host[:port] endpoints;
+	// nil disables /ssl and the expiry watcher.
+	CheckCerts func(ctx context.Context, hosts []string) []netcheck.CertStatus
 
 	// ConfigPath is where watch-list changes are persisted; empty means
 	// in-memory only (replies say so).
@@ -125,6 +130,10 @@ type Agent struct {
 	// New and overridden only by tests.
 	digest     digestStats
 	digestPoll time.Duration
+
+	// sslInterval is the certificate re-check period, set once in New and
+	// overridden only by tests.
+	sslInterval time.Duration
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -151,6 +160,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		liveDuration: 30 * time.Second,
 		digest:       digestStats{since: time.Now()},
 		digestPoll:   30 * time.Second,
+		sslInterval:  12 * time.Hour,
 	}
 	a.router = a.buildRouter()
 	return a
@@ -184,6 +194,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	// Always run: the enabled flag is checked per tick so /settings can
 	// turn the digest on without a restart.
 	loop("digest", a.digestLoop)
+	if a.src.CheckCerts != nil {
+		loop("ssl", a.sslLoop)
+	}
 	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
 		log.Printf("agent: setMyCommands: %v", err)
 	}
@@ -478,7 +491,8 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/ssh — live sessions (disconnect buttons)\n" +
 			"/ssh history — recent logins\n" +
 			"/ssh fails — failed attempts\n" +
-			"/firewall — open/close SSH port 22\n\n" +
+			"/firewall — open/close SSH port 22\n" +
+			"/ssl — certificate expiry (/ssl add host)\n\n" +
 			"👁 <b>Watching</b>\n" +
 			"/watching — manage everything with buttons\n" +
 			"/services_scan /ports_scan — find candidates\n" +
@@ -565,6 +579,9 @@ func (a *Agent) buildRouter() *bot.Router {
 			return text
 		}
 	})
+	r.Handle("ssl", func(ctx context.Context, args []string) string {
+		return a.sslView(ctx, args)
+	})
 	// Direct aliases for alert action buttons (callback data is one token).
 	r.Handle("ssh_history", func(ctx context.Context, _ []string) string { return a.sshHistoryView() })
 	r.Handle("ssh_fails", func(ctx context.Context, _ []string) string { return a.sshFailsView() })
@@ -633,6 +650,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "watching", Description: "manage everything watched (buttons)"},
 	{Command: "settings", Description: "tune alert thresholds (buttons)"},
 	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
+	{Command: "ssl", Description: "certificate expiry for watched hosts"},
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},
