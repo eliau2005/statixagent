@@ -441,8 +441,28 @@ func (a *Agent) botLoop(ctx context.Context) {
 
 func (a *Agent) buildRouter() *bot.Router {
 	r := bot.NewRouter(a.cfg.Telegram.ChatID)
+	// /start is a new user's first message ever — it must explain what the
+	// bot does on its own and hand over the entry points, not point at docs.
 	r.Handle("start", func(ctx context.Context, _ []string) string {
-		return "🖥 Watching <b>" + a.src.Hostname + "</b> — alerts arrive here automatically.\nTry /status for the dashboard, /help for everything."
+		var b strings.Builder
+		fmt.Fprintf(&b, "👋 <b>%s</b> is under watch. This all happens automatically:\n\n", a.src.Hostname)
+		b.WriteString("• 🚨 alert when CPU, RAM or disk cross a threshold\n")
+		if a.cfg.Monitors.SSH {
+			b.WriteString("• 🔐 report every SSH login, brute-force bursts, key changes\n")
+		}
+		watch := a.watchCopy()
+		if n := len(watch.Services) + len(watch.Processes) + len(watch.Ports) + len(watch.HTTPChecks); n > 0 {
+			fmt.Fprintf(&b, "• 🧩 watch %d services, processes and ports\n", n)
+		}
+		if enabled, hour := a.digestCfg(); enabled {
+			fmt.Fprintf(&b, "• 📰 send a daily digest at %02d:00\n", hour)
+		}
+		b.WriteString("\nAlerts carry buttons for the next step. Start here:")
+		a.stashKB(telegram.Keyboard{
+			{{Text: "📊 Status", Data: "status"}, {Text: "👁 Watching", Data: "watching"}},
+			{{Text: "🔝 Top", Data: "top"}, {Text: "⚙️ Settings", Data: "settings"}},
+		})
+		return b.String()
 	})
 	r.Handle("help", func(ctx context.Context, _ []string) string {
 		return "🖥 <b>Metrics</b>\n" +
