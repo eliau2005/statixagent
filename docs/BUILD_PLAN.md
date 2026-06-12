@@ -164,6 +164,14 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       ranges), persisted to config and effective immediately in the alert engine.
       Nav keyboard gained a 👁 Watching / ⚙️ Settings row.
 
+## v0.9.0 — 🛡 firewall control (first remediation action)
+
+- [x] /firewall: open/close SSH port 22 via ufw with a mandatory confirmation screen
+      (MVP §7), state parsed from `ufw status` (open/closed/unmanaged/inactive),
+      opposite rule removed before applying so ufw rule ordering can't mask the
+      change. SSH alerts link to it (🛡 button). Unit sandbox carves out
+      -/etc/ufw and -/lib/ufw.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

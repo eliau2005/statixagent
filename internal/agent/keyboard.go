@@ -61,7 +61,7 @@ func alertKeyboard(key string) telegram.Keyboard {
 		row = []telegram.Button{
 			{Text: "👥 Sessions", Data: "ssh"},
 			{Text: "🚫 Fails", Data: "ssh_fails"},
-			{Text: "🕐 History", Data: "ssh_history"},
+			{Text: "🛡 Firewall", Data: "firewall"},
 		}
 	case "cpu":
 		row = []telegram.Button{{Text: "🖥 CPU", Data: "cpu"}, {Text: "📊 Status", Data: "status"}}
@@ -142,6 +142,15 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	case "live_stop":
 		a.send.AnswerCallback(ctx, cb.ID, "")
 		a.stopLive()
+		return
+	}
+	if text, kb, toast, handled := a.handleFirewallCallback(ctx, cb.Data); handled {
+		a.send.AnswerCallback(ctx, cb.ID, toast)
+		if text != "" {
+			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
+				log.Printf("agent: edit: %v", err)
+			}
+		}
 		return
 	}
 	if text, kb, toast, handled := a.handleSettingsCallback(ctx, cb.Data); handled {

@@ -59,6 +59,11 @@ func (a *Agent) registerWatchHandlers(r *bot.Router) {
 		a.stashKB(kb)
 		return text
 	})
+	r.Handle("firewall", func(ctx context.Context, _ []string) string {
+		text, kb := a.firewallView(ctx)
+		a.stashKB(kb)
+		return text
+	})
 	r.Handle("services_scan", a.servicesScan)
 	r.Handle("services_add", a.servicesAdd)
 	r.Handle("services_remove", a.servicesRemove)

@@ -90,8 +90,10 @@ func Install(ctx context.Context, o Options) (Result, error) {
 }
 
 // UnitFile renders the systemd unit for the given binary and config paths.
-// The binary's directory must stay writable through the ProtectSystem
-// sandbox: self-update swaps the executable in place (MVP §5).
+// Writable carve-outs through the ProtectSystem sandbox: the binary's
+// directory (self-update swaps the executable in place, MVP §5) and ufw's
+// rule directories (the /firewall command edits rules; "-" prefix skips
+// them when ufw is not installed).
 func UnitFile(execPath, cfgPath string) string {
 	return fmt.Sprintf(`[Unit]
 Description=StatixAgent VPS/laptop monitoring agent
@@ -107,7 +109,7 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectSystem=full
-ReadWritePaths=%s %s
+ReadWritePaths=%s %s -/etc/ufw -/lib/ufw
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

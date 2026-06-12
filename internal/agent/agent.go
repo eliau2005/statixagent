@@ -428,7 +428,8 @@ func (a *Agent) buildRouter() *bot.Router {
 			"🔐 <b>Security</b>\n" +
 			"/ssh — live sessions\n" +
 			"/ssh history — recent logins\n" +
-			"/ssh fails — failed attempts\n\n" +
+			"/ssh fails — failed attempts\n" +
+			"/firewall — open/close SSH port 22\n\n" +
 			"👁 <b>Watching</b>\n" +
 			"/watching — manage everything with buttons\n" +
 			"/services_scan /ports_scan — find candidates\n" +
@@ -562,6 +563,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "ssh", Description: "live SSH sessions"},
 	{Command: "watching", Description: "manage everything watched (buttons)"},
 	{Command: "settings", Description: "tune alert thresholds (buttons)"},
+	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},

@@ -693,7 +693,7 @@ func TestAlertActionButtons(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || len(kb[0]) != 3 || kb[0][0].Data != "ssh" || kb[0][1].Data != "ssh_fails" {
+	if kb == nil || len(kb[0]) != 3 || kb[0][0].Data != "ssh" || kb[0][1].Data != "ssh_fails" || kb[0][2].Data != "firewall" {
 		t.Fatalf("ssh alert keyboard = %+v", kb)
 	}
 
@@ -817,6 +817,128 @@ func TestCPUTrendSparkline(t *testing.T) {
 	reply, _, _ = b.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/cpu"})
 	if strings.Contains(reply, "trend") {
 		t.Errorf("no-history /cpu must omit trend: %q", reply)
+	}
+}
+
+func TestParseUFWStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		out  string
+		want sshPortState
+	}{
+		{"inactive", "Status: inactive\n", fwUnavailable},
+		{"empty", "", fwUnavailable},
+		{"open", "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere\n22/tcp (v6)                ALLOW       Anywhere (v6)\n", fwOpen},
+		{"closed", "Status: active\n\n22/tcp                     DENY        Anywhere\n", fwClosed},
+		{"deny wins over allow", "Status: active\n\n22/tcp  DENY  Anywhere\n22/tcp  ALLOW  Anywhere\n", fwClosed},
+		{"unmanaged", "Status: active\n\n443/tcp  ALLOW  Anywhere\n", fwUnmanaged},
+		{"bare port form", "Status: active\n\n22  ALLOW  Anywhere\n", fwOpen},
+	}
+	for _, tc := range cases {
+		if got := parseUFWStatus(tc.out); got != tc.want {
+			t.Errorf("%s: parseUFWStatus = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// ufwRunner fakes ufw: status flips according to the last rule applied.
+type ufwRunner struct {
+	state string // "open", "closed"
+	calls [][]string
+}
+
+func (u *ufwRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	if name != "ufw" {
+		return "", nil
+	}
+	u.calls = append(u.calls, args)
+	if args[0] == "status" {
+		if u.state == "closed" {
+			return "Status: active\n\n22/tcp  DENY  Anywhere\n", nil
+		}
+		return "Status: active\n\n22/tcp  ALLOW  Anywhere\n", nil
+	}
+	switch args[len(args)-2] { // "allow 22/tcp" or "deny 22/tcp"
+	case "allow":
+		u.state = "open"
+	case "deny":
+		u.state = "closed"
+	}
+	return "Rule updated", nil
+}
+
+func TestFirewallFlow(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ufw := &ufwRunner{state: "open"}
+	a.src.Runner = ufw
+	ctx := context.Background()
+
+	// /firewall shows the open state with a close button.
+	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/firewall"})
+	if !strings.Contains(reply, "🔓 <b>open</b>") {
+		t.Fatalf("/firewall = %q", reply)
+	}
+	a.reply(ctx, cmd, reply)
+	send.mu.Lock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "fw_close_ask" {
+		t.Fatalf("firewall keyboard = %+v", kb)
+	}
+
+	// The ask step warns and does NOT touch ufw.
+	rulesBefore := len(ufw.calls)
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 8, Data: "fw_close_ask"})
+	if len(ufw.calls) != rulesBefore {
+		t.Fatal("confirmation screen must not run ufw commands")
+	}
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "new SSH connections will be refused") || last.kb[0][0].Data != "fw_close" {
+		t.Fatalf("ask view = %q kb=%+v", last.html, last.kb)
+	}
+
+	// Confirming closes: delete allow, then deny, then re-render as closed.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 8, Data: "fw_close"})
+	if ufw.state != "closed" {
+		t.Fatalf("ufw state = %s", ufw.state)
+	}
+	var applied [][]string
+	for _, c := range ufw.calls {
+		if c[0] != "status" {
+			applied = append(applied, c)
+		}
+	}
+	if len(applied) != 2 || applied[0][1] != "delete" || applied[1][0] != "deny" {
+		t.Fatalf("ufw calls = %v, want delete-allow then deny", applied)
+	}
+	if last := send.lastEdit(); !strings.Contains(last.html, "🔒 <b>closed</b>") {
+		t.Errorf("after close view = %q", last.html)
+	}
+
+	// Reopen via the same two-step flow.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c3", ChatID: 42, MessageID: 8, Data: "fw_open_ask"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 8, Data: "fw_open"})
+	if ufw.state != "open" {
+		t.Fatalf("ufw state after reopen = %s", ufw.state)
+	}
+}
+
+func TestFirewallInactiveHasNoActions(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.Runner = scanRunner{} // returns non-ufw output → parsed as unavailable
+	ctx := context.Background()
+	text, kb := a.firewallView(ctx)
+	if !strings.Contains(text, "inactive") && !strings.Contains(text, "not available") {
+		t.Errorf("inactive view = %q", text)
+	}
+	for _, row := range kb {
+		for _, b := range row {
+			if strings.HasPrefix(b.Data, "fw_") {
+				t.Errorf("inactive firewall must offer no actions: %+v", kb)
+			}
+		}
 	}
 }
 
