@@ -149,6 +149,13 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
       fallback); footer row links Watching ↔ scan views. All edits in place, all
       changes persisted to config; typed commands still work.
 
+## v0.7.0 — alert action buttons (UX loop, iteration 4)
+
+- [x] Every push alert carries one-tap context actions: SSH/brute/keys alerts get
+      👥 Sessions · 🚫 Fails · 🕐 History; threshold alerts get their metric view +
+      Status. The alert message morphs into the chosen view in place. Startup hello
+      carries 📊 Status / 👁 Watching quick buttons.
+
 ## Out of scope (per MVP §8)
 
 Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.

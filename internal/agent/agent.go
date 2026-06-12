@@ -156,7 +156,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
 		log.Printf("agent: setMyCommands: %v", err)
 	}
-	a.push(ctx, fmt.Sprintf("✅ <b>statix-agent started</b> on %s", a.src.Hostname))
+	hello := fmt.Sprintf("✅ <b>statix-agent started</b> on %s", a.src.Hostname)
+	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, hello, telegram.Keyboard{{
+		{Text: "📊 Status", Data: "status"},
+		{Text: "👁 Watching", Data: "watching"},
+	}}); err != nil {
+		log.Printf("agent: hello: %v", err)
+	}
 	wg.Wait()
 	return ctx.Err()
 }
@@ -235,7 +241,7 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 	}
 	for _, al := range alerts {
 		if al != nil {
-			a.push(ctx, bot.AlertMsg(a.src.Hostname, *al))
+			a.pushAlert(ctx, *al)
 		}
 	}
 }
@@ -331,14 +337,14 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 		// Every login alerts in real time (MVP §3); key by user+ip with a
 		// tiny cooldown so a burst of multiplexed connections sends once.
 		if al := a.engine.Event("ssh-login:"+e.User+"@"+e.IP, title, body, sev, now, 10*time.Second); al != nil {
-			a.push(ctx, bot.AlertMsg(a.src.Hostname, *al))
+			a.pushAlert(ctx, *al)
 		}
 	case sshwatch.EventFailed, sshwatch.EventInvalidUser:
 		if a.brute.Record(e.IP, now) {
 			n := a.brute.Count(e.IP, now)
 			body := fmt.Sprintf("%d failed attempts from %s in 2m (last user: %s)", n, e.IP, e.User)
 			if al := a.engine.Event("ssh-brute:"+e.IP, "Brute-force attack", body, alert.Critical, now, time.Minute); al != nil {
-				a.push(ctx, bot.AlertMsg(a.src.Hostname, *al))
+				a.pushAlert(ctx, *al)
 			}
 		}
 	}
@@ -356,7 +362,7 @@ func (a *Agent) keysLoop(ctx context.Context) {
 			for _, ch := range a.keys.Poll() {
 				al := a.engine.Event("keys:"+ch.Path, "authorized_keys "+ch.Kind, ch.Path, alert.Critical, time.Now(), time.Minute)
 				if al != nil {
-					a.push(ctx, bot.AlertMsg(a.src.Hostname, *al))
+					a.pushAlert(ctx, *al)
 				}
 			}
 		}
@@ -460,26 +466,16 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		switch sub {
 		case "history":
-			return bot.SSHEvents("SSH history", a.hist.Recent(20, nil))
+			return a.sshHistoryView()
 		case "fails":
-			return bot.SSHEvents("Failed attempts", a.hist.Recent(20, func(e sshwatch.Event) bool {
-				return e.Kind == sshwatch.EventFailed || e.Kind == sshwatch.EventInvalidUser
-			}))
+			return a.sshFailsView()
 		default:
-			if a.src.Sessions == nil {
-				return "Session listing unavailable."
-			}
-			sessions, err := a.src.Sessions()
-			if err != nil {
-				return "Could not read sessions: " + err.Error()
-			}
-			geo := map[string]sshwatch.GeoInfo{}
-			for _, s := range sessions {
-				geo[s.Host] = a.geo.Lookup(ctx, s.Host)
-			}
-			return bot.Sessions(sessions, geo, time.Now())
+			return a.sshSessionsView(ctx)
 		}
 	})
+	// Direct aliases for alert action buttons (callback data is one token).
+	r.Handle("ssh_history", func(ctx context.Context, _ []string) string { return a.sshHistoryView() })
+	r.Handle("ssh_fails", func(ctx context.Context, _ []string) string { return a.sshFailsView() })
 	applyUpdate := func(ctx context.Context) string {
 		if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
 			return "Self-update is not configured in this build."
@@ -547,6 +543,31 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "update_confirm", Description: "install the update"},
 	{Command: "clear_chat", Description: "delete recent messages"},
 	{Command: "help", Description: "all commands"},
+}
+
+func (a *Agent) sshHistoryView() string {
+	return bot.SSHEvents("SSH history", a.hist.Recent(20, nil))
+}
+
+func (a *Agent) sshFailsView() string {
+	return bot.SSHEvents("Failed attempts", a.hist.Recent(20, func(e sshwatch.Event) bool {
+		return e.Kind == sshwatch.EventFailed || e.Kind == sshwatch.EventInvalidUser
+	}))
+}
+
+func (a *Agent) sshSessionsView(ctx context.Context) string {
+	if a.src.Sessions == nil {
+		return "Session listing unavailable."
+	}
+	sessions, err := a.src.Sessions()
+	if err != nil {
+		return "Could not read sessions: " + err.Error()
+	}
+	geo := map[string]sshwatch.GeoInfo{}
+	for _, s := range sessions {
+		geo[s.Host] = a.geo.Lookup(ctx, s.Host)
+	}
+	return bot.Sessions(sessions, geo, time.Now())
 }
 
 func (a *Agent) snapHandler(f func(collect.Snapshot) string) bot.Handler {
