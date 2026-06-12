@@ -69,24 +69,50 @@ func (a *Agent) digestView(reset bool) string {
 	return bot.Digest(a.src.Hostname, d, snap, now)
 }
 
-// nextDigestTime returns the next local occurrence of hour:00 after now.
-func nextDigestTime(now time.Time, hour int) time.Time {
-	next := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
-	if !next.After(now) {
-		next = next.AddDate(0, 0, 1)
-	}
-	return next
+// digestCfg returns the current digest settings under the lock; they are
+// mutable at runtime via the /settings buttons.
+func (a *Agent) digestCfg() (enabled bool, hour int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.cfg.Digest.Enabled, a.cfg.Digest.Hour
 }
 
-// digestLoop sends the summary at the configured hour, every day.
+// dayStamp identifies a calendar day for once-per-day bookkeeping.
+func dayStamp(t time.Time) int { return t.Year()*1000 + t.YearDay() }
+
+// digestDue reports whether the daily digest should fire at now: the local
+// hour matches and nothing was sent today. It returns the updated day stamp.
+func digestDue(now time.Time, hour, lastDay int) (int, bool) {
+	if day := dayStamp(now); now.Hour() == hour && day != lastDay {
+		return day, true
+	}
+	return lastDay, false
+}
+
+// digestLoop polls instead of sleeping until a precomputed instant so that
+// /settings changes to the hour or the on/off toggle take effect without a
+// restart. Starting mid-slot does not replay today's already-passed hour.
 func (a *Agent) digestLoop(ctx context.Context) {
+	lastDay := 0
+	now := time.Now()
+	if _, hour := a.digestCfg(); now.Hour() >= hour {
+		lastDay = dayStamp(now)
+	}
+	tick := time.NewTicker(a.digestPoll)
+	defer tick.Stop()
 	for {
-		wait := time.Until(nextDigestTime(time.Now(), a.cfg.Digest.Hour))
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(wait):
-			a.push(ctx, a.digestView(true))
+		case <-tick.C:
+			enabled, hour := a.digestCfg()
+			if !enabled {
+				continue
+			}
+			var due bool
+			if lastDay, due = digestDue(time.Now(), hour, lastDay); due {
+				a.push(ctx, a.digestView(true))
+			}
 		}
 	}
 }

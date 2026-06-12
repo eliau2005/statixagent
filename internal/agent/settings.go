@@ -54,6 +54,17 @@ func (a *Agent) settingsView() (string, telegram.Keyboard) {
 		})
 	}
 	b.WriteString("</pre>\nAlerts fire when a value crosses its threshold\n(battery: when below).")
+	enabled, hour := a.digestCfg()
+	state := "off"
+	if enabled {
+		state = "on"
+	}
+	fmt.Fprintf(&b, "\n\n📰 Daily digest <b>%s</b> at %02d:00 — tap the middle\nbutton to toggle, ➖/➕ to shift the hour.", state, hour)
+	kb = append(kb, []telegram.Button{
+		{Text: "➖", Data: "dg:hour:-1"},
+		{Text: fmt.Sprintf("📰 %s · %02d:00", state, hour), Data: "dg:toggle"},
+		{Text: "➕", Data: "dg:hour:+1"},
+	})
 	kb = append(kb, []telegram.Button{{Text: "⬅️ Status", Data: "status"}, {Text: "👁 Watching", Data: "watching"}})
 	return b.String(), kb
 }
@@ -68,6 +79,32 @@ func (a *Agent) handleSettingsCallback(_ context.Context, data string) (string, 
 
 	case data == "noop":
 		return "", nil, "", true
+
+	case data == "dg:toggle":
+		a.mu.Lock()
+		a.cfg.Digest.Enabled = !a.cfg.Digest.Enabled
+		enabled := a.cfg.Digest.Enabled
+		cfg := a.cfg
+		a.mu.Unlock()
+		state := "off"
+		if enabled {
+			state = "on"
+		}
+		text, kb := a.settingsView()
+		return text, kb, "Digest " + state + a.persist(cfg), true
+
+	case strings.HasPrefix(data, "dg:hour:"):
+		delta, err := strconv.Atoi(strings.TrimPrefix(data, "dg:hour:"))
+		if err != nil {
+			return "", nil, "bad action", true
+		}
+		a.mu.Lock()
+		hour := ((a.cfg.Digest.Hour+delta)%24 + 24) % 24
+		a.cfg.Digest.Hour = hour
+		cfg := a.cfg
+		a.mu.Unlock()
+		text, kb := a.settingsView()
+		return text, kb, fmt.Sprintf("Digest at %02d:00%s", hour, a.persist(cfg)), true
 
 	case strings.HasPrefix(data, "th:"):
 		parts := strings.Split(data, ":")

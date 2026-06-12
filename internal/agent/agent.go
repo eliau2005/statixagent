@@ -121,8 +121,10 @@ type Agent struct {
 	trend []trendPoint
 
 	// digest accumulates the day's activity for the daily summary.
-	// Guarded by mu.
-	digest digestStats
+	// Guarded by mu. digestPoll is the loop's check interval, set once in
+	// New and overridden only by tests.
+	digest     digestStats
+	digestPoll time.Duration
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -148,6 +150,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		liveInterval: 3 * time.Second,
 		liveDuration: 30 * time.Second,
 		digest:       digestStats{since: time.Now()},
+		digestPoll:   30 * time.Second,
 	}
 	a.router = a.buildRouter()
 	return a
@@ -178,9 +181,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.updates != nil {
 		loop("bot", a.botLoop)
 	}
-	if a.cfg.Digest.Enabled {
-		loop("digest", a.digestLoop)
-	}
+	// Always run: the enabled flag is checked per tick so /settings can
+	// turn the digest on without a restart.
+	loop("digest", a.digestLoop)
 	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
 		log.Printf("agent: setMyCommands: %v", err)
 	}
