@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
@@ -99,23 +100,51 @@ func (a *Agent) handleFirewallCallback(ctx context.Context, data string) (string
 			}, "", true
 
 	case "fw_close":
-		toast := a.setSSHPort(ctx, false)
-		text, kb := a.firewallView(ctx)
-		return text, kb, toast, true
+		return a.applyAndRender(ctx, false)
 
 	case "fw_open":
-		toast := a.setSSHPort(ctx, true)
-		text, kb := a.firewallView(ctx)
-		return text, kb, toast, true
+		return a.applyAndRender(ctx, true)
 	}
 	return "", nil, "", false
 }
 
+// applyAndRender runs the rule change and re-renders the firewall view. On
+// failure it prepends a persistent error banner (with the raw ufw output)
+// so the cause stays visible instead of vanishing as a toast.
+func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram.Keyboard, string, bool) {
+	okMsg, errDetail := a.setSSHPort(ctx, open)
+	text, kb := a.firewallView(ctx)
+	if errDetail != "" {
+		banner := "❌ <b>Change failed</b>\n<pre>" + esc(errDetail) + "</pre>\n"
+		banner += sandboxHint(errDetail) + "\n"
+		return banner + text, kb, "failed — see message", true
+	}
+	return text, kb, okMsg, true
+}
+
+// sandboxHint detects the read-only-filesystem failure (the service's
+// systemd hardening blocking ufw's rule writes) and returns the one-time
+// fix to run on the server. Empty for unrelated errors.
+func sandboxHint(errDetail string) string {
+	low := strings.ToLower(errDetail)
+	if !strings.Contains(low, "not writeable") && !strings.Contains(low, "read-only") &&
+		!strings.Contains(low, "permission denied") {
+		return ""
+	}
+	return "The agent's sandbox is blocking ufw. Run this once on the server, then retry:\n" +
+		"<pre>sudo mkdir -p /etc/systemd/system/statix-agent.service.d\n" +
+		"printf '[Service]\\nReadWritePaths=-/etc/ufw -/lib/ufw\\n' | \\\n" +
+		"  sudo tee /etc/systemd/system/statix-agent.service.d/ufw.conf\n" +
+		"sudo systemctl daemon-reload\n" +
+		"sudo systemctl restart statix-agent</pre>"
+}
+
 // setSSHPort applies the rule change: the opposite rule is removed first so
-// ufw's first-match ordering cannot mask the new rule.
-func (a *Agent) setSSHPort(ctx context.Context, open bool) string {
+// ufw's first-match ordering cannot mask the new rule. Returns a success
+// toast and, on failure, a detail string (raw command output) for display.
+func (a *Agent) setSSHPort(ctx context.Context, open bool) (okMsg, errDetail string) {
 	if a.src.Runner == nil {
-		return "unavailable"
+		return "", "firewall control unavailable in this build"
 	}
 	oldRule, newRule := "deny", "allow"
 	if !open {
@@ -124,26 +153,24 @@ func (a *Agent) setSSHPort(ctx context.Context, open bool) string {
 	// Delete may fail when no such rule exists — that is fine.
 	a.src.Runner.Run(ctx, "ufw", "--force", "delete", oldRule, sshPort)
 	if out, err := a.src.Runner.Run(ctx, "ufw", newRule, sshPort); err != nil {
-		return "ufw failed: " + firstLine(out, err.Error())
+		return "", fmt.Sprintf("ufw %s %s\n%s", newRule, sshPort, detail(out, err))
 	}
 	// Re-apply the ruleset: rule edits alone do not reliably reach the
 	// live iptables state on all setups (observed in the field).
 	if out, err := a.src.Runner.Run(ctx, "ufw", "reload"); err != nil {
-		return "rule saved but reload failed: " + firstLine(out, err.Error())
+		return "", "ufw reload\n" + detail(out, err)
 	}
 	if open {
-		return "🔓 port 22 opened"
+		return "🔓 port 22 opened", ""
 	}
-	return "🔒 port 22 closed"
+	return "🔒 port 22 closed", ""
 }
 
-func firstLine(s, fallback string) string {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return fallback
+// detail combines command output and error for a readable failure message.
+func detail(out string, err error) string {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return err.Error()
 	}
-	if i := strings.IndexByte(s, '\n'); i > 0 {
-		return s[:i]
-	}
-	return s
+	return out
 }
