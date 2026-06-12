@@ -16,12 +16,21 @@ import (
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
+type edit struct {
+	messageID int64
+	html      string
+	kb        telegram.Keyboard
+}
+
 type fakeSender struct {
-	mu      sync.Mutex
-	sent    []string
-	deleted []int64
-	cmds    []telegram.BotCommand
-	nextID  int64
+	mu        sync.Mutex
+	sent      []string
+	keyboards []telegram.Keyboard
+	edits     []edit
+	answered  []string
+	deleted   []int64
+	cmds      []telegram.BotCommand
+	nextID    int64
 }
 
 func (f *fakeSender) SendMessage(ctx context.Context, chatID int64, html string) error {
@@ -29,12 +38,31 @@ func (f *fakeSender) SendMessage(ctx context.Context, chatID int64, html string)
 	return err
 }
 
-func (f *fakeSender) SendMessageID(_ context.Context, _ int64, html string) (int64, error) {
+func (f *fakeSender) SendMessageID(ctx context.Context, chatID int64, html string) (int64, error) {
+	return f.SendMessageKB(ctx, chatID, html, nil)
+}
+
+func (f *fakeSender) SendMessageKB(_ context.Context, _ int64, html string, kb telegram.Keyboard) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.sent = append(f.sent, html)
+	f.keyboards = append(f.keyboards, kb)
 	f.nextID++
 	return f.nextID + 1000, nil
+}
+
+func (f *fakeSender) EditMessageKB(_ context.Context, _ int64, messageID int64, html string, kb telegram.Keyboard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.edits = append(f.edits, edit{messageID, html, kb})
+	return nil
+}
+
+func (f *fakeSender) AnswerCallback(_ context.Context, callbackID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.answered = append(f.answered, callbackID+":"+text)
+	return nil
 }
 
 func (f *fakeSender) DeleteMessages(_ context.Context, _ int64, ids []int64) error {
@@ -172,23 +200,23 @@ func TestBotCommandsThroughRouter(t *testing.T) {
 	// Seed a snapshot the handlers can read.
 	a.sampleOnce(ctx)
 
-	reply, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/status"})
+	reply, _, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/status"})
 	if !ok || !strings.Contains(reply, "testhost") {
 		t.Errorf("/status = %q", reply)
 	}
-	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/help"})
+	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/help"})
 	if !strings.Contains(reply, "/ssh history") || !strings.Contains(reply, "<b>Security</b>") {
 		t.Errorf("/help = %q", reply)
 	}
-	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
+	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
 	if !strings.Contains(reply, "not configured") {
 		t.Errorf("/update without updater = %q", reply)
 	}
-	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/ssh history"})
+	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/ssh history"})
 	if !strings.Contains(reply, "Nothing recorded") {
 		t.Errorf("/ssh history empty = %q", reply)
 	}
-	if _, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 666, Text: "/status"}); ok {
+	if _, _, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 666, Text: "/status"}); ok {
 		t.Error("foreign chat must be ignored")
 	}
 }
@@ -201,7 +229,7 @@ func TestUpdateCommandFlow(t *testing.T) {
 	a.src.UpdateApply = func(ctx context.Context) error { applied = true; return nil }
 	ctx := context.Background()
 
-	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
+	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
 	if !strings.Contains(reply, "v1.2.0") || !strings.Contains(reply, "/update_confirm") {
 		t.Errorf("/update = %q", reply)
 	}
@@ -209,7 +237,7 @@ func TestUpdateCommandFlow(t *testing.T) {
 		t.Fatal("/update alone must not apply (MVP §7 confirmation rule)")
 	}
 	// The legacy "/update confirm" form keeps working for old habits.
-	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update confirm"})
+	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update confirm"})
 	if !applied || !strings.Contains(reply, "restart") {
 		t.Errorf("confirm: applied=%v reply=%q", applied, reply)
 	}
@@ -259,7 +287,7 @@ func TestWatchManagement(t *testing.T) {
 	a.src.ListListeners = func() ([]int, error) { return []int{22, 80, 22}, nil }
 	ctx := context.Background()
 	dispatch := func(text string) string {
-		reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: text})
+		reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: text})
 		return reply
 	}
 
@@ -331,7 +359,7 @@ func TestWatchWithoutConfigPath(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
-	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/procs_add nginx"})
+	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/procs_add nginx"})
 	if !strings.Contains(reply, "not persisted") {
 		t.Errorf("no config path must warn: %q", reply)
 	}
@@ -348,14 +376,14 @@ func TestUpdateConfirmCommand(t *testing.T) {
 	a.src.UpdateApply = func(ctx context.Context) error { applied = true; return nil }
 	ctx := context.Background()
 
-	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
+	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
 	if !strings.Contains(reply, "/update_confirm") {
 		t.Errorf("/update must advertise the tappable command: %q", reply)
 	}
 	if applied {
 		t.Fatal("/update must not apply")
 	}
-	reply, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update_confirm"})
+	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update_confirm"})
 	if !applied || !strings.Contains(reply, "restart") {
 		t.Errorf("update_confirm: applied=%v reply=%q", applied, reply)
 	}
@@ -365,7 +393,7 @@ func TestClearChat(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
-	reply, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/clear_chat"})
+	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/clear_chat"})
 	if reply != "🧹 cleared" {
 		t.Errorf("reply = %q", reply)
 	}
@@ -376,6 +404,118 @@ func TestClearChat(t *testing.T) {
 	}
 	if send.deleted[0] != 1001 { // anchor message id from the fake
 		t.Errorf("sweep must start at the anchor id, got %d", send.deleted[0])
+	}
+}
+
+func TestReplyAttachesNavKeyboard(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	a.sampleOnce(ctx)
+
+	reply, cmd, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/status"})
+	if !ok {
+		t.Fatal("dispatch failed")
+	}
+	a.reply(ctx, cmd, reply)
+
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	if kb == nil {
+		t.Fatal("/status reply must carry the nav keyboard")
+	}
+	var labels []string
+	for _, row := range kb {
+		for _, b := range row {
+			labels = append(labels, b.Text+"="+b.Data)
+		}
+	}
+	joined := strings.Join(labels, " ")
+	for _, want := range []string{"• 📊 Status=status", "🖥 CPU=cpu", "🔐 SSH=ssh", "🔄 Refresh=status"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("keyboard missing %q in %s", want, joined)
+		}
+	}
+}
+
+func TestReplyPlainForNonViews(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.reply(context.Background(), "help", "HELP TEXT")
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if send.keyboards[len(send.keyboards)-1] != nil {
+		t.Error("non-view replies must not carry the nav keyboard")
+	}
+}
+
+func TestCallbackNavigationEditsInPlace(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	a.sampleOnce(ctx)
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb1", ChatID: 42, MessageID: 555, Data: "cpu"})
+
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.answered) != 1 || !strings.HasPrefix(send.answered[0], "cb1:") {
+		t.Fatalf("callback must be answered: %v", send.answered)
+	}
+	if len(send.edits) != 1 || send.edits[0].messageID != 555 {
+		t.Fatalf("edits = %+v", send.edits)
+	}
+	if !strings.Contains(send.edits[0].html, "<b>CPU</b>") {
+		t.Errorf("edited content = %q", send.edits[0].html)
+	}
+	if send.edits[0].kb == nil {
+		t.Error("nav view edit must keep the keyboard")
+	}
+	if len(send.sent) != 0 {
+		t.Errorf("navigation must edit, not send new messages: %v", send.sent)
+	}
+}
+
+func TestCallbackForeignChatIgnored(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "x", ChatID: 666, MessageID: 1, Data: "status"})
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.edits) != 0 || len(send.answered) != 0 {
+		t.Error("foreign-chat callbacks must be fully ignored")
+	}
+}
+
+func TestUpdateOfferKeyboardAndInstallButton(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	applied := false
+	a.src.UpdateCheck = func(ctx context.Context) (string, bool, error) { return "v9.0.0", true, nil }
+	a.src.UpdateApply = func(ctx context.Context) error { applied = true; return nil }
+	ctx := context.Background()
+
+	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
+	a.reply(ctx, cmd, reply)
+	send.mu.Lock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "update_confirm" {
+		t.Fatalf("update offer keyboard = %+v", kb)
+	}
+
+	// Pressing Install runs the update; pressing Later dismisses.
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: "update_confirm"})
+	if !applied {
+		t.Error("install button must apply the update")
+	}
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb3", ChatID: 42, MessageID: 9, Data: "dismiss"})
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	last := send.edits[len(send.edits)-1]
+	if !strings.Contains(last.html, "postponed") {
+		t.Errorf("dismiss edit = %q", last.html)
 	}
 }
 

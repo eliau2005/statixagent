@@ -30,22 +30,35 @@ func (r *Router) Handle(cmd string, h Handler) {
 	r.handlers[cmd] = h
 }
 
-// Dispatch processes one update. It returns the reply and true, or
-// ("", false) when the update should be ignored (wrong chat, not a
-// command). Unknown commands from the allowed chat get a help pointer.
-func (r *Router) Dispatch(ctx context.Context, u telegram.Update) (string, bool) {
+// Dispatch processes one text update. It returns the reply, the resolved
+// command name (for keyboard selection), and true; or ("", "", false) when
+// the update should be ignored (wrong chat, not a command). Unknown
+// commands from the allowed chat get a help pointer.
+func (r *Router) Dispatch(ctx context.Context, u telegram.Update) (string, string, bool) {
 	if u.ChatID != r.allowedChat || !strings.HasPrefix(u.Text, "/") {
-		return "", false
+		return "", "", false
 	}
 	fields := strings.Fields(u.Text)
 	cmd := strings.TrimPrefix(fields[0], "/")
 	// "/status@my_bot" form used in groups
 	cmd, _, _ = strings.Cut(cmd, "@")
-	h, ok := r.handlers[strings.ToLower(cmd)]
+	cmd = strings.ToLower(cmd)
+	reply, ok := r.Invoke(ctx, cmd, fields[1:])
 	if !ok {
-		return "Unknown command. Try /help", true
+		return "Unknown command. Try /help", cmd, true
 	}
-	return h(ctx, fields[1:]), true
+	return reply, cmd, true
+}
+
+// Invoke runs a command handler directly (used for keyboard callbacks,
+// which carry the command in callback data). It does NOT check the chat
+// allowlist — the caller must.
+func (r *Router) Invoke(ctx context.Context, cmd string, args []string) (string, bool) {
+	h, ok := r.handlers[cmd]
+	if !ok {
+		return "", false
+	}
+	return h(ctx, args), true
 }
 
 // Commands returns the registered command names, for /help.
