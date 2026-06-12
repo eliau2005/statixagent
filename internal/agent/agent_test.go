@@ -596,6 +596,87 @@ func TestLiveModeStopButton(t *testing.T) {
 	}, "stop to restore the normal view")
 }
 
+func TestWatchButtons(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	a.src.ConfigPath = cfgPath
+	a.src.Runner = scanRunner{listOutput: "nginx.service loaded active running Web server\n"}
+	a.src.ListListeners = func() ([]int, error) { return []int{443}, nil }
+	ctx := context.Background()
+
+	// Typed scan carries ➕ buttons via the stashed keyboard.
+	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/services_scan"})
+	a.reply(ctx, cmd, reply)
+	send.mu.Lock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	send.mu.Unlock()
+	if kb == nil || kb[0][0].Data != "sa:1" || !strings.Contains(kb[0][0].Text, "➕") {
+		t.Fatalf("scan keyboard = %+v", kb)
+	}
+
+	// Pressing ➕ adds the unit, persists, and re-renders the scan.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: "sa:1"})
+	saved, err := config.Load(cfgPath)
+	if err != nil || len(saved.Watch.Services) != 1 || saved.Watch.Services[0] != "nginx.service" {
+		t.Fatalf("after sa:1 saved=%+v err=%v", saved.Watch, err)
+	}
+	if last := send.lastEdit(); !strings.Contains(last.html, "already watched") {
+		t.Errorf("re-rendered scan should show empty candidates: %q", last.html)
+	}
+
+	// Port add button.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 5, Data: "pa:443"})
+	saved, _ = config.Load(cfgPath)
+	if len(saved.Watch.Ports) != 1 || saved.Watch.Ports[0].Port != 443 {
+		t.Fatalf("after pa:443 ports=%+v", saved.Watch.Ports)
+	}
+
+	// Watching view lists both with 🗑 buttons.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c3", ChatID: 42, MessageID: 5, Data: "watching"})
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "nginx.service") || !strings.Contains(last.html, "port 443") {
+		t.Errorf("watching view = %q", last.html)
+	}
+	flat := ""
+	for _, row := range last.kb {
+		for _, b := range row {
+			flat += b.Data + " "
+		}
+	}
+	if !strings.Contains(flat, "sr:nginx.service") || !strings.Contains(flat, "pr:443") {
+		t.Errorf("watching keyboard = %s", flat)
+	}
+
+	// 🗑 removes and persists.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 5, Data: "sr:nginx.service"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c5", ChatID: 42, MessageID: 5, Data: "pr:443"})
+	saved, _ = config.Load(cfgPath)
+	if len(saved.Watch.Services) != 0 || len(saved.Watch.Ports) != 0 {
+		t.Errorf("after removals: %+v", saved.Watch)
+	}
+	if last := send.lastEdit(); !strings.Contains(last.html, "Nothing yet") {
+		t.Errorf("empty watching view = %q", last.html)
+	}
+}
+
+func TestWatchingCommand(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	reply, cmd, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/watching"})
+	if !ok || !strings.Contains(reply, "Nothing yet") {
+		t.Fatalf("/watching = %q", reply)
+	}
+	a.reply(ctx, cmd, reply)
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	kb := send.keyboards[len(send.keyboards)-1]
+	if kb == nil || kb[len(kb)-1][1].Data != "scan_svc" {
+		t.Errorf("watching keyboard = %+v", kb)
+	}
+}
+
 func countNonNil(als []*alert.Alert) int {
 	n := 0
 	for _, a := range als {

@@ -48,12 +48,29 @@ func updateKeyboard() telegram.Keyboard {
 	}}
 }
 
-// reply sends a command reply, attaching the navigation keyboard to view
-// commands and the install button to update offers.
+// stashKB lets a handler attach a custom keyboard to its pending reply.
+func (a *Agent) stashKB(kb telegram.Keyboard) {
+	a.mu.Lock()
+	a.pendingKB = kb
+	a.mu.Unlock()
+}
+
+func (a *Agent) popKB() telegram.Keyboard {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	kb := a.pendingKB
+	a.pendingKB = nil
+	return kb
+}
+
+// reply sends a command reply, attaching the handler's stashed keyboard,
+// the navigation keyboard for view commands, or the install button for
+// update offers.
 func (a *Agent) reply(ctx context.Context, cmd, html string) {
 	chatID := a.cfg.Telegram.ChatID
-	var kb telegram.Keyboard
+	kb := a.popKB()
 	switch {
+	case kb != nil:
 	case navViews[cmd]:
 		kb = navKeyboard(cmd)
 	case cmd == "update" && strings.Contains(html, "/update_confirm"):
@@ -86,6 +103,15 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	case "live_stop":
 		a.send.AnswerCallback(ctx, cb.ID, "")
 		a.stopLive()
+		return
+	}
+	if text, kb, toast, handled := a.handleWatchCallback(ctx, cb.Data); handled {
+		a.send.AnswerCallback(ctx, cb.ID, toast)
+		if text != "" {
+			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
+				log.Printf("agent: edit: %v", err)
+			}
+		}
 		return
 	}
 	reply, ok := a.router.Invoke(ctx, cb.Data, nil)
