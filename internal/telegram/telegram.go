@@ -73,6 +73,14 @@ func (c *Client) call(ctx context.Context, method string, payload, result any) e
 // SendMessage sends an HTML-formatted message to a chat. Messages longer
 // than Telegram's 4096-char limit are split on line boundaries.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) error {
+	_, err := c.SendMessageID(ctx, chatID, html)
+	return err
+}
+
+// SendMessageID sends like SendMessage and returns the message_id of the
+// last chunk, used as the anchor for /clear_chat's deletion sweep.
+func (c *Client) SendMessageID(ctx context.Context, chatID int64, html string) (int64, error) {
+	var lastID int64
 	for _, chunk := range splitMessage(html, 4096) {
 		payload := map[string]any{
 			"chat_id":                  chatID,
@@ -80,11 +88,43 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) err
 			"parse_mode":               "HTML",
 			"disable_web_page_preview": true,
 		}
-		if err := c.call(ctx, "sendMessage", payload, nil); err != nil {
+		var sent struct {
+			MessageID int64 `json:"message_id"`
+		}
+		if err := c.call(ctx, "sendMessage", payload, &sent); err != nil {
+			return 0, err
+		}
+		lastID = sent.MessageID
+	}
+	return lastID, nil
+}
+
+// DeleteMessages deletes up to 48h-old messages by ID; IDs that cannot be
+// deleted are skipped by the API. Batches of 100 per call (API limit).
+func (c *Client) DeleteMessages(ctx context.Context, chatID int64, ids []int64) error {
+	for len(ids) > 0 {
+		n := len(ids)
+		if n > 100 {
+			n = 100
+		}
+		payload := map[string]any{"chat_id": chatID, "message_ids": ids[:n]}
+		if err := c.call(ctx, "deleteMessages", payload, nil); err != nil {
 			return err
 		}
+		ids = ids[n:]
 	}
 	return nil
+}
+
+// BotCommand is one entry of the bot's command menu.
+type BotCommand struct {
+	Command     string `json:"command"`
+	Description string `json:"description"`
+}
+
+// SetMyCommands registers the command menu shown by Telegram clients.
+func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand) error {
+	return c.call(ctx, "setMyCommands", map[string]any{"commands": commands}, nil)
 }
 
 // GetUpdates long-polls for new messages after offset. It returns plain

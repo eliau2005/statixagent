@@ -90,6 +90,70 @@ func TestGetUpdates(t *testing.T) {
 	}
 }
 
+func TestSendMessageIDReturnsID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":777}}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+	id, err := c.SendMessageID(context.Background(), 42, "hi")
+	if err != nil || id != 777 {
+		t.Errorf("id = %d, err = %v, want 777", id, err)
+	}
+}
+
+func TestDeleteMessagesBatches(t *testing.T) {
+	var batches [][]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deleteMessages" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		batches = append(batches, body["message_ids"].([]any))
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+
+	ids := make([]int64, 250)
+	for i := range ids {
+		ids[i] = int64(i + 1)
+	}
+	if err := c.DeleteMessages(context.Background(), 42, ids); err != nil {
+		t.Fatal(err)
+	}
+	if len(batches) != 3 || len(batches[0]) != 100 || len(batches[2]) != 50 {
+		sizes := []int{}
+		for _, b := range batches {
+			sizes = append(sizes, len(b))
+		}
+		t.Errorf("batch sizes = %v, want [100 100 50]", sizes)
+	}
+}
+
+func TestSetMyCommands(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/setMyCommands" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+	err := c.SetMyCommands(context.Background(), []BotCommand{{Command: "status", Description: "dashboard"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := got["commands"].([]any)
+	first := cmds[0].(map[string]any)
+	if first["command"] != "status" || first["description"] != "dashboard" {
+		t.Errorf("payload = %+v", got)
+	}
+}
+
 func TestSplitMessage(t *testing.T) {
 	if got := splitMessage("short", 4096); len(got) != 1 || got[0] != "short" {
 		t.Errorf("short = %v", got)

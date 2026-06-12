@@ -28,6 +28,9 @@ import (
 // Sender is the outbound Telegram surface; *telegram.Client implements it.
 type Sender interface {
 	SendMessage(ctx context.Context, chatID int64, html string) error
+	SendMessageID(ctx context.Context, chatID int64, html string) (int64, error)
+	DeleteMessages(ctx context.Context, chatID int64, ids []int64) error
+	SetMyCommands(ctx context.Context, commands []telegram.BotCommand) error
 }
 
 // Updates is the inbound Telegram surface; *telegram.Client implements it.
@@ -50,8 +53,14 @@ type Sources struct {
 
 	Docker   *dockermon.Client
 	Runner   services.Runner
-	ProcFS   func() ([]services.Result, error) // process checks, pre-bound
+	ProcFS   func(names []string) ([]services.Result, error) // process presence checks
 	KeyPaths []string
+
+	// ConfigPath is where watch-list changes are persisted; empty means
+	// in-memory only (replies say so).
+	ConfigPath string
+	// ListListeners returns the local TCP ports in LISTEN state.
+	ListListeners func() ([]int, error)
 
 	// UpdateCheck and UpdateApply are wired in Phase 8; nil = not available.
 	UpdateCheck func(ctx context.Context) (string, bool, error)
@@ -79,6 +88,11 @@ type Agent struct {
 	power   sysfs.Power
 	hadAC   bool
 	acSeen  bool
+
+	// Last scan results, for resolving numeric /services_add and
+	// /ports_add arguments. Guarded by mu.
+	lastServiceScan []string
+	lastPortScan    []int
 }
 
 // New assembles an Agent.
@@ -122,6 +136,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	if a.updates != nil {
 		loop("bot", a.botLoop)
+	}
+	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
+		log.Printf("agent: setMyCommands: %v", err)
 	}
 	a.push(ctx, fmt.Sprintf("✅ <b>statix-agent started</b> on %s", a.src.Hostname))
 	wg.Wait()
@@ -371,8 +388,14 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/ssh — live sessions\n" +
 			"/ssh history — recent logins\n" +
 			"/ssh fails — failed attempts\n\n" +
+			"👁 <b>Watching</b>\n" +
+			"/services_scan /ports_scan — find candidates\n" +
+			"/services_add /services_remove — manage units\n" +
+			"/ports_add /ports_remove — manage ports\n" +
+			"/procs_add /procs_remove — manage processes\n\n" +
 			"⚙️ <b>Maintenance</b>\n" +
-			"/update — check · /update confirm — install"
+			"/update — check · /update_confirm — install\n" +
+			"/clear_chat — wipe recent messages"
 	})
 	r.Handle("status", func(ctx context.Context, _ []string) string {
 		a.mu.Lock()
@@ -438,18 +461,21 @@ func (a *Agent) buildRouter() *bot.Router {
 			return bot.Sessions(sessions, geo, time.Now())
 		}
 	})
+	applyUpdate := func(ctx context.Context) string {
+		if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
+			return "Self-update is not configured in this build."
+		}
+		if err := a.src.UpdateApply(ctx); err != nil {
+			return "Update failed: " + err.Error()
+		}
+		return "Updating — the agent will restart."
+	}
 	r.Handle("update", func(ctx context.Context, args []string) string {
 		if a.src.UpdateCheck == nil {
 			return "Self-update is not configured in this build."
 		}
 		if len(args) > 0 && strings.EqualFold(args[0], "confirm") {
-			if a.src.UpdateApply == nil {
-				return "Update apply unavailable."
-			}
-			if err := a.src.UpdateApply(ctx); err != nil {
-				return "Update failed: " + err.Error()
-			}
-			return "Updating — the agent will restart."
+			return applyUpdate(ctx) // legacy "/update confirm" form
 		}
 		ver, available, err := a.src.UpdateCheck(ctx)
 		if err != nil {
@@ -458,9 +484,49 @@ func (a *Agent) buildRouter() *bot.Router {
 		if !available {
 			return "Already up to date (" + ver + ")."
 		}
-		return "New version available: <b>" + ver + "</b>\nRun /update confirm to install."
+		return "New version available: <b>" + ver + "</b>\nTap /update_confirm to install."
 	})
+	r.Handle("update_confirm", func(ctx context.Context, _ []string) string {
+		return applyUpdate(ctx)
+	})
+	r.Handle("clear_chat", func(ctx context.Context, _ []string) string {
+		chatID := a.cfg.Telegram.ChatID
+		anchor, err := a.send.SendMessageID(ctx, chatID, "🧹")
+		if err != nil {
+			return "Could not clear: " + err.Error()
+		}
+		ids := make([]int64, 0, 301)
+		for id := anchor; id > anchor-301 && id > 0; id-- {
+			ids = append(ids, id)
+		}
+		if err := a.send.DeleteMessages(ctx, chatID, ids); err != nil {
+			return "Could not clear: " + err.Error()
+		}
+		return "🧹 cleared"
+	})
+	a.registerWatchHandlers(r)
 	return r
+}
+
+// commandMenu is registered with Telegram so clients show autocomplete and
+// tappable commands.
+var commandMenu = []telegram.BotCommand{
+	{Command: "status", Description: "full dashboard"},
+	{Command: "cpu", Description: "CPU usage per core"},
+	{Command: "mem", Description: "memory usage"},
+	{Command: "disk", Description: "disk space and I/O"},
+	{Command: "net", Description: "network rates and totals"},
+	{Command: "temp", Description: "temperatures and fans"},
+	{Command: "battery", Description: "battery state"},
+	{Command: "services", Description: "watched services status"},
+	{Command: "docker", Description: "containers"},
+	{Command: "ssh", Description: "live SSH sessions"},
+	{Command: "services_scan", Description: "find running services to watch"},
+	{Command: "ports_scan", Description: "find listening ports to watch"},
+	{Command: "update", Description: "check for a new version"},
+	{Command: "update_confirm", Description: "install the update"},
+	{Command: "clear_chat", Description: "delete recent messages"},
+	{Command: "help", Description: "all commands"},
 }
 
 func (a *Agent) snapHandler(f func(collect.Snapshot) string) bot.Handler {
@@ -472,25 +538,26 @@ func (a *Agent) snapHandler(f func(collect.Snapshot) string) bot.Handler {
 }
 
 func (a *Agent) servicesReply(ctx context.Context) string {
+	watch := a.watchCopy()
 	var results []services.Result
-	if a.src.Runner != nil && len(a.cfg.Watch.Services) > 0 {
-		results = append(results, services.CheckSystemdUnits(ctx, a.src.Runner, a.cfg.Watch.Services)...)
+	if a.src.Runner != nil && len(watch.Services) > 0 {
+		results = append(results, services.CheckSystemdUnits(ctx, a.src.Runner, watch.Services)...)
 	}
-	if a.src.ProcFS != nil && len(a.cfg.Watch.Processes) > 0 {
-		if procResults, err := a.src.ProcFS(); err == nil {
+	if a.src.ProcFS != nil && len(watch.Processes) > 0 {
+		if procResults, err := a.src.ProcFS(watch.Processes); err == nil {
 			results = append(results, procResults...)
 		}
 	}
-	if len(a.cfg.Watch.Ports) > 0 {
-		specs := make([]services.PortSpec, len(a.cfg.Watch.Ports))
-		for i, p := range a.cfg.Watch.Ports {
+	if len(watch.Ports) > 0 {
+		specs := make([]services.PortSpec, len(watch.Ports))
+		for i, p := range watch.Ports {
 			specs[i] = services.PortSpec{Port: p.Port, Label: p.Label}
 		}
 		results = append(results, services.CheckPorts(ctx, defaultDialer(), specs)...)
 	}
-	if len(a.cfg.Watch.HTTPChecks) > 0 {
-		specs := make([]services.HTTPSpec, len(a.cfg.Watch.HTTPChecks))
-		for i, h := range a.cfg.Watch.HTTPChecks {
+	if len(watch.HTTPChecks) > 0 {
+		specs := make([]services.HTTPSpec, len(watch.HTTPChecks))
+		for i, h := range watch.HTTPChecks {
 			specs[i] = services.HTTPSpec{URL: h.URL, ExpectStatus: h.ExpectStatus, Timeout: h.Timeout.Duration}
 		}
 		results = append(results, services.CheckHTTP(ctx, httpClient, specs)...)

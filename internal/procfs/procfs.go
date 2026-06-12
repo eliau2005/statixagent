@@ -282,6 +282,34 @@ func ParseDiskStats(r io.Reader) ([]DiskStat, error) {
 	return out, sc.Err()
 }
 
+// ParseTCPListeners parses /proc/net/tcp (or tcp6) and returns the local
+// ports in LISTEN state. The caller merges v4+v6 results and dedupes.
+func ParseTCPListeners(r io.Reader) ([]int, error) {
+	const listenState = "0A"
+	var out []int
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		// sl local_address rem_address st ...
+		if len(f) < 4 || !strings.HasSuffix(f[0], ":") {
+			continue // header or malformed line
+		}
+		if f[3] != listenState {
+			continue
+		}
+		_, portHex, ok := strings.Cut(f[1], ":")
+		if !ok {
+			continue
+		}
+		port, err := strconv.ParseInt(portHex, 16, 32)
+		if err != nil {
+			return nil, fmt.Errorf("procfs: net/tcp port %q: %w", portHex, err)
+		}
+		out = append(out, int(port))
+	}
+	return out, sc.Err()
+}
+
 // FileNR is /proc/sys/fs/file-nr: allocated and maximum file handles.
 type FileNR struct {
 	Allocated uint64
