@@ -158,12 +158,31 @@ func TestStatusHidesIdleInterfaces(t *testing.T) {
 	}
 }
 
+func TestSpark(t *testing.T) {
+	if got := Spark(nil, 100); got != "" {
+		t.Errorf("empty = %q", got)
+	}
+	if got := Spark([]float64{0, 50, 100}, 100); got != "▁▅█" {
+		t.Errorf("ramp = %q", got)
+	}
+	// Autoscale: peak maps to the top level.
+	if got := Spark([]float64{1, 2, 4}, 0); got != "▃▅█" {
+		t.Errorf("autoscale = %q", got)
+	}
+	if got := Spark([]float64{0, 0}, 0); got != "▁▁" {
+		t.Errorf("all-zero = %q", got)
+	}
+}
+
 func TestSectionFormats(t *testing.T) {
 	s := sampleSnapshot()
-	if out := CPU(s); !strings.Contains(out, "cpu0") || !strings.Contains(out, "▰") {
+	if out := CPU(s, "▁▂▃"); !strings.Contains(out, "cpu0") || !strings.Contains(out, "trend ▁▂▃") {
 		t.Errorf("CPU:\n%s", out)
 	}
-	if out := Mem(s); !strings.Contains(out, "available") || !strings.Contains(out, "4.0G") {
+	if out := CPU(s, ""); strings.Contains(out, "trend") {
+		t.Errorf("CPU without trend:\n%s", out)
+	}
+	if out := Mem(s, "▁▂▃"); !strings.Contains(out, "available") || !strings.Contains(out, "trend ▁▂▃") {
 		t.Errorf("Mem:\n%s", out)
 	}
 	if out := Disk(s); !strings.Contains(out, "10.0G free of 40.0G") {

@@ -107,7 +107,18 @@ type Agent struct {
 	// reply and consumed by reply(). Safe because updates are processed
 	// sequentially. Guarded by mu.
 	pendingKB telegram.Keyboard
+
+	// trend is a ring of recent usage points for sparklines. Guarded by mu.
+	trend []trendPoint
 }
+
+// trendPoint is one sampled reading kept for sparkline rendering.
+type trendPoint struct {
+	cpu, mem float64
+}
+
+// trendCap bounds the ring: at the 15s default interval this is ~10 min.
+const trendCap = 40
 
 // New assembles an Agent.
 func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
@@ -214,6 +225,10 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 			snap := collect.Compute(a.prevRaw, raw)
 			a.prevRaw = raw
 			a.snap = snap
+			a.trend = append(a.trend, trendPoint{cpu: snap.CPUTotal.Percent, mem: snap.Mem.UsedPercent()})
+			if len(a.trend) > trendCap {
+				a.trend = a.trend[len(a.trend)-trendCap:]
+			}
 			a.mu.Unlock()
 			alerts = append(alerts, a.evalSystem(snap, now)...)
 		}
@@ -227,7 +242,7 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 			if len(th.Sensors) > 0 {
 				alerts = append(alerts, a.engine.Threshold(alert.ThresholdOpts{
 					Key: "temp", Title: "Temperature", Severity: alert.Warning,
-					Value: th.MaxCelsius(), Threshold: a.cfg.Thresholds.TempCelsius,
+					Value: th.MaxCelsius(), Threshold: a.thresholds().TempCelsius,
 					ClearMargin: 5, Unit: "°C",
 				}, now))
 			}
@@ -247,7 +262,7 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 }
 
 func (a *Agent) evalSystem(s collect.Snapshot, now time.Time) []*alert.Alert {
-	t := a.cfg.Thresholds
+	t := a.thresholds()
 	out := []*alert.Alert{
 		a.engine.Threshold(alert.ThresholdOpts{
 			Key: "cpu", Title: "CPU usage", Severity: alert.Warning,
@@ -294,7 +309,7 @@ func (a *Agent) evalPower(pw sysfs.Power, now time.Time) []*alert.Alert {
 	if pw.HasBattery && pw.OnBattery() && len(pw.Batteries) > 0 {
 		out = append(out, a.engine.Threshold(alert.ThresholdOpts{
 			Key: "battery", Title: "Battery low", Severity: alert.Critical,
-			Value: pw.Batteries[0].Percent, Threshold: a.cfg.Thresholds.BatteryPercent,
+			Value: pw.Batteries[0].Percent, Threshold: a.thresholds().BatteryPercent,
 			ClearMargin: 10, Below: true, Unit: "%",
 		}, now))
 	}
@@ -419,6 +434,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/services_scan /ports_scan — find candidates\n" +
 			"(/services_add, /ports_add, /procs_add … still work typed)\n\n" +
 			"⚙️ <b>Maintenance</b>\n" +
+			"/settings — tune alert thresholds\n" +
 			"/update — check · /update_confirm — install\n" +
 			"/clear_chat — wipe recent messages"
 	})
@@ -427,8 +443,16 @@ func (a *Agent) buildRouter() *bot.Router {
 		defer a.mu.Unlock()
 		return bot.Status(a.src.Hostname, a.snap, a.thermal, a.power)
 	})
-	r.Handle("cpu", a.snapHandler(bot.CPU))
-	r.Handle("mem", a.snapHandler(bot.Mem))
+	r.Handle("cpu", func(ctx context.Context, _ []string) string {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return bot.CPU(a.snap, bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.cpu }), 100))
+	})
+	r.Handle("mem", func(ctx context.Context, _ []string) string {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return bot.Mem(a.snap, bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.mem }), 100))
+	})
 	r.Handle("disk", a.snapHandler(bot.Disk))
 	r.Handle("net", a.snapHandler(bot.Net))
 	r.Handle("temp", func(ctx context.Context, _ []string) string {
@@ -537,6 +561,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "docker", Description: "containers"},
 	{Command: "ssh", Description: "live SSH sessions"},
 	{Command: "watching", Description: "manage everything watched (buttons)"},
+	{Command: "settings", Description: "tune alert thresholds (buttons)"},
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},
@@ -568,6 +593,19 @@ func (a *Agent) sshSessionsView(ctx context.Context) string {
 		geo[s.Host] = a.geo.Lookup(ctx, s.Host)
 	}
 	return bot.Sessions(sessions, geo, time.Now())
+}
+
+// trendVals extracts one series from the ring; callers hold a.mu. Series
+// shorter than 2 points render no sparkline.
+func (a *Agent) trendVals(f func(trendPoint) float64) []float64 {
+	if len(a.trend) < 2 {
+		return nil
+	}
+	out := make([]float64, len(a.trend))
+	for i, p := range a.trend {
+		out[i] = f(p)
+	}
+	return out
 }
 
 func (a *Agent) snapHandler(f func(collect.Snapshot) string) bot.Handler {

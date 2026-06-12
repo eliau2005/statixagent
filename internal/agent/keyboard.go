@@ -26,6 +26,7 @@ func navKeyboard(active string) telegram.Keyboard {
 		{{"💾 Disk", "disk"}, {"🌐 Net", "net"}, {"🌡 Temp", "temp"}},
 		{{"🔋 Power", "battery"}, {"🧩 Svc", "services"}, {"🐳 Dock", "docker"}},
 		{{"🔐 SSH", "ssh"}, {"▶️ Live", "live"}, {"🔄 Refresh", active}},
+		{{"👁 Watching", "watching"}, {"⚙️ Settings", "settings"}},
 	}
 	var kb telegram.Keyboard
 	for _, row := range rows {
@@ -141,6 +142,15 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	case "live_stop":
 		a.send.AnswerCallback(ctx, cb.ID, "")
 		a.stopLive()
+		return
+	}
+	if text, kb, toast, handled := a.handleSettingsCallback(ctx, cb.Data); handled {
+		a.send.AnswerCallback(ctx, cb.ID, toast)
+		if text != "" {
+			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
+				log.Printf("agent: edit: %v", err)
+			}
+		}
 		return
 	}
 	if text, kb, toast, handled := a.handleWatchCallback(ctx, cb.Data); handled {

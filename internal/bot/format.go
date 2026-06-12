@@ -72,6 +72,37 @@ func Dur(d time.Duration) string {
 
 func esc(s string) string { return html.EscapeString(s) }
 
+// Spark renders values as a one-line sparkline scaled to maxVal
+// (maxVal <= 0 autoscales to the series peak).
+func Spark(vals []float64, maxVal float64) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	if maxVal <= 0 {
+		for _, v := range vals {
+			if v > maxVal {
+				maxVal = v
+			}
+		}
+		if maxVal == 0 {
+			maxVal = 1
+		}
+	}
+	levels := []rune("▁▂▃▄▅▆▇█")
+	var b strings.Builder
+	for _, v := range vals {
+		idx := int(v / maxVal * float64(len(levels)))
+		if idx >= len(levels) {
+			idx = len(levels) - 1
+		}
+		if idx < 0 {
+			idx = 0
+		}
+		b.WriteRune(levels[idx])
+	}
+	return b.String()
+}
+
 // bar renders a 10-segment usage bar.
 func bar(percent float64) string {
 	filled := int(percent/10 + 0.5)
@@ -165,11 +196,14 @@ func Status(hostname string, s collect.Snapshot, th sysfs.Thermal, pw sysfs.Powe
 	return card(header, L)
 }
 
-// CPU renders /cpu.
-func CPU(s collect.Snapshot) string {
+// CPU renders /cpu. trend is a pre-rendered sparkline ("" = omit).
+func CPU(s collect.Snapshot, trend string) string {
 	header := fmt.Sprintf("🖥 <b>CPU</b> %.1f%% — load %.2f %.2f %.2f",
 		s.CPUTotal.Percent, s.Load.Load1, s.Load.Load5, s.Load.Load15)
 	var L []string
+	if trend != "" {
+		L = append(L, " trend "+trend, divider)
+	}
 	for _, c := range s.PerCore {
 		L = append(L, fmt.Sprintf(" %s %s %s", pad(c.Name, 5), bar(c.Percent), pad(fmt.Sprintf("%.0f%%", c.Percent), -4)))
 	}
@@ -179,17 +213,22 @@ func CPU(s collect.Snapshot) string {
 	return card(header, L)
 }
 
-// Mem renders /mem.
-func Mem(s collect.Snapshot) string {
+// Mem renders /mem. trend is a pre-rendered sparkline ("" = omit).
+func Mem(s collect.Snapshot, trend string) string {
 	m := s.Mem
 	header := fmt.Sprintf("🧠 <b>Memory</b> %.1f%%", m.UsedPercent())
 	L := []string{
 		fmt.Sprintf(" %s %s of %s", bar(m.UsedPercent()), BytesShort(m.Total-m.Available), BytesShort(m.Total)),
+	}
+	if trend != "" {
+		L = append(L, " trend "+trend)
+	}
+	L = append(L,
 		divider,
 		fmt.Sprintf(" %s %s", pad("used", 11), BytesShort(m.Total-m.Available)),
 		fmt.Sprintf(" %s %s", pad("available", 11), BytesShort(m.Available)),
 		fmt.Sprintf(" %s %s", pad("buff/cache", 11), BytesShort(m.Buffers+m.Cached)),
-	}
+	)
 	if m.SwapTotal > 0 {
 		L = append(L, fmt.Sprintf(" %s %s of %s", pad("swap", 11), BytesShort(m.SwapTotal-m.SwapFree), BytesShort(m.SwapTotal)))
 	}

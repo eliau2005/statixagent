@@ -32,12 +32,16 @@ func (a *Agent) mutateWatch(apply func(*config.Watch)) string {
 	apply(&a.cfg.Watch)
 	cfg := a.cfg
 	a.mu.Unlock()
+	return a.persist(cfg)
+}
 
+// persist writes the config snapshot to disk, returning the reply note.
+func (a *Agent) persist(cfg config.Config) string {
 	if a.src.ConfigPath == "" {
 		return " (not persisted: no config path)"
 	}
 	if err := config.Save(a.src.ConfigPath, cfg); err != nil {
-		log.Printf("agent: persisting watch change: %v", err)
+		log.Printf("agent: persisting config change: %v", err)
 		return " (⚠️ not persisted: " + err.Error() + ")"
 	}
 	return ""
@@ -47,6 +51,11 @@ func (a *Agent) mutateWatch(apply func(*config.Watch)) string {
 func (a *Agent) registerWatchHandlers(r *bot.Router) {
 	r.Handle("watching", func(ctx context.Context, _ []string) string {
 		text, kb := a.watchingView()
+		a.stashKB(kb)
+		return text
+	})
+	r.Handle("settings", func(ctx context.Context, _ []string) string {
+		text, kb := a.settingsView()
 		a.stashKB(kb)
 		return text
 	})
