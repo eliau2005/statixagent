@@ -126,6 +126,11 @@ func (a *Agent) setSSHPort(ctx context.Context, open bool) string {
 	if out, err := a.src.Runner.Run(ctx, "ufw", newRule, sshPort); err != nil {
 		return "ufw failed: " + firstLine(out, err.Error())
 	}
+	// Re-apply the ruleset: rule edits alone do not reliably reach the
+	// live iptables state on all setups (observed in the field).
+	if out, err := a.src.Runner.Run(ctx, "ufw", "reload"); err != nil {
+		return "rule saved but reload failed: " + firstLine(out, err.Error())
+	}
 	if open {
 		return "🔓 port 22 opened"
 	}

@@ -858,6 +858,9 @@ func (u *ufwRunner) Run(_ context.Context, name string, args ...string) (string,
 		}
 		return "Status: active\n\n22/tcp  ALLOW  Anywhere\n", nil
 	}
+	if args[0] == "reload" {
+		return "Firewall reloaded", nil
+	}
 	switch args[len(args)-2] { // "allow 22/tcp" or "deny 22/tcp"
 	case "allow":
 		u.state = "open"
@@ -909,8 +912,8 @@ func TestFirewallFlow(t *testing.T) {
 			applied = append(applied, c)
 		}
 	}
-	if len(applied) != 2 || applied[0][1] != "delete" || applied[1][0] != "deny" {
-		t.Fatalf("ufw calls = %v, want delete-allow then deny", applied)
+	if len(applied) != 3 || applied[0][1] != "delete" || applied[1][0] != "deny" || applied[2][0] != "reload" {
+		t.Fatalf("ufw calls = %v, want delete-allow, deny, reload", applied)
 	}
 	if last := send.lastEdit(); !strings.Contains(last.html, "🔒 <b>closed</b>") {
 		t.Errorf("after close view = %q", last.html)
