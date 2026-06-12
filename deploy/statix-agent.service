@@ -16,7 +16,8 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectSystem=full
-ReadWritePaths=/etc/statix-agent
+# /usr/local/bin stays writable so self-update can swap the binary (MVP §5).
+ReadWritePaths=/etc/statix-agent /usr/local/bin
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes

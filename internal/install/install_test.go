@@ -46,7 +46,10 @@ func TestInstall(t *testing.T) {
 		t.Errorf("written config does not load: %v", err)
 	}
 	unit, _ := os.ReadFile(res.UnitPath)
-	for _, want := range []string{"Restart=always", "--config " + res.ConfigPath, res.BinaryPath} {
+	// The binary dir must be in ReadWritePaths or in-place self-update
+	// fails with "read-only file system" under ProtectSystem=full.
+	binDirRW := "ReadWritePaths=" + filepath.Dir(res.ConfigPath) + " " + filepath.Dir(res.BinaryPath)
+	for _, want := range []string{"Restart=always", "--config " + res.ConfigPath, res.BinaryPath, binDirRW} {
 		if !strings.Contains(string(unit), want) {
 			t.Errorf("unit missing %q:\n%s", want, unit)
 		}

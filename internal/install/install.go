@@ -90,6 +90,8 @@ func Install(ctx context.Context, o Options) (Result, error) {
 }
 
 // UnitFile renders the systemd unit for the given binary and config paths.
+// The binary's directory must stay writable through the ProtectSystem
+// sandbox: self-update swaps the executable in place (MVP §5).
 func UnitFile(execPath, cfgPath string) string {
 	return fmt.Sprintf(`[Unit]
 Description=StatixAgent VPS/laptop monitoring agent
@@ -105,7 +107,7 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectSystem=full
-ReadWritePaths=%s
+ReadWritePaths=%s %s
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
@@ -114,7 +116,7 @@ MemoryMax=128M
 
 [Install]
 WantedBy=multi-user.target
-`, execPath, cfgPath, filepath.Dir(cfgPath))
+`, execPath, cfgPath, filepath.Dir(cfgPath), filepath.Dir(execPath))
 }
 
 func copyFile(src, dst string, perm os.FileMode) error {
