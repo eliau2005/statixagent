@@ -951,6 +951,10 @@ func TestFirewallChangeFailureIsVisible(t *testing.T) {
 	if !strings.Contains(last.html, "Change failed") || !strings.Contains(last.html, "read-only file system") {
 		t.Errorf("failure must be shown persistently in the message, got: %q", last.html)
 	}
+	// The read-only error must come with the one-time sandbox fix command.
+	if !strings.Contains(last.html, "ReadWritePaths=-/etc/ufw") {
+		t.Errorf("sandbox failure must include the fix command, got: %q", last.html)
+	}
 	// And the toast points at the message rather than carrying the detail.
 	send.mu.Lock()
 	defer send.mu.Unlock()

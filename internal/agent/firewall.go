@@ -115,10 +115,28 @@ func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram
 	okMsg, errDetail := a.setSSHPort(ctx, open)
 	text, kb := a.firewallView(ctx)
 	if errDetail != "" {
-		banner := "❌ <b>Change failed</b>\n<pre>" + esc(errDetail) + "</pre>\n\n"
+		banner := "❌ <b>Change failed</b>\n<pre>" + esc(errDetail) + "</pre>\n"
+		banner += sandboxHint(errDetail) + "\n"
 		return banner + text, kb, "failed — see message", true
 	}
 	return text, kb, okMsg, true
+}
+
+// sandboxHint detects the read-only-filesystem failure (the service's
+// systemd hardening blocking ufw's rule writes) and returns the one-time
+// fix to run on the server. Empty for unrelated errors.
+func sandboxHint(errDetail string) string {
+	low := strings.ToLower(errDetail)
+	if !strings.Contains(low, "not writeable") && !strings.Contains(low, "read-only") &&
+		!strings.Contains(low, "permission denied") {
+		return ""
+	}
+	return "The agent's sandbox is blocking ufw. Run this once on the server, then retry:\n" +
+		"<pre>sudo mkdir -p /etc/systemd/system/statix-agent.service.d\n" +
+		"printf '[Service]\\nReadWritePaths=-/etc/ufw -/lib/ufw\\n' | \\\n" +
+		"  sudo tee /etc/systemd/system/statix-agent.service.d/ufw.conf\n" +
+		"sudo systemctl daemon-reload\n" +
+		"sudo systemctl restart statix-agent</pre>"
 }
 
 // setSSHPort applies the rule change: the opposite rule is removed first so
