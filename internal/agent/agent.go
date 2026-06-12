@@ -119,6 +119,10 @@ type Agent struct {
 
 	// trend is a ring of recent usage points for sparklines. Guarded by mu.
 	trend []trendPoint
+
+	// digest accumulates the day's activity for the daily summary.
+	// Guarded by mu.
+	digest digestStats
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -143,6 +147,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		geo:          sshwatch.NewGeoResolver(),
 		liveInterval: 3 * time.Second,
 		liveDuration: 30 * time.Second,
+		digest:       digestStats{since: time.Now()},
 	}
 	a.router = a.buildRouter()
 	return a
@@ -172,6 +177,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 	if a.updates != nil {
 		loop("bot", a.botLoop)
+	}
+	if a.cfg.Digest.Enabled {
+		loop("digest", a.digestLoop)
 	}
 	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
 		log.Printf("agent: setMyCommands: %v", err)
@@ -234,6 +242,12 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 			snap := collect.Compute(a.prevRaw, raw)
 			a.prevRaw = raw
 			a.snap = snap
+			if snap.CPUTotal.Percent > a.digest.peakCPU {
+				a.digest.peakCPU = snap.CPUTotal.Percent
+			}
+			if mp := snap.Mem.UsedPercent(); mp > a.digest.peakMem {
+				a.digest.peakMem = mp
+			}
 			a.trend = append(a.trend, trendPoint{cpu: snap.CPUTotal.Percent, mem: snap.Mem.UsedPercent()})
 			if len(a.trend) > trendCap {
 				a.trend = a.trend[len(a.trend)-trendCap:]
@@ -347,6 +361,7 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 		return
 	}
 	a.hist.Add(e)
+	a.noteSSHEvent(e.Kind)
 	switch e.Kind {
 	case sshwatch.EventLogin:
 		geo := a.geo.Lookup(ctx, e.IP)
@@ -431,6 +446,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/status — full dashboard\n" +
 			"/cpu /mem /disk /net — one metric\n" +
 			"/top — heaviest processes\n" +
+			"/digest — daily summary (auto-sent each morning)\n" +
 			"/temp /battery — hardware\n\n" +
 			"🧩 <b>Workloads</b>\n" +
 			"/services — units, processes, ports\n" +
@@ -476,6 +492,9 @@ func (a *Agent) buildRouter() *bot.Router {
 		memTotal := a.snap.Mem.Total
 		a.mu.Unlock()
 		return bot.Top(procs, memTotal)
+	})
+	r.Handle("digest", func(ctx context.Context, _ []string) string {
+		return a.digestView(false)
 	})
 	r.Handle("disk", a.snapHandler(bot.Disk))
 	r.Handle("net", a.snapHandler(bot.Net))
@@ -582,6 +601,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "disk", Description: "disk space and I/O"},
 	{Command: "net", Description: "network rates and totals"},
 	{Command: "top", Description: "heaviest processes by CPU and memory"},
+	{Command: "digest", Description: "daily activity summary"},
 	{Command: "temp", Description: "temperatures and fans"},
 	{Command: "battery", Description: "battery state"},
 	{Command: "services", Description: "watched services status"},
