@@ -16,8 +16,9 @@ RestartSec=5
 NoNewPrivileges=yes
 ProtectHome=read-only
 ProtectSystem=full
-# /usr/local/bin stays writable so self-update can swap the binary (MVP §5).
-ReadWritePaths=/etc/statix-agent /usr/local/bin
+# /usr/local/bin stays writable so self-update can swap the binary (MVP §5);
+# ufw dirs are writable so /firewall can edit rules (skipped if absent).
+ReadWritePaths=/etc/statix-agent /usr/local/bin -/etc/ufw -/lib/ufw
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
