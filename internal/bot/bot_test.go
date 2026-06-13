@@ -153,7 +153,7 @@ func TestStatusHidesIdleInterfaces(t *testing.T) {
 		t.Errorf("zero-traffic interface must be hidden from /status:\n%s", out)
 	}
 	// But /net still lists it under idle.
-	if net := Net(sampleSnapshot()); !strings.Contains(net, "idle: docker0") {
+	if net := Net(sampleSnapshot(), "", ""); !strings.Contains(net, "idle: docker0") {
 		t.Errorf("/net must list idle interfaces:\n%s", net)
 	}
 }
@@ -188,8 +188,14 @@ func TestSectionFormats(t *testing.T) {
 	if out := Disk(s); !strings.Contains(out, "10.0G free of 40.0G") {
 		t.Errorf("Disk:\n%s", out)
 	}
-	if out := Net(s); !strings.Contains(out, "Σ↓") || !strings.Contains(out, "5.0G") {
+	if out := Net(s, "", ""); !strings.Contains(out, "Σ↓") || !strings.Contains(out, "5.0G") {
 		t.Errorf("Net:\n%s", out)
+	}
+	if out := Net(s, "▁▂▃", "▃▂▁"); !strings.Contains(out, "↓ ▁▂▃") || !strings.Contains(out, "↑ ▃▂▁") {
+		t.Errorf("Net with trends:\n%s", out)
+	}
+	if rx, tx := NetTrendVals(s.Net); rx <= 0 || tx <= 0 {
+		t.Errorf("NetTrendVals = %v, %v", rx, tx)
 	}
 	if out := Temp(sysfs.Thermal{}); !strings.Contains(out, "VPS") {
 		t.Errorf("Temp empty:\n%s", out)

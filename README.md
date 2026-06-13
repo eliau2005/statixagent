@@ -41,14 +41,23 @@ systemd service (`Restart=always`).
 | Command | Result |
 | --- | --- |
 | `/status` | full snapshot: CPU, RAM, disks, net, temps, battery, uptime |
-| `/cpu` `/mem` `/disk` `/net` `/temp` `/battery` | one metric in detail |
+| `/cpu` `/mem` `/disk` `/net` `/temp` `/battery` | one metric in detail, with usage sparklines |
+| `/top` | heaviest processes by CPU and memory |
+| `/digest` | the day's recap — also auto-sent every morning |
 | `/services` | systemd units, processes, ports, healthchecks |
+| `/http` | endpoint checks · `/http add <url> [status]` · `/http remove <url>` |
 | `/docker` | containers with CPU/RAM and restart counts |
 | `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
+| `/ssl` | certificate expiry · `/ssl add <host>` · `/ssl remove <host>` |
+| `/firewall` | open/close SSH port 22 via ufw |
+| `/watching` | everything watched, managed with buttons |
+| `/settings` | alert thresholds and digest schedule, tuned with buttons |
 | `/update` | check for a new release · `/update confirm` installs it |
+| `/clear_chat` | delete recent messages |
 
-Alerts (thresholds, power loss, SSH logins, brute force, key changes) arrive
-as push messages — no need to ask.
+Alerts (thresholds, power loss, SSH logins, brute force, key changes, cert
+expiry, host reboots) arrive as push messages — no need to ask — and carry
+buttons for the next step.
 
 ## Self-update
 

@@ -143,6 +143,7 @@ type Agent struct {
 // trendPoint is one sampled reading kept for sparkline rendering.
 type trendPoint struct {
 	cpu, mem float64
+	rx, tx   float64 // aggregate network rates, bytes/sec
 }
 
 // trendCap bounds the ring: at the 15s default interval this is ~10 min.
@@ -268,7 +269,8 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 			if mp := snap.Mem.UsedPercent(); mp > a.digest.peakMem {
 				a.digest.peakMem = mp
 			}
-			a.trend = append(a.trend, trendPoint{cpu: snap.CPUTotal.Percent, mem: snap.Mem.UsedPercent()})
+			rx, tx := bot.NetTrendVals(snap.Net)
+			a.trend = append(a.trend, trendPoint{cpu: snap.CPUTotal.Percent, mem: snap.Mem.UsedPercent(), rx: rx, tx: tx})
 			if len(a.trend) > trendCap {
 				a.trend = a.trend[len(a.trend)-trendCap:]
 			}
@@ -563,7 +565,14 @@ func (a *Agent) buildRouter() *bot.Router {
 		return a.digestView(false)
 	})
 	r.Handle("disk", a.snapHandler(bot.Disk))
-	r.Handle("net", a.snapHandler(bot.Net))
+	r.Handle("net", func(ctx context.Context, _ []string) string {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		// Autoscaled to each series' own peak: traffic has no natural 100%.
+		rx := bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.rx }), 0)
+		tx := bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.tx }), 0)
+		return bot.Net(a.snap, rx, tx)
+	})
 	r.Handle("temp", func(ctx context.Context, _ []string) string {
 		a.mu.Lock()
 		defer a.mu.Unlock()
