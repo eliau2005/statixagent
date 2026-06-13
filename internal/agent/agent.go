@@ -131,6 +131,10 @@ type Agent struct {
 	digest     digestStats
 	digestPoll time.Duration
 
+	// rebootChecked is set once the first sample with a readable uptime
+	// has been inspected for a fresh host boot. Guarded by mu.
+	rebootChecked bool
+
 	// sslInterval is the certificate re-check period, set once in New and
 	// overridden only by tests.
 	sslInterval time.Duration
@@ -269,6 +273,7 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 				a.trend = a.trend[len(a.trend)-trendCap:]
 			}
 			a.mu.Unlock()
+			alerts = append(alerts, a.checkReboot(snap, now))
 			alerts = append(alerts, a.evalSystem(snap, now)...)
 		}
 	}
@@ -298,6 +303,29 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 			a.pushAlert(ctx, *al)
 		}
 	}
+}
+
+// rebootWindow is how fresh the host uptime must be at the agent's first
+// sample to call it a reboot. Agent restarts (self-update, crash recovery)
+// see hours of uptime and stay silent; only a fresh boot trips this.
+const rebootWindow = 5 * time.Minute
+
+// checkReboot inspects the first readable uptime: a host that just booted
+// is worth a push — an unexpected reboot is an incident, a planned one is
+// confirmation it came back.
+func (a *Agent) checkReboot(s collect.Snapshot, now time.Time) *alert.Alert {
+	if s.Uptime <= 0 {
+		return nil // unreadable this tick; try again next sample
+	}
+	a.mu.Lock()
+	done := a.rebootChecked
+	a.rebootChecked = true
+	a.mu.Unlock()
+	if done || s.Uptime >= rebootWindow {
+		return nil
+	}
+	body := fmt.Sprintf("%s came up %s ago", a.src.Hostname, bot.Dur(s.Uptime))
+	return a.engine.Event("reboot", "Host rebooted", body, alert.Warning, now, time.Hour)
 }
 
 func (a *Agent) evalSystem(s collect.Snapshot, now time.Time) []*alert.Alert {
