@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/eliau2005/statixagent/internal/alert"
 	"github.com/eliau2005/statixagent/internal/bot"
@@ -87,6 +88,7 @@ func alertKeyboard(key string) telegram.Keyboard {
 	default:
 		row = []telegram.Button{{Text: "📊 Status", Data: "status"}}
 	}
+	row = append(row, telegram.Button{Text: "🔕 1h", Data: "snz:" + key})
 	return telegram.Keyboard{row}
 }
 
@@ -141,6 +143,11 @@ func (a *Agent) reply(ctx context.Context, cmd, html string) {
 func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	if cb.ChatID != a.cfg.Telegram.ChatID {
 		return // foreign chat: ignore entirely, do not even answer
+	}
+	if key, ok := strings.CutPrefix(cb.Data, "snz:"); ok {
+		a.engine.Snooze(key, time.Now().Add(time.Hour))
+		a.send.AnswerCallback(ctx, cb.ID, "Snoozed for 1h")
+		return
 	}
 	switch cb.Data {
 	case "dismiss":
