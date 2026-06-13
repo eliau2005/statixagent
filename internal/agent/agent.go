@@ -185,16 +185,14 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 func (a *Agent) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	loop := func(name string, f func(context.Context)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for ctx.Err() == nil {
 				safely(name, func() { f(ctx) })
 				if ctx.Err() == nil {
 					time.Sleep(time.Second) // crashed loop: restart after a beat
 				}
 			}
-		}()
+		})
 	}
 	loop("sampler", a.sampleLoop)
 	if a.cfg.Monitors.SSH && a.src.AuthLines != nil {

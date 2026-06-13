@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -42,11 +43,9 @@ func (a *Agent) sslManage(args []string) string {
 	switch verb {
 	case "add":
 		a.mu.Lock()
-		for _, h := range a.cfg.Watch.SSLHosts {
-			if h == host {
-				a.mu.Unlock()
-				return host + " is already watched."
-			}
+		if slices.Contains(a.cfg.Watch.SSLHosts, host) {
+			a.mu.Unlock()
+			return host + " is already watched."
 		}
 		a.cfg.Watch.SSLHosts = append(a.cfg.Watch.SSLHosts, host)
 		cfg := a.cfg

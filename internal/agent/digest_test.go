@@ -57,7 +57,7 @@ func TestDigestSettingsButtons(t *testing.T) {
 	}
 
 	// Hour wraps around midnight in both directions.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		a.handleSettingsCallback(ctx, "dg:hour:-1")
 	}
 	if _, hour := a.digestCfg(); hour != 23 {

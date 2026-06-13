@@ -105,13 +105,7 @@ func Spark(vals []float64, maxVal float64) string {
 
 // bar renders a 10-segment usage bar.
 func bar(percent float64) string {
-	filled := int(percent/10 + 0.5)
-	if filled > 10 {
-		filled = 10
-	}
-	if filled < 0 {
-		filled = 0
-	}
+	filled := min(max(int(percent/10+0.5), 0), 10)
 	return strings.Repeat("▰", filled) + strings.Repeat("▱", 10-filled)
 }
 
