@@ -486,6 +486,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/temp /battery — hardware\n\n" +
 			"🧩 <b>Workloads</b>\n" +
 			"/services — units, processes, ports\n" +
+			"/http — endpoint checks (/http add url)\n" +
 			"/docker — containers\n\n" +
 			"🔐 <b>Security</b>\n" +
 			"/ssh — live sessions (disconnect buttons)\n" +
@@ -582,6 +583,9 @@ func (a *Agent) buildRouter() *bot.Router {
 	r.Handle("ssl", func(ctx context.Context, args []string) string {
 		return a.sslView(ctx, args)
 	})
+	r.Handle("http", func(ctx context.Context, args []string) string {
+		return a.httpView(ctx, args)
+	})
 	// Direct aliases for alert action buttons (callback data is one token).
 	r.Handle("ssh_history", func(ctx context.Context, _ []string) string { return a.sshHistoryView() })
 	r.Handle("ssh_fails", func(ctx context.Context, _ []string) string { return a.sshFailsView() })
@@ -651,6 +655,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "settings", Description: "tune alert thresholds (buttons)"},
 	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
 	{Command: "ssl", Description: "certificate expiry for watched hosts"},
+	{Command: "http", Description: "endpoint health checks"},
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},
