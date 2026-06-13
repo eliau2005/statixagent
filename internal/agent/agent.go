@@ -68,6 +68,9 @@ type Sources struct {
 	// nil disables /ssl and the expiry watcher.
 	CheckCerts func(ctx context.Context, hosts []string) []netcheck.CertStatus
 
+	// Latency measures TCP connect time to host[:port]; nil disables /ping.
+	Latency func(ctx context.Context, addr string) (time.Duration, error)
+
 	// ConfigPath is where watch-list changes are persisted; empty means
 	// in-memory only (replies say so).
 	ConfigPath string
@@ -517,6 +520,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"🧩 <b>Workloads</b>\n" +
 			"/services — units, processes, ports\n" +
 			"/http — endpoint checks (/http add url)\n" +
+			"/ping host — TCP latency from this server\n" +
 			"/docker — containers\n\n" +
 			"🔐 <b>Security</b>\n" +
 			"/ssh — live sessions (disconnect buttons)\n" +
@@ -623,6 +627,23 @@ func (a *Agent) buildRouter() *bot.Router {
 	r.Handle("http", func(ctx context.Context, args []string) string {
 		return a.httpView(ctx, args)
 	})
+	// /ping answers "can this server reach X, and how fast?" — the vantage
+	// point is the VPS itself, which is the question when debugging from
+	// the outside.
+	r.Handle("ping", func(ctx context.Context, args []string) string {
+		if a.src.Latency == nil {
+			return "Latency checks are not available in this build."
+		}
+		if len(args) == 0 {
+			return "Usage: /ping &lt;host[:port]&gt; — TCP connect time from this server (default port 443)"
+		}
+		addr := args[0]
+		d, err := a.src.Latency(ctx, addr)
+		if err != nil {
+			return "🏓 " + esc(addr) + " — unreachable: " + esc(err.Error())
+		}
+		return fmt.Sprintf("🏓 %s — <b>%s</b>", esc(addr), fmtLatency(d))
+	})
 	// Direct aliases for alert action buttons (callback data is one token).
 	r.Handle("ssh_history", func(ctx context.Context, _ []string) string { return a.sshHistoryView() })
 	r.Handle("ssh_fails", func(ctx context.Context, _ []string) string { return a.sshFailsView() })
@@ -673,6 +694,17 @@ func (a *Agent) buildRouter() *bot.Router {
 	return r
 }
 
+// fmtLatency renders a dial time at a precision that matches its size.
+func fmtLatency(d time.Duration) string {
+	if d < time.Millisecond {
+		return fmt.Sprintf("%.2fms", float64(d.Microseconds())/1000)
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
 // commandMenu is registered with Telegram so clients show autocomplete and
 // tappable commands.
 var commandMenu = []telegram.BotCommand{
@@ -693,6 +725,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
 	{Command: "ssl", Description: "certificate expiry for watched hosts"},
 	{Command: "http", Description: "endpoint health checks"},
+	{Command: "ping", Description: "TCP latency from this server"},
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},

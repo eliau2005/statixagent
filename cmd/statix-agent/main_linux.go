@@ -154,6 +154,7 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		CheckCerts: func(ctx context.Context, hosts []string) []netcheck.CertStatus {
 			return netcheck.CheckCerts(ctx, hosts, time.Now())
 		},
+		Latency:       netcheck.Latency,
 		KeyPaths:      findAuthorizedKeys(),
 		ConfigPath:    cfgPath,
 		ListListeners: listListeners,
