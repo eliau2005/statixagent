@@ -83,6 +83,8 @@ func alertKeyboard(key string) telegram.Keyboard {
 		row = []telegram.Button{{Text: "🌡 Temp", Data: "temp"}, {Text: "📊 Status", Data: "status"}}
 	case "ssl":
 		row = []telegram.Button{{Text: "🔒 Certs", Data: "ssl"}, {Text: "📊 Status", Data: "status"}}
+	case "docker", "docker-up", "docker-restart":
+		row = []telegram.Button{{Text: "🐳 Containers", Data: "docker"}, {Text: "📊 Status", Data: "status"}}
 	case "battery", "power-loss", "power-restored":
 		row = []telegram.Button{{Text: "🔋 Power", Data: "battery"}, {Text: "📊 Status", Data: "status"}}
 	default:

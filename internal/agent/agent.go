@@ -141,6 +141,12 @@ type Agent struct {
 	// sslInterval is the certificate re-check period, set once in New and
 	// overridden only by tests.
 	sslInterval time.Duration
+
+	// prevContainers maps container ID → state as of the last docker poll
+	// (nil until seeded). Guarded by mu. dockerPoll is the poll period,
+	// set once in New and overridden only by tests.
+	prevContainers map[string]string
+	dockerPoll     time.Duration
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -169,6 +175,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		digest:       digestStats{since: time.Now()},
 		digestPoll:   30 * time.Second,
 		sslInterval:  12 * time.Hour,
+		dockerPoll:   time.Minute,
 	}
 	a.router = a.buildRouter()
 	return a
@@ -204,6 +211,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	loop("digest", a.digestLoop)
 	if a.src.CheckCerts != nil {
 		loop("ssl", a.sslLoop)
+	}
+	if a.src.Docker != nil && a.cfg.Monitors.Docker {
+		loop("docker", a.dockerLoop)
 	}
 	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
 		log.Printf("agent: setMyCommands: %v", err)
