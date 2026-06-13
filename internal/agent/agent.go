@@ -464,7 +464,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			b.WriteString("• 🔐 report every SSH login, brute-force bursts, key changes\n")
 		}
 		watch := a.watchCopy()
-		if n := len(watch.Services) + len(watch.Processes) + len(watch.Ports) + len(watch.HTTPChecks); n > 0 {
+		if n := len(watch.Services) + len(watch.Processes) + len(watch.Ports) + len(watch.HTTPChecks) + len(watch.SSLHosts); n > 0 {
 			fmt.Fprintf(&b, "• 🧩 watch %d services, processes and ports\n", n)
 		}
 		if enabled, hour := a.digestCfg(); enabled {

@@ -21,6 +21,8 @@ func (a *Agent) watchCopy() config.Watch {
 	w.Services = append([]string(nil), w.Services...)
 	w.Processes = append([]string(nil), w.Processes...)
 	w.Ports = append([]config.PortCheck(nil), w.Ports...)
+	w.SSLHosts = append([]string(nil), w.SSLHosts...)
+	w.HTTPChecks = append([]config.HTTPCheck(nil), w.HTTPChecks...)
 	return w
 }
 
@@ -388,8 +390,15 @@ func (a *Agent) procsRemove(ctx context.Context, args []string) string {
 // watchedSummary is the one-line state appended to every mutation reply.
 func (a *Agent) watchedSummary() string {
 	w := a.watchCopy()
-	return fmt.Sprintf("Now watching: %d services · %d processes · %d ports",
+	s := fmt.Sprintf("Now watching: %d services · %d processes · %d ports",
 		len(w.Services), len(w.Processes), len(w.Ports))
+	if n := len(w.SSLHosts); n > 0 {
+		s += fmt.Sprintf(" · %d ssl", n)
+	}
+	if n := len(w.HTTPChecks); n > 0 {
+		s += fmt.Sprintf(" · %d http", n)
+	}
+	return s
 }
 
 // resolveByIndex returns list[n-1] when arg is a valid 1-based index.
@@ -487,7 +496,7 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 	var kb telegram.Keyboard
 	var b strings.Builder
 	b.WriteString("👁 <b>Watching</b>\n")
-	total := len(w.Services) + len(w.Processes) + len(w.Ports)
+	total := len(w.Services) + len(w.Processes) + len(w.Ports) + len(w.SSLHosts) + len(w.HTTPChecks)
 	if total == 0 {
 		b.WriteString("Nothing yet — scan to add:")
 	} else {
@@ -507,6 +516,16 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 			}
 			fmt.Fprintf(&b, " 🔌 port %d%s\n", p.Port, label)
 			kb = append(kb, []telegram.Button{{Text: fmt.Sprintf("🗑 port %d", p.Port), Data: fmt.Sprintf("pr:%d", p.Port)}})
+		}
+		for _, h := range w.SSLHosts {
+			fmt.Fprintf(&b, " 🔒 %s\n", esc(h))
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h, 20), Data: "cr:" + h}})
+		}
+		// HTTP checks are removed by index: URLs overflow Telegram's
+		// 64-byte callback-data limit.
+		for i, h := range w.HTTPChecks {
+			fmt.Fprintf(&b, " 🌐 %s\n", esc(truncate(h.URL, 34)))
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h.URL, 20), Data: fmt.Sprintf("hr:%d", i)}})
 		}
 		b.WriteString("</pre>")
 	}
@@ -586,6 +605,32 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 		a.mutateWatch(func(w *config.Watch) { w.Processes = remove(w.Processes, name) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + name, true
+
+	case strings.HasPrefix(data, "cr:"):
+		host := strings.TrimPrefix(data, "cr:")
+		a.mutateWatch(func(w *config.Watch) { w.SSLHosts = remove(w.SSLHosts, host) })
+		text, kb := a.watchingView()
+		return text, kb, "🗑 " + host, true
+
+	case strings.HasPrefix(data, "hr:"):
+		i, err := strconv.Atoi(strings.TrimPrefix(data, "hr:"))
+		checks := a.watchCopy().HTTPChecks
+		if err != nil || i < 0 || i >= len(checks) {
+			text, kb := a.watchingView()
+			return text, kb, "stale list", true
+		}
+		url := checks[i].URL
+		a.mutateWatch(func(w *config.Watch) {
+			kept := w.HTTPChecks[:0]
+			for _, h := range w.HTTPChecks {
+				if h.URL != url {
+					kept = append(kept, h)
+				}
+			}
+			w.HTTPChecks = kept
+		})
+		text, kb := a.watchingView()
+		return text, kb, "🗑 " + truncate(url, 30), true
 
 	case strings.HasPrefix(data, "pr:"):
 		port, err := strconv.Atoi(strings.TrimPrefix(data, "pr:"))
