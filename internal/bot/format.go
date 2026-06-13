@@ -266,10 +266,14 @@ func Disk(s collect.Snapshot) string {
 	return card("💾 <b>Disk</b>", L)
 }
 
-// Net renders /net.
-func Net(s collect.Snapshot) string {
+// Net renders /net. rxTrend and txTrend are pre-rendered sparklines of
+// recent aggregate rates ("" = omit).
+func Net(s collect.Snapshot, rxTrend, txTrend string) string {
 	var L []string
 	var idle []string
+	if rxTrend != "" || txTrend != "" {
+		L = append(L, " ↓ "+rxTrend, " ↑ "+txTrend, divider)
+	}
 	for _, n := range s.Net {
 		if n.RxTotal == 0 && n.TxTotal == 0 {
 			idle = append(idle, n.Name)
@@ -285,6 +289,16 @@ func Net(s collect.Snapshot) string {
 		L = append(L, " no interfaces found")
 	}
 	return card("🌐 <b>Network</b>", L)
+}
+
+// NetTrendVals converts per-interface rates into the aggregate point the
+// trend ring stores for sparklines.
+func NetTrendVals(rates []collect.NetRate) (rx, tx float64) {
+	for _, n := range rates {
+		rx += n.RxBytesPerSec
+		tx += n.TxBytesPerSec
+	}
+	return rx, tx
 }
 
 // Temp renders /temp: junk sensors (≤0°C) dropped, hwmon duplicates of a
