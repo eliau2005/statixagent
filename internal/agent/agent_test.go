@@ -182,7 +182,7 @@ func TestRootLoginAlertAndBruteForce(t *testing.T) {
 		t.Errorf("root login must push critical alert: %v", send.all())
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		a.handleAuthLine(ctx, "Failed password for invalid user admin from 192.0.2.4 port 33000 ssh2", now.Add(time.Duration(i)*time.Second))
 	}
 	if !send.find("Brute-force attack") {
@@ -567,7 +567,7 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 		if strings.Contains(e.html, "🔴 <b>LIVE</b>") {
 			liveEdits++
 		}
-		if e.kb != nil && len(e.kb) == 1 && e.kb[0][0].Data == "live_stop" {
+		if len(e.kb) == 1 && e.kb[0][0].Data == "live_stop" {
 			stopButtonSeen = true
 		}
 	}
@@ -786,7 +786,7 @@ func TestSettingsButtons(t *testing.T) {
 	}
 
 	// Clamping: battery cannot go below its floor.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 4, Data: "th:batt:-5"})
 	}
 	if got := a.thresholds().BatteryPercent; got != 5 {

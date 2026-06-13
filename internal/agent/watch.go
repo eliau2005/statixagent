@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,7 +97,7 @@ func (a *Agent) scanServices(ctx context.Context) ([]unitInfo, error) {
 		watched[s] = true
 	}
 	var found []unitInfo
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		f := strings.Fields(line)
 		if len(f) < 4 || !strings.HasSuffix(f[0], ".service") {
 			continue
@@ -180,10 +181,8 @@ func (a *Agent) servicesAdd(ctx context.Context, args []string) string {
 			name += ".service"
 		}
 	}
-	for _, s := range a.watchCopy().Services {
-		if s == name {
-			return esc(name) + " is already watched."
-		}
+	if slices.Contains(a.watchCopy().Services, name) {
+		return esc(name) + " is already watched."
 	}
 	note := a.mutateWatch(func(w *config.Watch) {
 		w.Services = append(w.Services, name)
@@ -418,10 +417,8 @@ func resolvePort(arg string, scan []int) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("%q is not a port or list number", arg)
 	}
-	for _, p := range scan {
-		if p == n {
-			return n, nil
-		}
+	if slices.Contains(scan, n) {
+		return n, nil
 	}
 	if n >= 1 && n <= len(scan) {
 		return scan[n-1], nil
@@ -455,12 +452,7 @@ func numberedList(title string, items []string) string {
 }
 
 func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 func remove(list []string, s string) []string {
