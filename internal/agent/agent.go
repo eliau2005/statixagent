@@ -543,7 +543,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/services_scan /ports_scan — find candidates\n" +
 			"(/services_add, /ports_add, /procs_add … still work typed)\n\n" +
 			"⚙️ <b>Maintenance</b>\n" +
-			"/settings — tune alert thresholds\n" +
+			"/settings — tune thresholds &amp; digest\n" +
 			"/update — check · /update_confirm — install\n" +
 			"/clear_chat — wipe recent messages"
 	})
