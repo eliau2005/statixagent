@@ -46,6 +46,7 @@ systemd service (`Restart=always`).
 | `/digest` | the day's recap — also auto-sent every morning |
 | `/services` | systemd units, processes, ports, healthchecks |
 | `/http` | endpoint checks · `/http add <url> [status]` · `/http remove <url>` |
+| `/ping` | TCP connect latency from the server: `/ping db.example:5432` |
 | `/docker` | containers with CPU/RAM and restart counts |
 | `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
 | `/ssl` | certificate expiry · `/ssl add <host>` · `/ssl remove <host>` |
@@ -56,8 +57,9 @@ systemd service (`Restart=always`).
 | `/clear_chat` | delete recent messages |
 
 Alerts (thresholds, power loss, SSH logins, brute force, key changes, cert
-expiry, host reboots) arrive as push messages — no need to ask — and carry
-buttons for the next step.
+expiry, host reboots, container down/restart loops) arrive as push messages —
+no need to ask — and carry buttons for the next step, including 🔕 to snooze
+that alert for an hour while you handle it.
 
 ## Self-update
 
