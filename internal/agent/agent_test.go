@@ -695,8 +695,11 @@ func TestAlertActionButtons(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || len(kb[0]) != 3 || kb[0][0].Data != "ssh" || kb[0][1].Data != "ssh_fails" || kb[0][2].Data != "firewall" {
+	if kb == nil || len(kb[0]) != 4 || kb[0][0].Data != "ssh" || kb[0][1].Data != "ssh_fails" || kb[0][2].Data != "firewall" {
 		t.Fatalf("ssh alert keyboard = %+v", kb)
+	}
+	if last := kb[0][len(kb[0])-1]; !strings.HasPrefix(last.Data, "snz:") {
+		t.Fatalf("alert keyboard missing snooze button: %+v", kb)
 	}
 
 	// CPU threshold alert leads with the Top button (find the culprit),

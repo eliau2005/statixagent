@@ -45,18 +45,34 @@ type Engine struct {
 	// Cooldown is the minimum gap between two fires of the same key.
 	Cooldown time.Duration
 
-	mu        sync.Mutex
-	active    map[string]bool
-	lastFired map[string]time.Time
+	mu           sync.Mutex
+	active       map[string]bool
+	lastFired    map[string]time.Time
+	snoozedUntil map[string]time.Time
 }
 
 // New returns an Engine with the given re-fire cooldown.
 func New(cooldown time.Duration) *Engine {
 	return &Engine{
-		Cooldown:  cooldown,
-		active:    map[string]bool{},
-		lastFired: map[string]time.Time{},
+		Cooldown:     cooldown,
+		active:       map[string]bool{},
+		lastFired:    map[string]time.Time{},
+		snoozedUntil: map[string]time.Time{},
 	}
+}
+
+// Snooze silences a key until the given time: no fires, no recoveries.
+// A violation still in progress when the snooze expires fires again.
+func (e *Engine) Snooze(key string, until time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.snoozedUntil[key] = until
+}
+
+// snoozed reports whether key is silenced at now. Callers hold e.mu.
+func (e *Engine) snoozed(key string, now time.Time) bool {
+	until, ok := e.snoozedUntil[key]
+	return ok && now.Before(until)
 }
 
 // ThresholdOpts configures one threshold evaluation.
@@ -84,6 +100,14 @@ func (e *Engine) Threshold(o ThresholdOpts, now time.Time) *Alert {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.snoozed(o.Key, now) {
+		// Stay quiet. Recovery clears the firing state silently so that a
+		// violation still present (or back) after the snooze fires fresh.
+		if recovered {
+			e.active[o.Key] = false
+		}
+		return nil
+	}
 	switch {
 	case violating && !e.active[o.Key]:
 		if last, ok := e.lastFired[o.Key]; ok && now.Sub(last) < e.Cooldown {
@@ -118,6 +142,9 @@ func (e *Engine) Event(key, title, body string, sev Severity, now time.Time, coo
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.snoozed(key, now) {
+		return nil
+	}
 	if last, ok := e.lastFired[key]; ok && cd > 0 && now.Sub(last) < cd {
 		return nil
 	}
