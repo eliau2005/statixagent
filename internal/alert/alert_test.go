@@ -100,3 +100,63 @@ func TestEventCooldown(t *testing.T) {
 		t.Fatal("tiny override cooldown must allow immediate re-emit")
 	}
 }
+
+func tempOpts(v float64) ThresholdOpts {
+	return ThresholdOpts{
+		Key: "temp", Title: "Temperature", Severity: Warning,
+		Value: v, Threshold: 70, ClearMargin: 5, Unit: "°C", Sustain: 3,
+	}
+}
+
+func TestThresholdSustainIgnoresSpike(t *testing.T) {
+	e := New(10 * time.Minute)
+
+	// A mobile CPU boosting for one sample: over threshold, then back down.
+	if a := e.Threshold(tempOpts(92), t0); a != nil {
+		t.Fatalf("single spike fired: %+v", a)
+	}
+	if a := e.Threshold(tempOpts(41), t0.Add(15*time.Second)); a != nil {
+		t.Fatalf("cooled sample fired: %+v", a)
+	}
+	if e.Active("temp") {
+		t.Fatal("a spike must not leave the key active")
+	}
+	// Two in a row is still short of Sustain, and the run restarts after a
+	// sample that clears.
+	e.Threshold(tempOpts(92), t0.Add(30*time.Second))
+	if a := e.Threshold(tempOpts(91), t0.Add(45*time.Second)); a != nil {
+		t.Fatalf("second consecutive sample fired early: %+v", a)
+	}
+	if a := e.Threshold(tempOpts(41), t0.Add(60*time.Second)); a != nil {
+		t.Fatalf("recovery without a fire must stay silent: %+v", a)
+	}
+	if a := e.Threshold(tempOpts(92), t0.Add(75*time.Second)); a != nil {
+		t.Fatalf("streak must restart after a clearing sample: %+v", a)
+	}
+}
+
+func TestThresholdSustainFiresWhenHeld(t *testing.T) {
+	e := New(10 * time.Minute)
+
+	e.Threshold(tempOpts(88), t0)
+	e.Threshold(tempOpts(90), t0.Add(15*time.Second))
+	a := e.Threshold(tempOpts(92), t0.Add(30*time.Second))
+	if a == nil || a.Resolved {
+		t.Fatalf("third consecutive sample must fire: %+v", a)
+	}
+	if !strings.Contains(a.Body, "92.0°C is above the 70.0°C") {
+		t.Errorf("body = %q", a.Body)
+	}
+	// Recovery is immediate — it does not wait for a run of its own.
+	rec := e.Threshold(tempOpts(41), t0.Add(45*time.Second))
+	if rec == nil || !rec.Resolved {
+		t.Fatalf("recovery alert expected: %+v", rec)
+	}
+}
+
+func TestThresholdSustainDefaultsToOne(t *testing.T) {
+	e := New(10 * time.Minute)
+	if a := e.Threshold(cpuOpts(95), t0); a == nil {
+		t.Fatal("Sustain 0 must fire on the first violating sample")
+	}
+}

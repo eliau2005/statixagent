@@ -1,7 +1,10 @@
 // Package alert decides when a measurement or event becomes a notification.
 // Threshold alerts use hysteresis (fire once on crossing, clear on recovery
 // past a margin) plus a cooldown so a flapping metric cannot spam the chat.
-// Event alerts (new login, power loss) dedupe by key + cooldown only.
+// A rule may also demand the violation hold for several consecutive samples,
+// which is what keeps an instantaneous sensor (temperature) from alerting on
+// a two-second spike. Event alerts (new login, power loss) dedupe by key +
+// cooldown only.
 package alert
 
 import (
@@ -47,6 +50,7 @@ type Engine struct {
 
 	mu           sync.Mutex
 	active       map[string]bool
+	streak       map[string]int // consecutive violating samples per key
 	lastFired    map[string]time.Time
 	snoozedUntil map[string]time.Time
 }
@@ -56,6 +60,7 @@ func New(cooldown time.Duration) *Engine {
 	return &Engine{
 		Cooldown:     cooldown,
 		active:       map[string]bool{},
+		streak:       map[string]int{},
 		lastFired:    map[string]time.Time{},
 		snoozedUntil: map[string]time.Time{},
 	}
@@ -85,11 +90,18 @@ type ThresholdOpts struct {
 	ClearMargin float64 // recovery requires passing threshold by this much
 	Below       bool    // true: alert when Value < Threshold (battery)
 	Unit        string  // "%", "°C" — used in the body text
+
+	// Sustain is how many consecutive violating samples must arrive before
+	// the rule fires. 0 and 1 both mean "fire on the first one". Raise it for
+	// a metric read as an instant value rather than an interval average: a
+	// laptop CPU touches 90°C for two seconds on any burst, and that is not
+	// an incident. Recovery is unaffected — a cleared value resolves at once.
+	Sustain int
 }
 
-// Threshold evaluates one rule. It returns a firing alert on the violating
-// crossing, a Resolved alert when the value recovers past the margin, and
-// nil otherwise.
+// Threshold evaluates one rule. It returns a firing alert once the violation
+// has held for Sustain consecutive samples, a Resolved alert when the value
+// recovers past the margin, and nil otherwise.
 func (e *Engine) Threshold(o ThresholdOpts, now time.Time) *Alert {
 	violating := o.Value >= o.Threshold
 	recovered := o.Value < o.Threshold-o.ClearMargin
@@ -100,6 +112,16 @@ func (e *Engine) Threshold(o ThresholdOpts, now time.Time) *Alert {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Count the run of violating samples first, so a snoozed key still has an
+	// accurate streak when the snooze lifts.
+	if violating {
+		e.streak[o.Key]++
+	} else {
+		e.streak[o.Key] = 0
+	}
+	sustained := violating && e.streak[o.Key] >= max(o.Sustain, 1)
+
 	if e.snoozed(o.Key, now) {
 		// Stay quiet. Recovery clears the firing state silently so that a
 		// violation still present (or back) after the snooze fires fresh.
@@ -109,7 +131,7 @@ func (e *Engine) Threshold(o ThresholdOpts, now time.Time) *Alert {
 		return nil
 	}
 	switch {
-	case violating && !e.active[o.Key]:
+	case sustained && !e.active[o.Key]:
 		if last, ok := e.lastFired[o.Key]; ok && now.Sub(last) < e.Cooldown {
 			return nil // refuse to flap inside the cooldown
 		}
