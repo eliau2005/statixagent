@@ -300,7 +300,7 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 				alerts = append(alerts, a.engine.Threshold(alert.ThresholdOpts{
 					Key: "temp", Title: "Temperature", Severity: alert.Warning,
 					Value: th.MaxCelsius(), Threshold: a.thresholds().TempCelsius,
-					ClearMargin: 5, Unit: "°C",
+					ClearMargin: 5, Unit: "°C", Sustain: tempSustainSamples,
 				}, now))
 			}
 		}
@@ -317,6 +317,15 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 		}
 	}
 }
+
+// tempSustainSamples is how many consecutive over-threshold samples the
+// hottest sensor must produce before Temperature alerts. Unlike CPU, which
+// Compute averages over the whole sample interval, a temperature reading is
+// the instant the sysfs file was read: a mobile CPU jumps from 40°C to 90°C
+// within two seconds of any burst and falls back just as fast. Requiring the
+// violation to hold across samples is what separates a boost from a box that
+// is genuinely cooking.
+const tempSustainSamples = 3
 
 // rebootWindow is how fresh the host uptime must be at the agent's first
 // sample to call it a reboot. Agent restarts (self-update, crash recovery)

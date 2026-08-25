@@ -14,7 +14,9 @@ Telegram.
   mount, disk I/O rates, network rates and lifetime totals per interface,
   uptime, process count, open file descriptors.
 - **Thermal** — temperatures (thermal zones + hwmon), fan speeds,
-  throttling detection.
+  throttling detection. The temperature alert only fires once the threshold
+  is held for three consecutive samples, so a laptop CPU touching 90°C for
+  two seconds mid-boost stays quiet.
 - **Battery & power** — charge, health vs. design capacity, wattage draw,
   time-to-empty, and an **immediate alert when the power cord is pulled**.
 - **Services** — systemd units, named processes, TCP ports, HTTP
