@@ -157,7 +157,7 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 		a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, "Update postponed — /update any time.", nil)
 		return
 	case "live":
-		a.send.AnswerCallback(ctx, cb.ID, "Live for 30s")
+		a.send.AnswerCallback(ctx, cb.ID, "Live mode active (tap Stop to exit)")
 		a.startLive(ctx, cb.ChatID, cb.MessageID)
 		return
 	case "live_stop":

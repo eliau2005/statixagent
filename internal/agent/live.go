@@ -10,8 +10,9 @@ import (
 )
 
 // Live mode: pressing ▶️ Live re-renders the status card in place on a
-// short tick, turning the message into a self-updating dashboard for a
-// bounded window. Only one live session runs at a time.
+// short tick, turning the message into a self-updating dashboard until the
+// user taps ⏹ Stop (or a safety ceiling is reached). Only one live session
+// runs at a time.
 
 // spinnerFrames animate the live header, one frame per tick.
 var spinnerFrames = []string{"◐", "◓", "◑", "◒"}
@@ -52,7 +53,11 @@ func (a *Agent) stopLive() {
 }
 
 func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, duration time.Duration) {
-	deadline := time.Now().Add(duration)
+	start := time.Now()
+	var deadline time.Time
+	if duration > 0 {
+		deadline = start.Add(duration)
+	}
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 
@@ -62,11 +67,8 @@ func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, 
 		a.mu.Lock()
 		body := bot.Status(a.src.Hostname, a.snap, a.thermal, a.power)
 		a.mu.Unlock()
-		left := time.Until(deadline).Round(time.Second)
-		if left < 0 {
-			left = 0
-		}
-		header := fmt.Sprintf("%s 🔴 <b>LIVE</b> · %s left\n", spinnerFrames[frame%len(spinnerFrames)], bot.Dur(left))
+		elapsed := time.Since(start).Round(time.Second)
+		header := fmt.Sprintf("%s 🔴 <b>LIVE</b> · %s\n", spinnerFrames[frame%len(spinnerFrames)], bot.Dur(elapsed))
 		frame++
 		return header + body
 	}
@@ -78,7 +80,7 @@ func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, 
 			a.finishLive(chatID, messageID)
 			return
 		case <-tick.C:
-			if time.Now().After(deadline) {
+			if !deadline.IsZero() && time.Now().After(deadline) {
 				a.finishLive(chatID, messageID)
 				return
 			}

@@ -561,11 +561,17 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 
 	send.mu.Lock()
 	defer send.mu.Unlock()
+	if len(send.answered) == 0 || send.answered[0] != "cb:Live mode active (tap Stop to exit)" {
+		t.Errorf("want callback toast 'Live mode active (tap Stop to exit)', got %+v", send.answered)
+	}
 	liveEdits := 0
 	stopButtonSeen := false
 	for _, e := range send.edits[:len(send.edits)-1] {
 		if strings.Contains(e.html, "🔴 <b>LIVE</b>") {
 			liveEdits++
+			if !strings.Contains(e.html, "🔴 <b>LIVE</b> · ") {
+				t.Errorf("frame missing elapsed time format: %q", e.html)
+			}
 		}
 		if len(e.kb) == 1 && e.kb[0][0].Data == "live_stop" {
 			stopButtonSeen = true
@@ -602,6 +608,12 @@ func TestLiveModeStopButton(t *testing.T) {
 	waitFor(t, func() bool {
 		return !strings.Contains(send.lastEdit().html, "LIVE")
 	}, "stop to restore the normal view")
+
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.answered) < 2 || send.answered[0] != "c1:Live mode active (tap Stop to exit)" || send.answered[1] != "c2:" {
+		t.Errorf("unexpected answered callbacks: %+v", send.answered)
+	}
 }
 
 func TestWatchButtons(t *testing.T) {

@@ -138,9 +138,10 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
 ## v0.5.0 — live mode (UX loop, iteration 2)
 
 - [x] ▶️ Live button on the nav keyboard: re-samples and re-renders the status card
-      in place every 3s for 30s with a spinner frame (◐◓◑◒) and countdown, ⏹ Stop
-      ends early, nav keyboard restored at the end. One session at a time; bound to
-      the agent context so shutdown cancels it.
+      in place every 3s until ⏹ Stop is tapped (with a 1h safety ceiling), showing
+      a spinner frame (◐◓◑◒) and elapsed duration, ⏹ Stop ends early, nav keyboard
+      restored at the end. One session at a time; bound to the agent context so
+      shutdown cancels it.
 
 ## v0.6.0 — button-driven watch management (UX loop, iteration 3)
 
