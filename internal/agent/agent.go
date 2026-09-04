@@ -115,7 +115,8 @@ type Agent struct {
 	lastSessions []sshwatch.Session
 
 	// Live-mode session state (live.go). Guarded by mu; intervals are set
-	// once in New and overridden only by tests.
+	// once in New and overridden only by tests. liveDuration serves as a
+	// safety ceiling (default 1h).
 	liveCancel   context.CancelFunc
 	liveInterval time.Duration
 	liveDuration time.Duration
@@ -171,7 +172,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		keys:         sshwatch.NewKeysWatcher(src.KeyPaths),
 		geo:          sshwatch.NewGeoResolver(),
 		liveInterval: 3 * time.Second,
-		liveDuration: 30 * time.Second,
+		liveDuration: time.Hour,
 		digest:       digestStats{since: time.Now()},
 		digestPoll:   30 * time.Second,
 		sslInterval:  12 * time.Hour,
