@@ -1,4 +1,13 @@
-# VPS Monitoring Tool — MVP
+# StatixAgent — Product Spec (MVP)
+
+> This is the original product specification and vision for StatixAgent, kept as
+> a reference for *why* the project is shaped the way it is. It is a spec, not a
+> status report: the authoritative description of what is implemented today is
+> the [README](README.md), the current design is in
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and forward-looking work is in
+> [ROADMAP.md](ROADMAP.md). Where this document sketches commands or scope, the
+> current implementation is the source of truth; notes below flag the places
+> where the project has since moved past the original scope.
 
 ## 1. Vision
 
@@ -91,4 +100,8 @@ The TUI runs **at install time only**. Everything afterward is done through the 
 - A central aggregator or unified cross-server dashboard.
 - A live TUI dashboard (htop-style) — the TUI is installer-only for now.
 - Cross-server brute-force correlation.
-- Bot-triggered remediation actions (disconnect session / block IP) — candidates for a later version.
+- Bot-triggered remediation actions (disconnect session / block IP) — originally
+  a candidate for a later version. **Update:** confirmation-gated remediation has
+  since begun — `/firewall` (open/close SSH port 22 via `ufw`) and SSH session
+  disconnect are now implemented. Further remediation is tracked in
+  [ROADMAP.md](ROADMAP.md).

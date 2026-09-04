@@ -5,6 +5,13 @@
 *.txt
 coverage.out
 
+# Locally built binaries (release builds are produced by CI)
+/statix-agent
+/statix-install
+
+# Scratch output from local tooling
+/graphify-out/
+
 .claude/
 
 

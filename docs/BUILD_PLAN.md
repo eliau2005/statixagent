@@ -1,13 +1,23 @@
-# StatixAgent — Build Plan
+# Build Plan — engineering record
 
-Derived from [mvp.md](../mvp.md). Each phase ends in a green test suite and a commit.
-Development happens on Windows; the target platform is Linux (amd64/arm64). Everything
-that parses text (`/proc` formats, logs, config) is platform-neutral and unit-tested with
-fixtures; everything that touches the live OS sits behind an interface and `//go:build linux`.
+This is the phase-by-phase record of how StatixAgent's current feature set was
+built, derived from [mvp.md](../mvp.md). It is kept as a historical engineering
+tracker: it documents the order in which things were implemented and the
+decisions taken along the way. **For forward-looking work — what's planned and
+where contributions are wanted — see [ROADMAP.md](../ROADMAP.md).**
+
+Each phase ended in a green test suite and a commit. The target platform is
+Linux (amd64/arm64); development and CI run on any OS. Everything that parses
+text (`/proc` formats, logs, config) is platform-neutral and unit-tested with
+fixtures; everything that touches the live OS sits behind an interface and
+`//go:build linux` (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 
 ## Status legend
 
 - [ ] not started  · [~] in progress  · [x] done
+
+All items below are complete; the checkboxes are preserved as the historical
+record of the build.
 
 ## Phase 0 — Foundation
 
@@ -102,8 +112,10 @@ fixtures; everything that touches the live OS sits behind an interface and `//go
 - [x] GitHub Actions CI + release workflow (build, checksum, ed25519 sign via
       tools/sign, publish). Makefile mirrors release builds locally.
 
-**All phases complete — the MVP is built.** Future work beyond the MVP lives in
-mvp.md §8 (out of scope) and would start with bot-triggered remediation actions.
+**All MVP phases complete — the MVP is built.** The sections below record the
+UX and feature iterations that shipped on top of it. Directions beyond what is
+recorded here live in [ROADMAP.md](../ROADMAP.md); out-of-scope items are noted
+in [mvp.md](../mvp.md) §8.
 
 ## Post-MVP fixes (v0.2.0)
 
@@ -175,4 +187,7 @@ mvp.md §8 (out of scope) and would start with bot-triggered remediation actions
 
 ## Out of scope (per MVP §8)
 
-Central aggregator, live TUI dashboard, cross-server correlation, remediation actions.
+Central aggregator, live TUI dashboard, and cross-server correlation remain out
+of scope. Remediation actions were originally out of scope but have since begun,
+confirmation-gated, with `/firewall` and SSH session disconnect (v0.9.0);
+further remediation is tracked in [ROADMAP.md](../ROADMAP.md).
