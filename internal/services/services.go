@@ -160,6 +160,11 @@ type HTTPSpec struct {
 
 // CheckHTTP probes each endpoint and compares the status code.
 func CheckHTTP(ctx context.Context, client *http.Client, checks []HTTPSpec) []Result {
+	noFollow := *client
+	noFollow.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	client = &noFollow
 	out := make([]Result, 0, len(checks))
 	for _, c := range checks {
 		want := c.ExpectStatus

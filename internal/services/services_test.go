@@ -123,3 +123,26 @@ func TestCheckHTTP(t *testing.T) {
 		t.Errorf("mismatch detail = %q", got[2].Detail)
 	}
 }
+
+func TestCheckHTTPDoesNotFollowRedirects(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/landing", http.StatusMovedPermanently)
+	})
+	mux.HandleFunc("/landing", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	got := CheckHTTP(context.Background(), srv.Client(), []HTTPSpec{
+		{URL: srv.URL + "/start", ExpectStatus: 301},
+		{URL: srv.URL + "/start", ExpectStatus: 200},
+	})
+	if got[0].State != StateOK || !strings.Contains(got[0].Detail, "301 in") {
+		t.Errorf("expected 301 = %s (%s)", got[0].State, got[0].Detail)
+	}
+	if got[1].State != StateDegraded || !strings.Contains(got[1].Detail, "got 301, want 200") {
+		t.Errorf("redirect toward 200 = %s (%s)", got[1].State, got[1].Detail)
+	}
+}
