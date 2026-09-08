@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -102,6 +103,7 @@ func ParseLine(line string, at time.Time) (Event, bool) {
 // History is a fixed-capacity ring of recent events for the bot's
 // /ssh history and /ssh fails commands.
 type History struct {
+	mu     sync.RWMutex
 	cap    int
 	events []Event
 }
@@ -113,6 +115,9 @@ func NewHistory(capacity int) *History {
 
 // Add appends an event, evicting the oldest beyond capacity.
 func (h *History) Add(e Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	h.events = append(h.events, e)
 	if len(h.events) > h.cap {
 		h.events = h.events[len(h.events)-h.cap:]
@@ -122,10 +127,14 @@ func (h *History) Add(e Event) {
 // Recent returns up to n latest events matching the filter (nil = all),
 // newest first.
 func (h *History) Recent(n int, match func(Event) bool) []Event {
+	h.mu.RLock()
+	events := append([]Event(nil), h.events...)
+	h.mu.RUnlock()
+
 	var out []Event
-	for i := len(h.events) - 1; i >= 0 && len(out) < n; i-- {
-		if match == nil || match(h.events[i]) {
-			out = append(out, h.events[i])
+	for i := len(events) - 1; i >= 0 && len(out) < n; i-- {
+		if match == nil || match(events[i]) {
+			out = append(out, events[i])
 		}
 	}
 	return out

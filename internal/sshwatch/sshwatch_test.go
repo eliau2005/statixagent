@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -86,6 +87,37 @@ func TestHistory(t *testing.T) {
 	fails := h.Recent(10, func(e Event) bool { return e.Port%2 == 0 })
 	if len(fails) != 2 {
 		t.Errorf("filtered = %+v", fails)
+	}
+}
+
+func TestHistoryConcurrentAccess(t *testing.T) {
+	h := NewHistory(32)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(2)
+		go func(worker int) {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 1_000; i++ {
+				h.Add(Event{Kind: EventFailed, Port: worker*1_000 + i})
+			}
+		}(worker)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 1_000; i++ {
+				_ = h.Recent(16, func(e Event) bool { return e.Kind == EventFailed })
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if got := len(h.Recent(100, nil)); got != 32 {
+		t.Fatalf("ring kept %d events, want 32", got)
 	}
 }
 

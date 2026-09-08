@@ -42,7 +42,7 @@ You do **not** need Linux to develop: the full test suite runs on any OS.
 ```sh
 git clone https://github.com/eliau2005/statixagent.git
 cd statixagent
-go test ./...      # should be all green
+go test -race ./... # should be all green and race-free
 ```
 
 That's it — there is no code generation, no vendored tree to sync, and no
@@ -51,7 +51,7 @@ services to stand up.
 ## Everyday commands
 
 ```sh
-go test ./...                 # run the full suite (14 packages)
+go test -race ./...           # run the full suite with the race detector
 go test ./internal/alert/...  # run one package while iterating
 go vet ./...                  # static checks — must be clean
 gofmt -l .                    # list unformatted files (should print nothing)
@@ -100,7 +100,7 @@ that only breaks one of them will be caught.
 - **Keep the suite fast and hermetic.** Tests must not reach the network, touch
   real system paths, or depend on the host OS. Use fixtures, `fstest.MapFS`,
   temp dirs, and the existing fakes.
-- Run `go test ./...` before pushing; it should be green on your machine.
+- Run `go test -race ./...` before pushing; it should be green and race-free on your machine.
 
 ## How to structure a change
 
@@ -120,7 +120,7 @@ that only breaks one of them will be caught.
   *why* when it isn't obvious.
 - In the PR description, cover: **what** changed, **why**, and **how you tested
   it**. Link the issue it addresses.
-- Make sure `go test ./...`, `go vet ./...`, and `gofmt` are clean — CI runs the
+- Make sure `go test -race ./...`, `go vet ./...`, and `gofmt` are clean — CI runs the
   first two plus a cross-compile smoke on both architectures, and a red build
   will not be merged.
 
