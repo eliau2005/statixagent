@@ -128,6 +128,10 @@ inline keyboard so you can navigate by tapping instead of typing.
 | `/clear_chat` | delete recent messages |
 | `/help` | grouped command reference |
 
+The Live button animates the latest regular sampler snapshot. It does not take
+extra samples, evaluate alert thresholds, or add points to metric trends, so
+opening the view cannot change monitoring behavior.
+
 Commands are accepted **only** from the single chat ID in the config; updates
 from any other chat are dropped before parsing.
 

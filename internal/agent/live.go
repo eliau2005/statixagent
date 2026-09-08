@@ -9,10 +9,11 @@ import (
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
-// Live mode: pressing ▶️ Live re-renders the status card in place on a
-// short tick, turning the message into a self-updating dashboard until the
-// user taps ⏹ Stop (or a safety ceiling is reached). Only one live session
-// runs at a time.
+// Live mode: pressing ▶️ Live re-renders the sampler-owned status snapshot in
+// place on a short tick until the user taps ⏹ Stop (or a safety ceiling is
+// reached). Rendering never collects or evaluates extra samples, so viewing
+// the dashboard cannot change alert cadence or trend history. Only one live
+// session runs at a time.
 
 // spinnerFrames animate the live header, one frame per tick.
 var spinnerFrames = []string{"◐", "◓", "◑", "◒"}
@@ -63,7 +64,6 @@ func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, 
 
 	frame := 0
 	render := func() string {
-		a.sampleOnce(ctx) // fresh data every tick, not the 15s cadence
 		a.mu.Lock()
 		body := bot.Status(a.src.Hostname, a.snap, a.thermal, a.power)
 		a.mu.Unlock()

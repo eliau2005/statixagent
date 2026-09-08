@@ -595,6 +595,39 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 	}
 }
 
+func TestLiveModeDoesNotAdvanceSamplerState(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.liveInterval = 5 * time.Millisecond
+	a.liveDuration = 30 * time.Millisecond
+	a.trend = []trendPoint{{cpu: 42}}
+	a.prevRaw = collect.Sample{Stat: procfs.Stat{Aggregate: procfs.CPUStat{User: 7}}}
+	sampleCalls := 0
+	a.src.Sample = func(context.Context) (collect.Sample, error) {
+		sampleCalls++
+		return collect.Sample{
+			At:   time.Now(),
+			Stat: procfs.Stat{Aggregate: procfs.CPUStat{Name: "cpu", User: 100, Idle: 900}},
+			Mem:  procfs.MemInfo{Total: 8 << 30, Available: 4 << 30},
+		}, nil
+	}
+
+	a.startLive(context.Background(), 42, 7)
+	waitFor(t, func() bool {
+		return send.editCount() > 1 && !strings.Contains(send.lastEdit().html, "LIVE")
+	}, "live session to finish")
+
+	if sampleCalls != 0 {
+		t.Errorf("live mode collected %d samples, want none", sampleCalls)
+	}
+	if got := len(a.trend); got != 1 {
+		t.Errorf("live mode grew trend to %d points, want 1", got)
+	}
+	if got := a.prevRaw.Stat.Aggregate.User; got != 7 {
+		t.Errorf("live mode changed sampler baseline user ticks to %d, want 7", got)
+	}
+}
+
 func TestLiveModeStopButton(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
