@@ -101,6 +101,8 @@ func TestCheckHTTP(t *testing.T) {
 		switch r.URL.Path {
 		case "/ok":
 			w.WriteHeader(200)
+		case "/redirect":
+			http.Redirect(w, r, "/ok", http.StatusMovedPermanently)
 		case "/teapot":
 			w.WriteHeader(418)
 		}
@@ -109,17 +111,30 @@ func TestCheckHTTP(t *testing.T) {
 
 	got := CheckHTTP(context.Background(), srv.Client(), []HTTPSpec{
 		{URL: srv.URL + "/ok"},
+		{URL: srv.URL + "/redirect", ExpectStatus: http.StatusMovedPermanently},
+		{URL: srv.URL + "/redirect", ExpectStatus: http.StatusOK},
 		{URL: srv.URL + "/teapot", ExpectStatus: 418},
 		{URL: srv.URL + "/teapot", ExpectStatus: 200},
 		{URL: "http://127.0.0.1:9/down", Timeout: 2 * time.Second},
 	})
-	wantStates := []State{StateOK, StateOK, StateDegraded, StateDown}
+	wantStates := []State{StateOK, StateOK, StateDegraded, StateOK, StateDegraded, StateDown}
 	for i, w := range wantStates {
 		if got[i].State != w {
 			t.Errorf("check %d (%s) = %s (%s), want %s", i, got[i].Name, got[i].State, got[i].Detail, w)
 		}
 	}
-	if !strings.Contains(got[2].Detail, "got 418, want 200") {
-		t.Errorf("mismatch detail = %q", got[2].Detail)
+	if !strings.Contains(got[2].Detail, "got 301, want 200") {
+		t.Errorf("redirect mismatch detail = %q", got[2].Detail)
+	}
+	if !strings.Contains(got[4].Detail, "got 418, want 200") {
+		t.Errorf("mismatch detail = %q", got[4].Detail)
+	}
+
+	// Nil client should default safely without panic.
+	nilClientGot := CheckHTTP(context.Background(), nil, []HTTPSpec{
+		{URL: srv.URL + "/ok"},
+	})
+	if len(nilClientGot) != 1 || nilClientGot[0].State != StateOK {
+		t.Errorf("nil client check failed: %+v", nilClientGot)
 	}
 }

@@ -32,8 +32,14 @@ func SSLCerts(sts []netcheck.CertStatus) string {
 		case s.DaysLeft <= 21:
 			icon = "⚠️"
 		}
+		// A negative count is an already-expired cert; say so rather than
+		// making the reader decode "-5d".
+		left := fmt.Sprintf("%dd", s.DaysLeft)
+		if s.DaysLeft < 0 {
+			left = "expired"
+		}
 		L = append(L, fmt.Sprintf(" %s %s %s %s", icon, pad(s.Host, 18),
-			pad(fmt.Sprintf("%dd", s.DaysLeft), -4), s.NotAfter.Format("Jan 02 2006")))
+			pad(left, -7), s.NotAfter.Format("Jan 02 2006")))
 	}
 	return card("🔒 <b>Certificates</b>", L)
 }

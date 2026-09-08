@@ -54,6 +54,21 @@ func startTLSServer(t *testing.T, notAfter time.Time) string {
 	return ln.Addr().String()
 }
 
+// A cert that died a few hours ago must read as expired (-1), not as 0 days
+// left, which the alert path treats as "expires today".
+func TestCheckCertJustExpired(t *testing.T) {
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	addr := startTLSServer(t, now.Add(-3*time.Hour))
+
+	st := CheckCert(context.Background(), addr, now)
+	if st.Err != "" {
+		t.Fatalf("err = %s", st.Err)
+	}
+	if st.DaysLeft != -1 {
+		t.Errorf("days left = %d, want -1", st.DaysLeft)
+	}
+}
+
 func TestCheckCert(t *testing.T) {
 	now := time.Date(2026, 6, 12, 0, 0, 0, 0, time.UTC)
 	expiry := now.Add(30*24*time.Hour + time.Hour)

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -15,6 +16,9 @@ import (
 type CertStatus struct {
 	Host     string
 	NotAfter time.Time
+	// DaysLeft is whole days until expiry, rounded down, so a certificate
+	// that expired at any point in the past is always negative: -1 covers
+	// the first 24 hours after NotAfter. Negative means expired.
 	DaysLeft int
 	Subject  string
 	Err      string // non-empty when the handshake failed
@@ -52,7 +56,7 @@ func CheckCert(ctx context.Context, host string, now time.Time) CertStatus {
 	leaf := certs[0]
 	st.NotAfter = leaf.NotAfter
 	st.Subject = leaf.Subject.CommonName
-	st.DaysLeft = int(leaf.NotAfter.Sub(now).Hours() / 24)
+	st.DaysLeft = int(math.Floor(leaf.NotAfter.Sub(now).Hours() / 24))
 	return st
 }
 

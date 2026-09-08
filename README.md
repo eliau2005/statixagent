@@ -115,7 +115,7 @@ inline keyboard so you can navigate by tapping instead of typing.
 | `/top` | heaviest processes by CPU and memory |
 | `/digest` | the day's recap — also auto-sent every morning |
 | `/services` | systemd units, processes, ports, healthchecks |
-| `/http` | endpoint checks · `/http add <url> [status]` · `/http remove <url>` |
+| `/http` | endpoint checks (redirects are reported, not followed) · `/http add <url> [status]` · `/http remove <url>` |
 | `/ping <host[:port]>` | TCP connect latency from the server |
 | `/docker` | containers with CPU/RAM and restart counts |
 | `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
