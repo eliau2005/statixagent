@@ -262,3 +262,11 @@ See [SECURITY.md](SECURITY.md) for the disclosure process.
 
 StatixAgent is released under the [MIT License](LICENSE). By contributing, you
 agree that your contributions are licensed under the same terms.
+
+## Contributors
+
+Thanks to everyone who has contributed to StatixAgent:
+
+<a href="https://github.com/eliau2005/statixagent/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=eliau2005/statixagent" alt="Contributors" />
+</a>
