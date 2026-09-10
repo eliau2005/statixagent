@@ -114,7 +114,10 @@ service). Its outward actions are deliberately narrow:
   and the Docker socket.
 - **Invokes** external tools for specific tasks: `systemctl` (service status and
   self-restart), `journalctl` / `tail` (auth-log stream), `loginctl` (session
-  fallback and SSH disconnect), and `ufw` (firewall rule changes).
+  fallback and SSH disconnect), and `ufw` (firewall rule changes). Each is used
+  only where it is already installed — the agent never installs a package, and
+  `/firewall` states that it cannot manage this host's firewall rather than
+  acting through a different backend.
 - **Writes** only its config file, its binary (on update), and its start-count
   state file.
 - **Network:** talks to the Telegram Bot API, to GitHub (release checks), and to

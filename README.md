@@ -101,7 +101,8 @@ confirmation:
 
 - **SSH session disconnect** buttons in `/ssh`.
 - **`/firewall`** — open or close SSH port 22 via `ufw`, behind a mandatory
-  confirmation screen.
+  confirmation screen. Hosts without `ufw` get a plain "cannot manage the
+  firewall here" and no buttons, never a guess about what is open.
 
 ## Telegram commands
 
@@ -120,7 +121,7 @@ inline keyboard so you can navigate by tapping instead of typing.
 | `/docker` | containers with CPU/RAM and restart counts |
 | `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
 | `/ssl` | certificate expiry · `/ssl add <host>` · `/ssl remove <host>` |
-| `/firewall` | open/close SSH port 22 via `ufw` |
+| `/firewall` | open/close SSH port 22 via `ufw` (says it cannot manage the firewall where `ufw` is absent) |
 | `/watching` | everything watched, managed with buttons |
 | `/settings` | alert thresholds and digest schedule, tuned with buttons |
 | `/services_scan` `/ports_scan` | discover candidates to watch |
@@ -194,8 +195,18 @@ The agent runs on **Linux** and is released for:
 
 It reads `/proc`, `/sys`, the auth log (`journalctl` / `/var/log/auth.log`),
 utmp (with a `loginctl` fallback for utmp-less distros such as Ubuntu 24.10+),
-and the Docker Engine socket when present. Optional integrations degrade
-gracefully when the underlying tool is absent (`ufw`, Docker, `journalctl`).
+and the Docker Engine socket when present.
+
+### Optional dependencies
+
+None of these are installed by the agent, and each one degrades to a stated
+behaviour rather than an error when it is absent:
+
+| Tool | Used by | Without it |
+| --- | --- | --- |
+| `ufw` | `/firewall` | The view says it cannot manage this host's firewall, names the likely backends (`firewalld`, `nftables`, `iptables`) instead of claiming the host is open, and offers no rule-changing buttons. `ufw` is absent from Alpine, Arch, Debian netinst/cloud images and containers, and is EPEL-only on the RHEL family. |
+| Docker Engine socket | `/docker` | The container view and container alerts are disabled. |
+| `journalctl` | SSH auth-log watching | Falls back to `tail -F /var/log/auth.log`. |
 
 Development and the full test suite run on any OS (Linux, macOS, Windows) —
 every parser is a pure function tested against fixtures.

@@ -155,6 +155,7 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 			return netcheck.CheckCerts(ctx, hosts, time.Now())
 		},
 		Latency:       netcheck.Latency,
+		OSRelease:     readOSRelease,
 		KeyPaths:      findAuthorizedKeys(),
 		ConfigPath:    cfgPath,
 		ListListeners: listListeners,
@@ -237,6 +238,28 @@ func withFile(path string, f func(*os.File) error) error {
 	}
 	defer fh.Close()
 	return f(fh)
+}
+
+// readOSRelease names the distribution for /firewall's install hint.
+// /etc/os-release is the machine's own copy; /usr/lib/os-release is the
+// vendor default that stateless and minimal images ship instead. nil when
+// neither is readable — the hint then lists the common package managers.
+func readOSRelease() map[string]string {
+	for _, path := range []string{"/etc/os-release", "/usr/lib/os-release"} {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		kv := agent.ParseOSRelease(f)
+		f.Close()
+		// A minimal image can ship an empty or unparseable /etc/os-release
+		// while the vendor copy under /usr/lib names the distribution, so
+		// only a file that actually yields an ID ends the search.
+		if kv["ID"] != "" {
+			return kv
+		}
+	}
+	return nil
 }
 
 // readSessions lists live sessions from utmp when it exists, falling back
