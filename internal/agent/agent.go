@@ -80,6 +80,11 @@ type Sources struct {
 	// UpdateCheck and UpdateApply are wired in Phase 8; nil = not available.
 	UpdateCheck func(ctx context.Context) (string, bool, error)
 	UpdateApply func(ctx context.Context) error
+
+	// OSRelease returns the parsed /etc/os-release key/values, used to name
+	// the right package manager when /firewall finds no ufw; nil falls back
+	// to a generic hint.
+	OSRelease func() map[string]string
 }
 
 // Agent is the daemon.

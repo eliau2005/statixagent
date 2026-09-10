@@ -25,6 +25,30 @@ func (f fakeRunner) Run(_ context.Context, name string, args ...string) (string,
 	return out, nil
 }
 
+func TestCmdEnvForcesCLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "fr_FR.UTF-8")
+	t.Setenv("LANG", "fr_FR.UTF-8")
+	env := cmdEnv()
+
+	// exec keeps the last occurrence of a duplicated key, so the forced
+	// values must come after whatever the agent inherited. ufw ships
+	// translations; a parser reading "Statut : actif" reports a healthy
+	// firewall as unreadable.
+	last := map[string]string{}
+	for _, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			last[k] = v
+		}
+	}
+	if last["LC_ALL"] != "C" || last["LANG"] != "C" {
+		t.Errorf("cmdEnv locale = LC_ALL=%q LANG=%q, want C", last["LC_ALL"], last["LANG"])
+	}
+	// The rest of the environment is inherited, not replaced.
+	if len(env) <= 2 {
+		t.Errorf("cmdEnv must extend the process environment, got %d entries", len(env))
+	}
+}
+
 func TestCheckSystemdUnits(t *testing.T) {
 	r := fakeRunner{
 		"nginx.service":    "ActiveState=active\nSubState=running\nNRestarts=0\n",

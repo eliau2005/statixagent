@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -877,8 +879,9 @@ func TestParseUFWStatus(t *testing.T) {
 		out  string
 		want sshPortState
 	}{
-		{"inactive", "Status: inactive\n", fwUnavailable},
-		{"empty", "", fwUnavailable},
+		{"inactive", "Status: inactive\n", fwInactive},
+		{"empty", "", fwUnparsed},
+		{"non-ufw output", "ActiveState=active\nSubState=running\n", fwUnparsed},
 		{"open", "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere\n22/tcp (v6)                ALLOW       Anywhere (v6)\n", fwOpen},
 		{"closed", "Status: active\n\n22/tcp                     DENY        Anywhere\n", fwClosed},
 		{"deny wins over allow", "Status: active\n\n22/tcp  DENY  Anywhere\n22/tcp  ALLOW  Anywhere\n", fwClosed},
@@ -1013,21 +1016,202 @@ func TestFirewallChangeFailureIsVisible(t *testing.T) {
 	}
 }
 
-func TestFirewallInactiveHasNoActions(t *testing.T) {
-	send := &fakeSender{}
-	a := testAgent(send)
-	a.src.Runner = scanRunner{} // returns non-ufw output → parsed as unavailable
-	ctx := context.Background()
-	text, kb := a.firewallView(ctx)
-	if !strings.Contains(text, "inactive") && !strings.Contains(text, "not available") {
-		t.Errorf("inactive view = %q", text)
-	}
+// assertNoFirewallActions fails when a view offers a rule-changing button.
+// Every state the agent cannot act on must be a dead end, not a trap.
+func assertNoFirewallActions(t *testing.T, kb telegram.Keyboard) {
+	t.Helper()
 	for _, row := range kb {
 		for _, b := range row {
 			if strings.HasPrefix(b.Data, "fw_") {
-				t.Errorf("inactive firewall must offer no actions: %+v", kb)
+				t.Errorf("non-manageable firewall must offer no actions: %+v", kb)
 			}
 		}
+	}
+}
+
+// missingUFW is a host without ufw — Alpine, Arch, a Debian netinst, or a
+// container: every candidate path fails to resolve.
+type missingUFW struct{ calls [][]string }
+
+func (m *missingUFW) Run(_ context.Context, name string, args ...string) (string, error) {
+	m.calls = append(m.calls, append([]string{name}, args...))
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
+// sbinUFW has ufw installed at /usr/sbin/ufw only, as on a service whose
+// PATH omits the sbin directories.
+type sbinUFW struct{ calls [][]string }
+
+func (s *sbinUFW) Run(_ context.Context, name string, args ...string) (string, error) {
+	s.calls = append(s.calls, append([]string{name}, args...))
+	if name != "/usr/sbin/ufw" {
+		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+	}
+	if args[0] == "status" {
+		return "Status: active\n\n22/tcp  ALLOW  Anywhere\n", nil
+	}
+	return "Rule updated", nil
+}
+
+// notRootUFW is ufw present but refusing to run: the useful message is in
+// the output, not in the exit status.
+type notRootUFW struct{}
+
+func (notRootUFW) Run(_ context.Context, _ string, _ ...string) (string, error) {
+	return "ERROR: You need to be root to run this script", errors.New("exit status 1")
+}
+
+// inactiveUFW is ufw installed but never enabled.
+type inactiveUFW struct{}
+
+func (inactiveUFW) Run(_ context.Context, _ string, _ ...string) (string, error) {
+	return "Status: inactive", nil
+}
+
+func TestFirewallMissingUFW(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	runner := &missingUFW{}
+	a.src.Runner = runner
+	text, kb := a.firewallView(context.Background())
+
+	if !strings.Contains(text, "not installed") {
+		t.Errorf("missing-ufw view = %q", text)
+	}
+	// The old copy claimed the host was wide open and prescribed `ufw
+	// enable`; on a firewalld or nftables host both are false, and acting on
+	// them puts two rule owners on the same tables.
+	if strings.Contains(text, "all ports are open") || strings.Contains(text, "ufw enable") {
+		t.Errorf("must not claim the host is unprotected: %q", text)
+	}
+	if !strings.Contains(text, "firewalld") || !strings.Contains(text, "nftables") {
+		t.Errorf("must name the likely backends: %q", text)
+	}
+	if strings.Contains(text, "exec:") {
+		t.Errorf("raw exec error leaked into the view: %q", text)
+	}
+	assertNoFirewallActions(t, kb)
+	// Every candidate path is probed before declaring the binary missing.
+	if len(runner.calls) != len(ufwPaths) {
+		t.Errorf("probe calls = %v, want one per candidate path", runner.calls)
+	}
+}
+
+func TestFirewallMissingUFWBlocksChange(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	runner := &missingUFW{}
+	a.src.Runner = runner
+	// Telegram keeps inline keyboards live on old messages, so fw_close can
+	// arrive long after the view that offered it — or after ufw was removed.
+	// The action path must refuse on its own.
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "ufw is not installed") {
+		t.Errorf("stale button = %q", last.html)
+	}
+	if strings.Contains(last.html, "executable file not found") {
+		t.Errorf("raw exec error must not reach the user: %q", last.html)
+	}
+	// The sandbox hint is for ufw's own write failures; it cannot fix this.
+	if strings.Contains(last.html, "ReadWritePaths") {
+		t.Errorf("systemd hint must not fire on a missing binary: %q", last.html)
+	}
+	for _, c := range runner.calls {
+		if len(c) < 2 || c[1] != "status" {
+			t.Errorf("no rule change may run without ufw: %v", runner.calls)
+		}
+	}
+}
+
+func TestFirewallNotRootShowsUFWsOwnError(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	a.src.Runner = notRootUFW{}
+	text, kb := a.firewallView(context.Background())
+
+	if !strings.Contains(text, "need to be root") {
+		t.Errorf("must surface ufw's own message: %q", text)
+	}
+	if strings.Contains(text, "exit status 1") {
+		t.Errorf("exit status must not replace the real cause: %q", text)
+	}
+	if strings.Contains(text, "not installed") || strings.Contains(text, "all ports are open") {
+		t.Errorf("a blocked probe is not a missing or inactive ufw: %q", text)
+	}
+	assertNoFirewallActions(t, kb)
+}
+
+func TestFirewallSbinFallback(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	runner := &sbinUFW{}
+	a.src.Runner = runner
+	ctx := context.Background()
+
+	// A restricted service PATH must not be reported as a missing package.
+	if text, _ := a.firewallView(ctx); !strings.Contains(text, "🔓 <b>open</b>") {
+		t.Errorf("ufw in sbin must be found: %q", text)
+	}
+	// Rule changes go to the same resolved binary, not back to bare "ufw".
+	if _, fail := a.setSSHPort(ctx, false); fail != nil {
+		t.Fatalf("setSSHPort failed: %s", fail.display())
+	}
+	var changed bool
+	for _, c := range runner.calls {
+		if c[1] == "status" {
+			continue
+		}
+		if c[0] != "/usr/sbin/ufw" {
+			t.Errorf("rule change did not use the resolved path: %v", c)
+		}
+		if c[1] == "deny" {
+			changed = true
+		}
+	}
+	if !changed {
+		t.Errorf("rule change never ran: %v", runner.calls)
+	}
+}
+
+func TestFirewallInactiveHasNoActions(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	a.src.Runner = inactiveUFW{}
+	text, kb := a.firewallView(context.Background())
+	if !strings.Contains(text, "<b>inactive</b>") || !strings.Contains(text, "ufw enable") {
+		t.Errorf("inactive view = %q", text)
+	}
+	assertNoFirewallActions(t, kb)
+}
+
+func TestFirewallUnparsedStatusHasNoActions(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	a.src.Runner = scanRunner{} // answers, but not with anything ufw-shaped
+	text, kb := a.firewallView(context.Background())
+	if !strings.Contains(text, "could not read") || !strings.Contains(text, "<b>unknown</b>") {
+		t.Errorf("unparsed view = %q", text)
+	}
+	if strings.Contains(text, "all ports are open") {
+		t.Errorf("an unreadable state must not be reported as open: %q", text)
+	}
+	assertNoFirewallActions(t, kb)
+}
+
+func TestSandboxHintOnlyForUFWWriteErrors(t *testing.T) {
+	readOnly := &fwFailure{
+		cmd: "ufw deny 22/tcp",
+		out: "ERROR: Could not open /etc/ufw/user.rules: read-only file system",
+		err: errors.New("exit status 1"),
+	}
+	if !strings.Contains(sandboxHint(readOnly), "ReadWritePaths=-/etc/ufw") {
+		t.Error("ufw's own write failure must carry the sandbox fix")
+	}
+	// `exec: "ufw": permission denied` is about the binary — a noexec mount
+	// or a MAC policy — and ReadWritePaths cannot fix it, so stay quiet.
+	execDenied := &fwFailure{cmd: "ufw deny 22/tcp", err: &exec.Error{Name: "ufw", Err: fs.ErrPermission}}
+	if got := sandboxHint(execDenied); got != "" {
+		t.Errorf("sandboxHint on an exec error = %q, want empty", got)
+	}
+	if got := sandboxHint(&fwFailure{reason: "ufw is not installed on this host"}); got != "" {
+		t.Errorf("sandboxHint without ufw output = %q, want empty", got)
 	}
 }
 
