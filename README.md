@@ -121,7 +121,7 @@ inline keyboard so you can navigate by tapping instead of typing.
 | `/docker` | containers with CPU/RAM and restart counts |
 | `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
 | `/ssl` | certificate expiry · `/ssl add <host>` · `/ssl remove <host>` |
-| `/firewall` | open/close SSH port 22 via `ufw` (reports the state as unmanaged where `ufw` is absent) |
+| `/firewall` | open/close SSH port 22 via `ufw` (says it cannot manage the firewall where `ufw` is absent) |
 | `/watching` | everything watched, managed with buttons |
 | `/settings` | alert thresholds and digest schedule, tuned with buttons |
 | `/services_scan` `/ports_scan` | discover candidates to watch |
@@ -204,7 +204,7 @@ behaviour rather than an error when it is absent:
 
 | Tool | Used by | Without it |
 | --- | --- | --- |
-| `ufw` | `/firewall` | The view says the firewall is unmanaged here, names the likely backends (`firewalld`, `nftables`, `iptables`) instead of claiming the host is open, and offers no rule-changing buttons. `ufw` is absent from Alpine, Arch, Debian netinst/cloud images and containers, and is EPEL-only on the RHEL family. |
+| `ufw` | `/firewall` | The view says it cannot manage this host's firewall, names the likely backends (`firewalld`, `nftables`, `iptables`) instead of claiming the host is open, and offers no rule-changing buttons. `ufw` is absent from Alpine, Arch, Debian netinst/cloud images and containers, and is EPEL-only on the RHEL family. |
 | Docker Engine socket | `/docker` | The container view and container alerts are disabled. |
 | `journalctl` | SSH auth-log watching | Falls back to `tail -F /var/log/auth.log`. |
 

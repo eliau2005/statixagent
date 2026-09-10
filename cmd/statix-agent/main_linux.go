@@ -252,7 +252,12 @@ func readOSRelease() map[string]string {
 		}
 		kv := agent.ParseOSRelease(f)
 		f.Close()
-		return kv
+		// A minimal image can ship an empty or unparseable /etc/os-release
+		// while the vendor copy under /usr/lib names the distribution, so
+		// only a file that actually yields an ID ends the search.
+		if kv["ID"] != "" {
+			return kv
+		}
 	}
 	return nil
 }

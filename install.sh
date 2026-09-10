@@ -20,9 +20,9 @@ case "$(uname -m)" in
 esac
 
 # Optional, never installed here: /firewall drives ufw. Without it the agent
-# reports the firewall as unmanaged instead of guessing at another backend.
+# says so plainly instead of guessing at another backend.
 command -v ufw >/dev/null 2>&1 || \
-  echo "Note: ufw not found — /firewall will report the firewall as unmanaged."
+  echo "Note: ufw not found — /firewall will report that it cannot manage this host's firewall."
 
 echo "Fetching latest release info..."
 LATEST_JSON="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest")"

@@ -42,16 +42,28 @@ const (
 
 // parseUFWStatus reads `ufw status` output. It stays pure — whether ufw
 // exists at all is probeUFW's job — and only says what the text says.
+//
+// The status line is not necessarily the first: the runner merges stderr
+// into the output, so an interpreter warning or one of ufw's own WARN
+// lines can precede it. Anchoring on line 0 would read a healthy firewall
+// as unparseable and silently withdraw every action button.
 func parseUFWStatus(out string) sshPortState {
 	lines := strings.Split(out, "\n")
-	if first := strings.ToLower(lines[0]); !strings.Contains(first, "status: active") {
-		if strings.Contains(first, "status:") {
-			return fwInactive
+	head := -1
+	for i, line := range lines {
+		if strings.Contains(strings.ToLower(line), "status:") {
+			head = i
+			break
 		}
+	}
+	if head < 0 {
 		return fwUnparsed
 	}
+	if !strings.Contains(strings.ToLower(lines[head]), "status: active") {
+		return fwInactive
+	}
 	state := fwUnmanaged
-	for _, line := range lines[1:] {
+	for _, line := range lines[head+1:] {
 		f := strings.Fields(line)
 		if len(f) < 2 || (f[0] != "22" && f[0] != "22/tcp") {
 			continue
@@ -68,12 +80,19 @@ func parseUFWStatus(out string) sshPortState {
 	return state
 }
 
-// ufwProbe is the outcome of one `ufw status` attempt.
+// ufwProbe is the outcome of one `ufw status` attempt. out and err stay
+// separate all the way to the display layer: flattening them here would
+// feed an exec-level message ("permission denied" on the binary) to
+// sandboxHint, which only knows how to fix ufw's own file writes.
 type ufwProbe struct {
-	bin    string // the binary that answered; empty when none did
-	state  sshPortState
-	detail string // ufw's own output, or the error text, for display
+	bin   string // the binary that answered; empty when none did
+	state sshPortState
+	out   string // ufw's own combined output
+	err   error  // the underlying exec error, if any
 }
+
+// detail renders the probe outcome for display.
+func (p ufwProbe) detail() string { return detail(p.out, p.err) }
 
 // probeUFW resolves ufw and classifies its status. Availability lives here
 // rather than in the parser because "not installed", "refused to run" and
@@ -85,18 +104,14 @@ func (a *Agent) probeUFW(ctx context.Context) ufwProbe {
 		out, err := a.src.Runner.Run(ctx, bin, "status")
 		switch {
 		case err == nil:
-			return ufwProbe{bin: bin, state: parseUFWStatus(out), detail: out}
+			return ufwProbe{bin: bin, state: parseUFWStatus(out), out: out}
 		case notFound(err):
 			lastErr = err // try the next candidate path
 		default:
-			return ufwProbe{bin: bin, state: fwUnusable, detail: detail(out, err)}
+			return ufwProbe{bin: bin, state: fwUnusable, out: out, err: err}
 		}
 	}
-	d := "ufw not found in PATH, /usr/sbin or /sbin"
-	if lastErr != nil {
-		d = lastErr.Error()
-	}
-	return ufwProbe{state: fwMissing, detail: d}
+	return ufwProbe{state: fwMissing, err: lastErr}
 }
 
 // notFound reports whether the command could not be located. A PATH lookup
@@ -123,13 +138,13 @@ func (a *Agent) firewallView(ctx context.Context) (string, telegram.Keyboard) {
 			"To let the agent manage port 22, install ufw on the server: " + a.ufwInstallHint(), telegram.Keyboard{back}
 	case fwUnusable:
 		return "🛡 <b>Firewall</b>\n<code>ufw</code> is installed but the agent could not query it:\n" +
-			preBlock(p.detail), telegram.Keyboard{back}
+			preBlock(p.detail()), telegram.Keyboard{back}
 	case fwInactive:
 		return "🛡 <b>Firewall</b>\nufw is installed but <b>inactive</b> — all ports are open.\nEnable it on the server first: <code>ufw enable</code>", telegram.Keyboard{back}
 	case fwUnparsed:
 		return "🛡 <b>Firewall</b>\n<code>ufw status</code> returned output the agent could not read — " +
 			"the firewall state is <b>unknown</b>, so no changes are offered.\n" +
-			preBlock(p.detail), telegram.Keyboard{back}
+			preBlock(p.out), telegram.Keyboard{back}
 	case fwOpen:
 		return "🛡 <b>Firewall</b>\nSSH port 22: 🔓 <b>open</b> (ALLOW rule)",
 			telegram.Keyboard{{{Text: "🔒 Close port 22", Data: "fw_close_ask"}}, back}
@@ -264,11 +279,19 @@ func (a *Agent) setSSHPort(ctx context.Context, open bool) (okMsg string, fail *
 	// removed, or from a replayed callback. Re-check before touching
 	// anything, so the answer is a sentence rather than an exec error.
 	p := a.probeUFW(ctx)
+	// The action path refuses in exactly the states the view offers no
+	// button for, so a replayed callback can never outrun a change on the
+	// server. Writing a rule into a disabled ufw would "succeed" and report
+	// port 22 closed while nothing is enforced.
 	switch p.state {
 	case fwMissing:
 		return "", &fwFailure{reason: "ufw is not installed on this host — the agent cannot change firewall rules here"}
 	case fwUnusable:
-		return "", &fwFailure{cmd: p.bin + " status", out: p.detail}
+		return "", &fwFailure{cmd: p.bin + " status", out: p.out, err: p.err}
+	case fwInactive:
+		return "", &fwFailure{reason: "ufw is installed but inactive — a rule added now would not be enforced. Enable it on the server first: ufw enable"}
+	case fwUnparsed:
+		return "", &fwFailure{reason: "the agent could not read this host's ufw state, so it will not change rules blindly"}
 	}
 	oldRule, newRule := "deny", "allow"
 	if !open {

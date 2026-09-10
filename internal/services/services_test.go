@@ -28,6 +28,7 @@ func (f fakeRunner) Run(_ context.Context, name string, args ...string) (string,
 func TestCmdEnvForcesCLocale(t *testing.T) {
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	t.Setenv("LANG", "fr_FR.UTF-8")
+	t.Setenv("LANGUAGE", "fr_FR:fr")
 	env := cmdEnv()
 
 	// exec keeps the last occurrence of a duplicated key, so the forced
@@ -42,6 +43,11 @@ func TestCmdEnvForcesCLocale(t *testing.T) {
 	}
 	if last["LC_ALL"] != "C" || last["LANG"] != "C" {
 		t.Errorf("cmdEnv locale = LC_ALL=%q LANG=%q, want C", last["LC_ALL"], last["LANG"])
+	}
+	// Python's gettext reads LANGUAGE before LC_ALL and does not suppress it
+	// for a C locale, so leaving it set keeps ufw translated regardless.
+	if last["LANGUAGE"] != "" {
+		t.Errorf("cmdEnv LANGUAGE = %q, want empty", last["LANGUAGE"])
 	}
 	// The rest of the environment is inherited, not replaced.
 	if len(env) <= 2 {

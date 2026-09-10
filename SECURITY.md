@@ -116,8 +116,8 @@ service). Its outward actions are deliberately narrow:
   self-restart), `journalctl` / `tail` (auth-log stream), `loginctl` (session
   fallback and SSH disconnect), and `ufw` (firewall rule changes). Each is used
   only where it is already installed — the agent never installs a package, and
-  `/firewall` reports the firewall as unmanaged rather than acting through a
-  different backend.
+  `/firewall` states that it cannot manage this host's firewall rather than
+  acting through a different backend.
 - **Writes** only its config file, its binary (on update), and its start-count
   state file.
 - **Network:** talks to the Telegram Bot API, to GitHub (release checks), and to

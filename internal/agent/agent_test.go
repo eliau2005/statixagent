@@ -882,6 +882,10 @@ func TestParseUFWStatus(t *testing.T) {
 		{"inactive", "Status: inactive\n", fwInactive},
 		{"empty", "", fwUnparsed},
 		{"non-ufw output", "ActiveState=active\nSubState=running\n", fwUnparsed},
+		// CombinedOutput merges stderr, so warnings can precede the status
+		// line; anchoring on line 0 would hide a healthy firewall.
+		{"warning before status", "SyntaxWarning: invalid escape sequence '\\d'\nStatus: active\n\n22/tcp  ALLOW  Anywhere\n", fwOpen},
+		{"warning before inactive", "WARN: uid is 0 but '/etc/ufw' is owned by 1000\nStatus: inactive\n", fwInactive},
 		{"open", "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere\n22/tcp (v6)                ALLOW       Anywhere (v6)\n", fwOpen},
 		{"closed", "Status: active\n\n22/tcp                     DENY        Anywhere\n", fwClosed},
 		{"deny wins over allow", "Status: active\n\n22/tcp  DENY  Anywhere\n22/tcp  ALLOW  Anywhere\n", fwClosed},
@@ -1124,6 +1128,51 @@ func TestFirewallMissingUFWBlocksChange(t *testing.T) {
 	}
 }
 
+// blockedUFW is ufw present but not executable: a noexec mount, a MAC
+// policy, or mode 0700. exec reports it through the error, not through
+// output, which is what ReadWritePaths advice must not be triggered by.
+type blockedUFW struct{}
+
+func (blockedUFW) Run(_ context.Context, name string, _ ...string) (string, error) {
+	return "", &fs.PathError{Op: "fork/exec", Path: name, Err: fs.ErrPermission}
+}
+
+func TestFirewallBlockedBinaryGetsNoSandboxHint(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.Runner = blockedUFW{}
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "permission denied") {
+		t.Errorf("the real cause must be shown: %q", last.html)
+	}
+	// The systemd snippet fixes ufw's own file writes; it cannot make a
+	// non-executable binary run, so offering it here sends the user in
+	// circles.
+	if strings.Contains(last.html, "ReadWritePaths") {
+		t.Errorf("exec-level failure must not draw the sandbox hint: %q", last.html)
+	}
+}
+
+func TestFirewallInactiveBlocksChange(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.Runner = inactiveUFW{}
+	// The view was rendered while ufw was active, then someone ran
+	// `ufw disable`. Writing the rule anyway would report "port 22 closed"
+	// while nothing is enforced.
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+
+	last := send.lastEdit()
+	if !strings.Contains(last.html, "would not be enforced") {
+		t.Errorf("inactive ufw must refuse the change: %q", last.html)
+	}
+	if strings.Contains(last.html, "🔒 port 22 closed") {
+		t.Errorf("must not claim a change that is not enforced: %q", last.html)
+	}
+}
+
 func TestFirewallNotRootShowsUFWsOwnError(t *testing.T) {
 	a := testAgent(&fakeSender{})
 	a.src.Runner = notRootUFW{}
@@ -1204,11 +1253,21 @@ func TestSandboxHintOnlyForUFWWriteErrors(t *testing.T) {
 	if !strings.Contains(sandboxHint(readOnly), "ReadWritePaths=-/etc/ufw") {
 		t.Error("ufw's own write failure must carry the sandbox fix")
 	}
-	// `exec: "ufw": permission denied` is about the binary — a noexec mount
-	// or a MAC policy — and ReadWritePaths cannot fix it, so stay quiet.
-	execDenied := &fwFailure{cmd: "ufw deny 22/tcp", err: &exec.Error{Name: "ufw", Err: fs.ErrPermission}}
+	// `permission denied` on the binary — a noexec mount or a MAC policy —
+	// is a different problem that ReadWritePaths cannot fix. The failure is
+	// built the way the probe path builds it: ufw itself printed nothing,
+	// so the message lives in err, where the matcher must not see it.
+	execDenied := &fwFailure{cmd: "/usr/sbin/ufw status",
+		err: &fs.PathError{Op: "fork/exec", Path: "/usr/sbin/ufw", Err: fs.ErrPermission}}
 	if got := sandboxHint(execDenied); got != "" {
 		t.Errorf("sandboxHint on an exec error = %q, want empty", got)
+	}
+	if d := execDenied.display(); !strings.Contains(d, "permission denied") {
+		t.Errorf("the cause must still be shown to the user: %q", d)
+	}
+	execNotFound := &fwFailure{cmd: "ufw deny 22/tcp", err: &exec.Error{Name: "ufw", Err: exec.ErrNotFound}}
+	if got := sandboxHint(execNotFound); got != "" {
+		t.Errorf("sandboxHint on a missing binary = %q, want empty", got)
 	}
 	if got := sandboxHint(&fwFailure{reason: "ufw is not installed on this host"}); got != "" {
 		t.Errorf("sandboxHint without ufw output = %q, want empty", got)
