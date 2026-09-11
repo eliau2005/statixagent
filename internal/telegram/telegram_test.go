@@ -168,3 +168,88 @@ func TestSplitMessage(t *testing.T) {
 		t.Errorf("hard cut = %q", chunks)
 	}
 }
+
+func TestSplitMessageHTMLPre(t *testing.T) {
+	// A <pre> card longer than the limit must yield well-formed chunks:
+	// each closes open tags and the next reopens them.
+	body := strings.Repeat("line of text inside pre\n", 250) // ~5500 chars
+	msg := "<b>Docker</b>\n<pre>" + body + "</pre>"
+	if len(msg) < 5000 {
+		t.Fatalf("fixture too short: %d", len(msg))
+	}
+	chunks := splitMessage(msg, 4096)
+	if len(chunks) < 2 {
+		t.Fatalf("want multiple chunks, got %d", len(chunks))
+	}
+	for i, c := range chunks {
+		if len(c) > 4096 {
+			t.Errorf("chunk %d length %d", i, len(c))
+		}
+		if err := htmlBalanced(c); err != nil {
+			t.Errorf("chunk %d not balanced: %v\n%q", i, err, c[:min(80, len(c))])
+		}
+	}
+	// First chunk should close the open <pre>; later chunks should reopen it.
+	if !strings.HasSuffix(chunks[0], "</pre>") && !strings.Contains(chunks[0], "</pre>") {
+		// Allow closing </b></pre> order — pre must be closed.
+		if !strings.Contains(chunks[0], "</pre>") {
+			t.Errorf("first chunk missing </pre>: …%q", chunks[0][max(0, len(chunks[0])-40):])
+		}
+	}
+	if len(chunks) > 1 && !strings.Contains(chunks[1], "<pre>") {
+		t.Errorf("second chunk missing reopen <pre>: %q", chunks[1][:min(40, len(chunks[1]))])
+	}
+}
+
+func TestClampKeyboard(t *testing.T) {
+	long := strings.Repeat("h", 70)
+	kb := Keyboard{{{Text: "x", Data: "cr:" + long}}}
+	got := clampKeyboard(kb)
+	if n := len(got[0][0].Data); n > maxCallbackData {
+		t.Errorf("callback_data length %d, want ≤ %d", n, maxCallbackData)
+	}
+	if got[0][0].Data != ("cr:"+long)[:maxCallbackData] {
+		t.Errorf("truncated = %q", got[0][0].Data)
+	}
+}
+
+// htmlBalanced checks that tracked tags are properly nested/closed.
+func htmlBalanced(s string) error {
+	var stack []string
+	for i := 0; i < len(s); {
+		if s[i] != '<' {
+			i++
+			continue
+		}
+		end := strings.IndexByte(s[i:], '>')
+		if end < 0 {
+			return fmt.Errorf("unclosed < at %d", i)
+		}
+		end += i
+		name := s[i+1 : end]
+		closing := false
+		if len(name) > 0 && name[0] == '/' {
+			closing = true
+			name = name[1:]
+		}
+		if sp := strings.IndexAny(name, " \t"); sp >= 0 {
+			name = name[:sp]
+		}
+		name = strings.ToLower(name)
+		if htmlSplitTags[name] {
+			if closing {
+				if len(stack) == 0 || stack[len(stack)-1] != name {
+					return fmt.Errorf("unexpected </%s>", name)
+				}
+				stack = stack[:len(stack)-1]
+			} else {
+				stack = append(stack, name)
+			}
+		}
+		i = end + 1
+	}
+	if len(stack) != 0 {
+		return fmt.Errorf("unclosed %v", stack)
+	}
+	return nil
+}

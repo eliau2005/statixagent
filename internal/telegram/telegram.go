@@ -116,7 +116,7 @@ func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, k
 			"disable_web_page_preview": true,
 		}
 		if kb != nil && i == len(chunks)-1 {
-			payload["reply_markup"] = map[string]any{"inline_keyboard": kb}
+			payload["reply_markup"] = map[string]any{"inline_keyboard": clampKeyboard(kb)}
 		}
 		var sent struct {
 			MessageID int64 `json:"message_id"`
@@ -141,7 +141,7 @@ func (c *Client) EditMessageKB(ctx context.Context, chatID, messageID int64, htm
 		"disable_web_page_preview": true,
 	}
 	if kb != nil {
-		payload["reply_markup"] = map[string]any{"inline_keyboard": kb}
+		payload["reply_markup"] = map[string]any{"inline_keyboard": clampKeyboard(kb)}
 	}
 	err := c.call(ctx, "editMessageText", payload, nil)
 	if err != nil && strings.Contains(err.Error(), "message is not modified") {
@@ -239,31 +239,182 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 	return out, nil
 }
 
+// maxCallbackData is Telegram's hard limit on inline-button callback_data.
+const maxCallbackData = 64
+
+// clampKeyboard truncates any callback_data longer than maxCallbackData so a
+// single oversized button cannot make Telegram reject the entire keyboard.
+func clampKeyboard(kb Keyboard) Keyboard {
+	if kb == nil {
+		return nil
+	}
+	out := make(Keyboard, len(kb))
+	for i, row := range kb {
+		nr := make([]Button, len(row))
+		for j, btn := range row {
+			nr[j] = btn
+			if len(btn.Data) > maxCallbackData {
+				nr[j].Data = btn.Data[:maxCallbackData]
+			}
+		}
+		out[i] = nr
+	}
+	return out
+}
+
+// htmlSplitTags are the HTML tags this bot emits; splitMessage keeps them
+// balanced across chunks so Telegram's HTML parser accepts every piece.
+var htmlSplitTags = map[string]bool{
+	"b": true, "code": true, "pre": true, "blockquote": true,
+}
+
 // splitMessage breaks text into chunks of at most limit characters,
-// preferring newline boundaries.
+// preferring newline boundaries. Open HTML tags from htmlSplitTags are
+// closed at the cut and reopened on the next chunk.
 func splitMessage(s string, limit int) []string {
+	if limit <= 0 {
+		return []string{s}
+	}
 	if len(s) <= limit {
 		return []string{s}
 	}
 	var chunks []string
-	for len(s) > limit {
-		cut := limit
-		if i := lastIndexByteBefore(s, '\n', limit); i > 0 {
+	var open []string // tags still open at the start of remaining s
+	for len(s) > 0 {
+		prefix := openHTML(open)
+		if len(prefix)+len(s) <= limit {
+			chunks = append(chunks, prefix+s)
+			break
+		}
+		// Reserve room for the reopen prefix and for closing whatever is
+		// currently open; content may open more tags, so we shrink below.
+		reserve := len(prefix) + len(closeHTML(open))
+		budget := limit - reserve
+		if budget < 1 {
+			budget = 1
+		}
+		if budget > len(s) {
+			budget = len(s)
+		}
+		cut := budget
+		if i := lastIndexByteBefore(s, '\n', cut); i > 0 {
 			cut = i
 		}
-		chunks = append(chunks, s[:cut])
+		cut = avoidMidTag(s, cut)
+		if cut < 1 {
+			cut = budget
+			if cut > len(s) {
+				cut = len(s)
+			}
+		}
+		newOpen := applyHTMLTags(open, s[:cut])
+		closers := closeHTML(newOpen)
+		for len(prefix)+cut+len(closers) > limit && cut > 1 {
+			cut--
+			if i := lastIndexByteBefore(s, '\n', cut); i > 0 {
+				cut = i
+			}
+			cut = avoidMidTag(s, cut)
+			if cut < 1 {
+				cut = 1
+			}
+			newOpen = applyHTMLTags(open, s[:cut])
+			closers = closeHTML(newOpen)
+		}
+		chunks = append(chunks, prefix+s[:cut]+closers)
+		open = newOpen
 		s = s[cut:]
 		if len(s) > 0 && s[0] == '\n' {
 			s = s[1:]
 		}
 	}
-	if s != "" {
-		chunks = append(chunks, s)
-	}
 	return chunks
 }
 
+func openHTML(tags []string) string {
+	var b strings.Builder
+	for _, t := range tags {
+		b.WriteByte('<')
+		b.WriteString(t)
+		b.WriteByte('>')
+	}
+	return b.String()
+}
+
+func closeHTML(tags []string) string {
+	var b strings.Builder
+	for i := len(tags) - 1; i >= 0; i-- {
+		b.WriteString("</")
+		b.WriteString(tags[i])
+		b.WriteByte('>')
+	}
+	return b.String()
+}
+
+// applyHTMLTags returns the open-tag stack after scanning s for the tags
+// in htmlSplitTags. Incomplete trailing "<..." is ignored (treated as text).
+func applyHTMLTags(open []string, s string) []string {
+	out := append([]string(nil), open...)
+	for i := 0; i < len(s); {
+		if s[i] != '<' {
+			i++
+			continue
+		}
+		end := strings.IndexByte(s[i:], '>')
+		if end < 0 {
+			break
+		}
+		end += i
+		name := s[i+1 : end]
+		closing := false
+		if len(name) > 0 && name[0] == '/' {
+			closing = true
+			name = name[1:]
+		}
+		if sp := strings.IndexAny(name, " \t\n\r"); sp >= 0 {
+			name = name[:sp]
+		}
+		name = strings.ToLower(name)
+		if htmlSplitTags[name] {
+			if closing {
+				for k := len(out) - 1; k >= 0; k-- {
+					if out[k] == name {
+						out = append(out[:k], out[k+1:]...)
+						break
+					}
+				}
+			} else {
+				out = append(out, name)
+			}
+		}
+		i = end + 1
+	}
+	return out
+}
+
+// avoidMidTag moves cut to just before an unclosed '<' so we do not split
+// inside a tag name.
+func avoidMidTag(s string, cut int) int {
+	if cut <= 0 || cut > len(s) {
+		return cut
+	}
+	lt := strings.LastIndexByte(s[:cut], '<')
+	if lt < 0 {
+		return cut
+	}
+	if strings.IndexByte(s[lt:cut], '>') >= 0 {
+		return cut
+	}
+	if lt == 0 {
+		return cut // cannot move; caller may hard-cut
+	}
+	return lt
+}
+
 func lastIndexByteBefore(s string, b byte, before int) int {
+	if before > len(s) {
+		before = len(s)
+	}
 	for i := before - 1; i >= 0; i-- {
 		if s[i] == b {
 			return i

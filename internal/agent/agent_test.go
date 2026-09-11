@@ -699,12 +699,12 @@ func TestWatchButtons(t *testing.T) {
 			flat += b.Data + " "
 		}
 	}
-	if !strings.Contains(flat, "sr:nginx.service") || !strings.Contains(flat, "pr:443") {
+	if !strings.Contains(flat, "sr:0") || !strings.Contains(flat, "pr:443") {
 		t.Errorf("watching keyboard = %s", flat)
 	}
 
 	// 🗑 removes and persists.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 5, Data: "sr:nginx.service"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 5, Data: "sr:0"})
 	a.handleCallback(ctx, &telegram.Callback{ID: "c5", ChatID: 42, MessageID: 5, Data: "pr:443"})
 	saved, _ = config.Load(cfgPath)
 	if len(saved.Watch.Services) != 0 || len(saved.Watch.Ports) != 0 {
