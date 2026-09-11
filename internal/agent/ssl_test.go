@@ -102,3 +102,16 @@ func TestCheckCertsAlerts(t *testing.T) {
 		t.Errorf("re-alerted within cooldown: %d -> %d messages", before, after)
 	}
 }
+
+func TestSSLAddEscapesHost(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.src.ConfigPath = filepath.Join(t.TempDir(), "config.toml")
+	reply := dispatchText(t, a, "/ssl add <b>evil")
+	if strings.Contains(reply, "<b>evil") && !strings.Contains(reply, "&lt;b&gt;") {
+		t.Fatalf("host not escaped: %q", reply)
+	}
+	if !strings.Contains(reply, "&lt;b&gt;evil") {
+		t.Fatalf("expected escaped host in %q", reply)
+	}
+}

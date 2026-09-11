@@ -493,13 +493,16 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 		b.WriteString("Nothing yet — scan to add:")
 	} else {
 		b.WriteString("Tap 🗑 to stop watching:\n<pre>")
-		for _, s := range w.Services {
+		// Services / processes / SSL hosts are removed by index: long unit
+		// names and hosts overflow Telegram's 64-byte callback_data limit
+		// the same way HTTP URLs do (hr:<i>).
+		for i, s := range w.Services {
 			fmt.Fprintf(&b, " 🧩 %s\n", esc(s))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(strings.TrimSuffix(s, ".service"), 20), Data: "sr:" + s}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(strings.TrimSuffix(s, ".service"), 20), Data: fmt.Sprintf("sr:%d", i)}})
 		}
-		for _, p := range w.Processes {
+		for i, p := range w.Processes {
 			fmt.Fprintf(&b, " ⚙ %s\n", esc(p))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(p, 20), Data: "xr:" + p}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(p, 20), Data: fmt.Sprintf("xr:%d", i)}})
 		}
 		for _, p := range w.Ports {
 			label := ""
@@ -509,12 +512,10 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 			fmt.Fprintf(&b, " 🔌 port %d%s\n", p.Port, label)
 			kb = append(kb, []telegram.Button{{Text: fmt.Sprintf("🗑 port %d", p.Port), Data: fmt.Sprintf("pr:%d", p.Port)}})
 		}
-		for _, h := range w.SSLHosts {
+		for i, h := range w.SSLHosts {
 			fmt.Fprintf(&b, " 🔒 %s\n", esc(h))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h, 20), Data: "cr:" + h}})
+			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h, 20), Data: fmt.Sprintf("cr:%d", i)}})
 		}
-		// HTTP checks are removed by index: URLs overflow Telegram's
-		// 64-byte callback-data limit.
 		for i, h := range w.HTTPChecks {
 			fmt.Fprintf(&b, " 🌐 %s\n", esc(truncate(h.URL, 34)))
 			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h.URL, 20), Data: fmt.Sprintf("hr:%d", i)}})
@@ -587,19 +588,37 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 		return text, kb, fmt.Sprintf("✅ watching port %d", port), true
 
 	case strings.HasPrefix(data, "sr:"):
-		name := strings.TrimPrefix(data, "sr:")
+		i, err := strconv.Atoi(strings.TrimPrefix(data, "sr:"))
+		services := a.watchCopy().Services
+		if err != nil || i < 0 || i >= len(services) {
+			text, kb := a.watchingView()
+			return text, kb, "stale list", true
+		}
+		name := services[i]
 		a.mutateWatch(func(w *config.Watch) { w.Services = remove(w.Services, name) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + name, true
 
 	case strings.HasPrefix(data, "xr:"):
-		name := strings.TrimPrefix(data, "xr:")
+		i, err := strconv.Atoi(strings.TrimPrefix(data, "xr:"))
+		procs := a.watchCopy().Processes
+		if err != nil || i < 0 || i >= len(procs) {
+			text, kb := a.watchingView()
+			return text, kb, "stale list", true
+		}
+		name := procs[i]
 		a.mutateWatch(func(w *config.Watch) { w.Processes = remove(w.Processes, name) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + name, true
 
 	case strings.HasPrefix(data, "cr:"):
-		host := strings.TrimPrefix(data, "cr:")
+		i, err := strconv.Atoi(strings.TrimPrefix(data, "cr:"))
+		hosts := a.watchCopy().SSLHosts
+		if err != nil || i < 0 || i >= len(hosts) {
+			text, kb := a.watchingView()
+			return text, kb, "stale list", true
+		}
+		host := hosts[i]
 		a.mutateWatch(func(w *config.Watch) { w.SSLHosts = remove(w.SSLHosts, host) })
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + host, true
