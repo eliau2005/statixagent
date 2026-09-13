@@ -57,7 +57,9 @@ about it the moment it is not — without standing up an observability stack.
 
 - **Core system** — CPU (total, per-core, load average), RAM and swap, disk
   space per mount, disk I/O rates, network rates and lifetime totals per
-  interface, uptime, process count, open file descriptors.
+  interface, uptime, process count, open file descriptors. CPU and memory
+  alerts only fire once usage stays over the threshold for about a minute, so
+  a cron job or backup burst stays quiet.
 - **Thermal** — temperatures (thermal zones + hwmon), fan speeds, and
   throttling detection. Temperature alerts only fire once the threshold is held
   for several consecutive samples, so a CPU touching 90 °C for a moment

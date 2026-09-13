@@ -134,7 +134,9 @@ stream of messages:
 - **Threshold rules** with **hysteresis** — fire once on crossing, clear on
   recovery past a margin — so a metric hovering at the line cannot spam.
 - **Sustain** — a rule can require the violation to hold for N consecutive
-  samples before firing (used so a brief thermal spike stays quiet).
+  samples before firing. Temperature needs 3 samples so a brief thermal spike
+  stays quiet; CPU and memory need about a minute (converted to samples from
+  `sample_interval`) so a cron job or backup burst does not alert.
 - **Cooldown** — a minimum gap between two fires of the same key.
 - **Snooze** — a key can be silenced until a time (the 🔕 button); a violation
   still present when the snooze lifts fires fresh.

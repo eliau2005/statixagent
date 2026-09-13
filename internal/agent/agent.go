@@ -325,13 +325,31 @@ func (a *Agent) sampleOnce(ctx context.Context) {
 }
 
 // tempSustainSamples is how many consecutive over-threshold samples the
-// hottest sensor must produce before Temperature alerts. Unlike CPU, which
-// Compute averages over the whole sample interval, a temperature reading is
-// the instant the sysfs file was read: a mobile CPU jumps from 40°C to 90°C
-// within two seconds of any burst and falls back just as fast. Requiring the
-// violation to hold across samples is what separates a boost from a box that
-// is genuinely cooking.
+// hottest sensor must produce before Temperature alerts. A temperature
+// reading is the instant the sysfs file was read: a mobile CPU jumps from
+// 40°C to 90°C within two seconds of any burst and falls back just as fast.
+// Requiring the violation to hold across samples is what separates a boost
+// from a box that is genuinely cooking. CPU and memory use systemSustain.
 const tempSustainSamples = 3
+
+// systemSustain is how long CPU or memory must stay over threshold before
+// alerting. Compute averages CPU over the sample interval, but that only hides
+// spikes shorter than one sample; a cron job, backup, package upgrade or build
+// routinely fills a 15–30s window and is not an incident. Memory is an instant
+// reading with the same bursty workloads behind it. It is a duration rather
+// than a sample count so a shorter sample_interval does not shrink the window.
+const systemSustain = time.Minute
+
+// sustainSamples converts a sustain duration into the number of consecutive
+// samples at interval that cover it, rounding up and never below one. Because
+// each CPU sample is an interval average, N violating samples mean at least
+// N×interval of real saturation.
+func sustainSamples(d, interval time.Duration) int {
+	if interval <= 0 {
+		return 1
+	}
+	return max(1, int((d+interval-1)/interval))
+}
 
 // rebootWindow is how fresh the host uptime must be at the agent's first
 // sample to call it a reboot. Agent restarts (self-update, crash recovery)
@@ -358,14 +376,17 @@ func (a *Agent) checkReboot(s collect.Snapshot, now time.Time) *alert.Alert {
 
 func (a *Agent) evalSystem(s collect.Snapshot, now time.Time) []*alert.Alert {
 	t := a.thresholds()
+	sustain := sustainSamples(systemSustain, a.cfg.SampleInterval.Duration)
 	out := []*alert.Alert{
 		a.engine.Threshold(alert.ThresholdOpts{
 			Key: "cpu", Title: "CPU usage", Severity: alert.Warning,
 			Value: s.CPUTotal.Percent, Threshold: t.CPUPercent, ClearMargin: 10, Unit: "%",
+			Sustain: sustain,
 		}, now),
 		a.engine.Threshold(alert.ThresholdOpts{
 			Key: "mem", Title: "Memory usage", Severity: alert.Warning,
 			Value: s.Mem.UsedPercent(), Threshold: t.MemPercent, ClearMargin: 10, Unit: "%",
+			Sustain: sustain,
 		}, now),
 	}
 	for _, m := range s.Mounts {

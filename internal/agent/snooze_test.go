@@ -27,18 +27,18 @@ func TestSnoozeCallback(t *testing.T) {
 	}
 
 	// The snoozed key stays quiet; everything else still evaluates.
-	for _, al := range a.evalSystem(hot, time.Now()) {
-		if al != nil && al.Key == "cpu" {
+	// Run the full sustain window so the rule would otherwise fire.
+	now := time.Now()
+	step := a.cfg.SampleInterval.Duration
+	for i := range systemSustainN(a) {
+		if al := keyed(a.evalSystem(hot, now.Add(time.Duration(i)*step)), "cpu"); al != nil {
 			t.Fatalf("cpu alerted while snoozed: %+v", al)
 		}
 	}
 
 	// Foreign chats cannot snooze.
 	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 999, MessageID: 7, Data: "snz:mem"})
-	for _, al := range a.evalSystem(collect.Snapshot{Mem: procfs.MemInfo{Total: 100, Available: 5}}, time.Now()) {
-		if al != nil && al.Key == "mem" {
-			return // mem still alerts — foreign snooze was ignored
-		}
+	if keyed(evalSustained(a, collect.Snapshot{Mem: procfs.MemInfo{Total: 100, Available: 5}}, time.Now()), "mem") == nil {
+		t.Fatal("mem did not alert; foreign-chat snooze was honored")
 	}
-	t.Fatal("mem did not alert; foreign-chat snooze was honored")
 }

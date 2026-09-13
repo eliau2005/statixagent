@@ -128,7 +128,7 @@ func TestThresholdAlertPushed(t *testing.T) {
 	now := time.Now()
 
 	hot := collect.Snapshot{CPUTotal: collect.CPUUsage{Percent: 97}, Mem: procfs.MemInfo{Total: 100, Available: 60}}
-	for _, al := range a.evalSystem(hot, now) {
+	for _, al := range evalSustained(a, hot, now) {
 		if al != nil {
 			a.push(context.Background(), "ALERT:"+al.Title)
 		}
@@ -841,7 +841,7 @@ func TestSettingsButtons(t *testing.T) {
 	}
 
 	// Live evaluation uses the tuned threshold: CPU at 87% now alerts.
-	als := a.evalSystem(collect.Snapshot{CPUTotal: collect.CPUUsage{Percent: 87}, Mem: procfs.MemInfo{Total: 100, Available: 60}}, time.Now())
+	als := evalSustained(a, collect.Snapshot{CPUTotal: collect.CPUUsage{Percent: 87}, Mem: procfs.MemInfo{Total: 100, Available: 60}}, time.Now())
 	if countNonNil(als) != 1 {
 		t.Errorf("tuned threshold must fire at 87%%: %+v", als)
 	}
@@ -1439,6 +1439,162 @@ func TestValidTTY(t *testing.T) {
 		if got := validTTY(tty); got != want {
 			t.Errorf("validTTY(%q) = %v, want %v", tty, got, want)
 		}
+	}
+}
+
+// systemSustainN is how many samples the CPU and memory rules need at a's
+// configured interval.
+func systemSustainN(a *Agent) int {
+	return sustainSamples(systemSustain, a.cfg.SampleInterval.Duration)
+}
+
+// evalSustained feeds the same snapshot through evalSystem for a full sustain
+// window, one sample interval apart, and returns the last evaluation.
+func evalSustained(a *Agent, s collect.Snapshot, now time.Time) []*alert.Alert {
+	var out []*alert.Alert
+	for i := range systemSustainN(a) {
+		out = a.evalSystem(s, now.Add(time.Duration(i)*a.cfg.SampleInterval.Duration))
+	}
+	return out
+}
+
+// keyed returns the alert for key from one evaluation, or nil.
+func keyed(als []*alert.Alert, key string) *alert.Alert {
+	for _, al := range als {
+		if al != nil && al.Key == key {
+			return al
+		}
+	}
+	return nil
+}
+
+func cpuSnap(pct float64) collect.Snapshot {
+	return collect.Snapshot{CPUTotal: collect.CPUUsage{Percent: pct}, Mem: procfs.MemInfo{Total: 100, Available: 60}}
+}
+
+func memSnap(usedPct float64) collect.Snapshot {
+	return collect.Snapshot{Mem: procfs.MemInfo{Total: 100, Available: uint64(100 - usedPct)}}
+}
+
+func TestSustainSamples(t *testing.T) {
+	cases := []struct {
+		d, interval time.Duration
+		want        int
+	}{
+		{time.Minute, 15 * time.Second, 4},
+		{time.Minute, 5 * time.Second, 12},
+		{time.Minute, time.Second, 60},
+		{time.Minute, 45 * time.Second, 2},
+		{time.Minute, 2 * time.Minute, 1},
+		{time.Minute, 0, 1},
+		{0, 15 * time.Second, 1},
+	}
+	for _, c := range cases {
+		if got := sustainSamples(c.d, c.interval); got != c.want {
+			t.Errorf("sustainSamples(%s, %s) = %d, want %d", c.d, c.interval, got, c.want)
+		}
+	}
+}
+
+// TestCPUBurstIsSilent replays the #66 timeline: a backup pegs the CPU for
+// one sample, then for one sample short of the window. Neither may push an
+// alert or a recovery notice.
+func TestCPUBurstIsSilent(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	step := a.cfg.SampleInterval.Duration
+	now := time.Now()
+	tick := func(pct float64) {
+		t.Helper()
+		if als := a.evalSystem(cpuSnap(pct), now); countNonNil(als) != 0 {
+			t.Fatalf("%.0f%% at %s pushed: %+v", pct, now.Format(time.TimeOnly), als)
+		}
+		now = now.Add(step)
+	}
+
+	tick(12)
+	tick(97)
+	tick(18)
+	for range systemSustainN(a) - 1 {
+		tick(97)
+	}
+	tick(18)
+	if a.engine.Active("cpu") {
+		t.Fatal("a burst shorter than the sustain window must not leave cpu active")
+	}
+}
+
+func TestCPUSustainedFiresOnce(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	step := a.cfg.SampleInterval.Duration
+	now := time.Now()
+	n := systemSustainN(a)
+
+	for i := 1; i <= n; i++ {
+		al := keyed(a.evalSystem(cpuSnap(97), now), "cpu")
+		now = now.Add(step)
+		if i < n && al != nil {
+			t.Fatalf("sample %d/%d fired early: %+v", i, n, al)
+		}
+		if i == n && (al == nil || al.Resolved) {
+			t.Fatalf("sample %d/%d must fire: %+v", i, n, al)
+		}
+	}
+	// Still hot: hysteresis keeps it to one message.
+	for range 3 {
+		if al := keyed(a.evalSystem(cpuSnap(97), now), "cpu"); al != nil {
+			t.Fatalf("held violation re-fired: %+v", al)
+		}
+		now = now.Add(step)
+	}
+	// Recovery is immediate — no sustain on the way down.
+	rec := keyed(a.evalSystem(cpuSnap(20), now), "cpu")
+	if rec == nil || !rec.Resolved {
+		t.Fatalf("recovery expected on first cool sample: %+v", rec)
+	}
+}
+
+func TestMemSustained(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	step := a.cfg.SampleInterval.Duration
+	now := time.Now()
+	n := systemSustainN(a)
+
+	// A build that briefly eats memory stays quiet.
+	for range n - 1 {
+		if al := keyed(a.evalSystem(memSnap(95), now), "mem"); al != nil {
+			t.Fatalf("memory burst fired: %+v", al)
+		}
+		now = now.Add(step)
+	}
+	if al := keyed(a.evalSystem(memSnap(40), now), "mem"); al != nil {
+		t.Fatalf("memory recovery without a fire pushed: %+v", al)
+	}
+	now = now.Add(step)
+
+	// Held for the full window, it fires on the last sample.
+	var al *alert.Alert
+	for range n {
+		al = keyed(a.evalSystem(memSnap(95), now), "mem")
+		now = now.Add(step)
+	}
+	if al == nil || al.Resolved {
+		t.Fatalf("sustained memory pressure must fire: %+v", al)
+	}
+}
+
+func TestSustainScalesWithInterval(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	a.cfg.SampleInterval = config.Duration{Duration: 15 * time.Second}
+	now := time.Now()
+
+	for i := 1; i <= 3; i++ {
+		if al := keyed(a.evalSystem(cpuSnap(97), now), "cpu"); al != nil {
+			t.Fatalf("sample %d at 15s fired before a minute: %+v", i, al)
+		}
+		now = now.Add(15 * time.Second)
+	}
+	if al := keyed(a.evalSystem(cpuSnap(97), now), "cpu"); al == nil {
+		t.Fatal("4th sample at 15s (a full minute) must fire")
 	}
 }
 
