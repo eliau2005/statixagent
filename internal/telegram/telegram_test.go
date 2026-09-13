@@ -1,15 +1,160 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+const fakeToken = "123456789:AAH-fake_TOKEN_value0123456789abcdef"
+
+// unreachableClient points at a closed local port so every request fails
+// at dial time with the token-bearing URL.
+func unreachableClient() *Client {
+	c := New(fakeToken)
+	c.BaseURL = "http://127.0.0.1:1/bot" + fakeToken
+	return c
+}
+
+func assertRedacted(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if strings.Contains(err.Error(), fakeToken) || strings.Contains(fmt.Sprintf("%+v", err), fakeToken) {
+		t.Errorf("token leaked in error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bot<redacted>") {
+		t.Errorf("error lost its redacted URL context: %v", err)
+	}
+}
+
+func TestTransportErrorRedactsToken(t *testing.T) {
+	c := unreachableClient()
+	ctx := context.Background()
+	calls := []struct {
+		method string
+		run    func() error
+	}{
+		{"sendMessage", func() error { return c.SendMessage(ctx, 42, "hi") }},
+		{"editMessageText", func() error { return c.EditMessageKB(ctx, 42, 1, "hi", nil) }},
+		{"answerCallbackQuery", func() error { return c.AnswerCallback(ctx, "cb", "ok") }},
+		{"deleteMessages", func() error { return c.DeleteMessages(ctx, 42, []int64{1}) }},
+		{"setMyCommands", func() error { return c.SetMyCommands(ctx, []BotCommand{{Command: "status"}}) }},
+		{"getUpdates", func() error { _, err := c.GetUpdates(ctx, 0, time.Second); return err }},
+	}
+	for _, tc := range calls {
+		t.Run(tc.method, func(t *testing.T) {
+			err := tc.run()
+			assertRedacted(t, err)
+			if !strings.Contains(err.Error(), tc.method) {
+				t.Errorf("error missing method name: %v", err)
+			}
+		})
+	}
+}
+
+func TestTransportErrorPreservesType(t *testing.T) {
+	err := unreachableClient().SendMessage(context.Background(), 42, "hi")
+	assertRedacted(t, err)
+	var ue *url.Error
+	if !errors.As(err, &ue) {
+		t.Fatalf("errors.As(*url.Error) failed for %T: %v", err, err)
+	}
+	if strings.Contains(ue.URL, fakeToken) {
+		t.Errorf("url.Error.URL still has token: %s", ue.URL)
+	}
+}
+
+func TestCanceledContextRedactsToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true,"result":[]}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL + "/bot" + fakeToken}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := c.GetUpdates(ctx, 0, time.Second)
+	assertRedacted(t, err)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("errors.Is(context.Canceled) = false: %v", err)
+	}
+}
+
+func TestTimeoutRedactsToken(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	c := &Client{HTTP: &http.Client{Timeout: 50 * time.Millisecond}, BaseURL: srv.URL + "/bot" + fakeToken}
+	err := c.SendMessage(context.Background(), 42, "hi")
+	assertRedacted(t, err)
+	var ue *url.Error
+	if !errors.As(err, &ue) || !ue.Timeout() {
+		t.Errorf("want timeout *url.Error, got %T: %v", err, err)
+	}
+}
+
+func TestLoggedErrorRedactsToken(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	_, err := unreachableClient().GetUpdates(context.Background(), 0, time.Second)
+	log.Printf("agent: getUpdates: %v", err)
+	log.Printf("agent: getUpdates: %+v", err)
+	if strings.Contains(buf.String(), fakeToken) {
+		t.Errorf("token leaked into log output: %s", buf.String())
+	}
+}
+
+func TestRedact(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`Post "https://api.telegram.org/bot` + fakeToken + `/sendMessage": EOF`,
+			`Post "https://api.telegram.org/bot<redacted>/sendMessage": EOF`},
+		{"bot" + fakeToken + " and bot" + fakeToken, "bot<redacted> and bot<redacted>"},
+		{"dial tcp 127.0.0.1:443: connection refused", "dial tcp 127.0.0.1:443: connection refused"},
+		{"robot arm", "robot arm"},
+	}
+	for _, tc := range cases {
+		if got := redact(tc.in); got != tc.want {
+			t.Errorf("redact(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSanitizeErrFallback(t *testing.T) {
+	if sanitizeErr(nil) != nil {
+		t.Error("sanitizeErr(nil) != nil")
+	}
+	plain := errors.New("no secrets here")
+	if sanitizeErr(plain) != plain {
+		t.Error("token-free error should be returned unchanged")
+	}
+	err := sanitizeErr(fmt.Errorf("x bot%s y: %w", fakeToken, io.EOF))
+	if strings.Contains(err.Error(), fakeToken) {
+		t.Errorf("token leaked: %v", err)
+	}
+	if !errors.Is(err, io.EOF) {
+		t.Errorf("errors.Is(io.EOF) = false: %v", err)
+	}
+}
 
 func TestSendMessage(t *testing.T) {
 	var got []map[string]any

@@ -7,8 +7,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -43,7 +46,45 @@ type Keyboard [][]Button
 type Client struct {
 	HTTP *http.Client
 	// BaseURL includes the token: https://api.telegram.org/bot<token>
+	// Errors returned by Client have the token redacted.
 	BaseURL string
+}
+
+// tokenPattern matches the bot token segment of a Bot API URL.
+var tokenPattern = regexp.MustCompile(`bot[0-9]+:[A-Za-z0-9_-]+`)
+
+// redact replaces any bot token in s with a placeholder.
+func redact(s string) string {
+	return tokenPattern.ReplaceAllString(s, "bot<redacted>")
+}
+
+// redactedError hides a token that appears in a wrapped error's text while
+// keeping the chain intact for errors.Is / errors.As.
+type redactedError struct {
+	msg string
+	err error
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.err }
+
+// sanitizeErr strips the bot token from err. net/http reports transport
+// failures as *url.Error carrying the full request URL, which would leak the
+// token into logs; its URL is rewritten in place so the error type, Timeout()
+// and Unwrap() keep working.
+func sanitizeErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL = redact(ue.URL)
+	}
+	msg := err.Error()
+	if clean := redact(msg); clean != msg {
+		return &redactedError{msg: clean, err: err}
+	}
+	return err
 }
 
 // New returns a client for the given bot token.
@@ -69,12 +110,12 @@ func (c *Client) call(ctx context.Context, method string, payload, result any) e
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/"+method, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return fmt.Errorf("telegram: %s: %w", method, sanitizeErr(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram: %s: %w", method, err)
+		return fmt.Errorf("telegram: %s: %w", method, sanitizeErr(err))
 	}
 	defer resp.Body.Close()
 	var env apiResponse
