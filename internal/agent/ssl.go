@@ -45,12 +45,12 @@ func (a *Agent) sslManage(args []string) string {
 		a.mu.Lock()
 		if slices.Contains(a.cfg.Watch.SSLHosts, host) {
 			a.mu.Unlock()
-			return host + " is already watched."
+			return esc(host) + " is already watched."
 		}
 		a.cfg.Watch.SSLHosts = append(a.cfg.Watch.SSLHosts, host)
 		cfg := a.cfg
 		a.mu.Unlock()
-		return "🔒 Watching " + host + a.persist(cfg) + "\nCheck it now: /ssl"
+		return "🔒 Watching " + esc(host) + a.persist(cfg) + "\nCheck it now: /ssl"
 	case "remove":
 		a.mu.Lock()
 		kept := a.cfg.Watch.SSLHosts[:0]
@@ -64,9 +64,9 @@ func (a *Agent) sslManage(args []string) string {
 		cfg := a.cfg
 		a.mu.Unlock()
 		if !removed {
-			return host + " was not watched."
+			return esc(host) + " was not watched."
 		}
-		return "Removed " + host + a.persist(cfg)
+		return "Removed " + esc(host) + a.persist(cfg)
 	}
 	return "Usage: /ssl add <host[:port]> · /ssl remove <host>"
 }

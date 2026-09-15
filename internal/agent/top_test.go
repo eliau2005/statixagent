@@ -54,7 +54,8 @@ func TestTopCommandError(t *testing.T) {
 
 func TestAlertKeyboardOffersTop(t *testing.T) {
 	for _, key := range []string{"cpu", "mem"} {
-		kb := alertKeyboard(key)
+		a := testAgent(&fakeSender{})
+		kb := a.alertKeyboard(key)
 		found := false
 		for _, row := range kb {
 			for _, b := range row {
