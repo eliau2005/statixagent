@@ -4,7 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"hash/crc32"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -251,6 +254,7 @@ func (a *Agent) snoozeCallbackData(key string) string {
 }
 
 func (a *Agent) resolveSnoozeKey(data string) (string, bool) {
+	// New namespaced forms (preferred).
 	if key, ok := strings.CutPrefix(data, "snz:d:"); ok {
 		return key, key != ""
 	}
@@ -263,5 +267,23 @@ func (a *Agent) resolveSnoozeKey(data string) (string, bool) {
 		a.mu.Unlock()
 		return key, found
 	}
-	return "", false
+	// Legacy forms from #64: snz:<key> and snz:h<8-hex CRC32>.
+	value, ok := strings.CutPrefix(data, "snz:")
+	if !ok || value == "" {
+		return "", false
+	}
+	if hexDigits, hashed := strings.CutPrefix(value, "h"); hashed && len(hexDigits) == 8 {
+		if _, err := strconv.ParseUint(hexDigits, 16, 32); err == nil {
+			a.mu.Lock()
+			key, found := a.snoozeKeys[hexDigits]
+			a.mu.Unlock()
+			return key, found
+		}
+	}
+	return value, true
+}
+
+// legacyCRC32Hex returns the 8-char lowercase CRC32 hex used by pre-SHA-256 callbacks.
+func legacyCRC32Hex(s string) string {
+	return fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(s)))
 }

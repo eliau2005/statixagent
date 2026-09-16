@@ -104,3 +104,55 @@ func TestSnoozeStaleHash(t *testing.T) {
 		t.Fatalf("want stale snooze toast, got %v", answered)
 	}
 }
+
+func TestSnoozeLegacyDirectCallback(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	// Pre-#69 wire format: snz:<key> (no d: namespace).
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: "snz:cpu"})
+	send.mu.Lock()
+	answered := append([]string(nil), send.answered...)
+	send.mu.Unlock()
+	if len(answered) == 0 || !strings.Contains(answered[0], "Snoozed for 1h") {
+		t.Fatalf("legacy direct snooze toast = %v", answered)
+	}
+	if al := a.engine.Event("cpu", "t", "b", alert.Warning, time.Now(), 0); al != nil {
+		t.Fatalf("legacy snz:cpu should snooze, got %+v", al)
+	}
+}
+
+func TestSnoozeLegacyHashedCallback(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	long := "docker-restart:myproject-very-long-service-name-worker-queue-1"
+	crc := legacyCRC32Hex(long)
+	a.mu.Lock()
+	a.snoozeKeys[crc] = long
+	a.mu.Unlock()
+
+	data := "snz:h" + crc
+	if len(data) != len("snz:h")+8 {
+		t.Fatalf("legacy hashed callback shape = %q", data)
+	}
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: data})
+	if al := a.engine.Event(long, "t", "b", alert.Warning, time.Now(), 0); al != nil {
+		t.Fatalf("legacy snz:hCRC32 should snooze long key, got %+v", al)
+	}
+}
+
+func TestSnoozeEmitOnlyNewForms(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	if got := a.snoozeCallbackData("cpu"); got != "snz:d:cpu" {
+		t.Fatalf("short emit = %q, want snz:d:cpu", got)
+	}
+	long := "docker-restart:myproject-very-long-service-name-worker-queue-1"
+	got := a.snoozeCallbackData(long)
+	if !strings.HasPrefix(got, "snz:h:") {
+		t.Fatalf("long emit = %q, want snz:h:<sha256>", got)
+	}
+	if strings.HasPrefix(got, "snz:h") && !strings.HasPrefix(got, "snz:h:") {
+		t.Fatalf("must not emit legacy snz:hCRC32 form: %q", got)
+	}
+}

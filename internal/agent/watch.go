@@ -626,7 +626,7 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 	case strings.HasPrefix(data, "hr:"):
 		i, fp, ok := parseWatchIndexData(data, "hr:")
 		checks := a.watchCopy().HTTPChecks
-		if !ok || i < 0 || i >= len(checks) || callbackDigest(checks[i].URL) != fp {
+		if !ok || i < 0 || i >= len(checks) || !watchFingerprintMatches(checks[i].URL, fp) {
 			text, kb := a.watchingView()
 			return text, kb, "stale list", true
 		}
@@ -682,11 +682,12 @@ func parseWatchIndexData(data, prefix string) (int, string, bool) {
 	if err != nil {
 		return 0, "", false
 	}
-	if len(fpStr) != 16 {
+	// Accept new 16-char SHA-256 fingerprints and legacy 8-char CRC32 ones.
+	if len(fpStr) != 16 && len(fpStr) != 8 {
 		return 0, "", false
 	}
 	for _, c := range fpStr {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return 0, "", false
 		}
 	}
@@ -697,8 +698,21 @@ func matchWatchItem(list []string, i int, fp string, parsed bool) (string, bool)
 	if !parsed || i < 0 || i >= len(list) {
 		return "", false
 	}
-	if callbackDigest(list[i]) != fp {
+	if !watchFingerprintMatches(list[i], fp) {
 		return "", false
 	}
 	return list[i], true
+}
+
+// watchFingerprintMatches compares fp against the item using the new truncated
+// SHA-256 form (16 hex) or the legacy CRC32 form (8 hex) from #64.
+func watchFingerprintMatches(item, fp string) bool {
+	switch len(fp) {
+	case 16:
+		return callbackDigest(item) == fp
+	case 8:
+		return legacyCRC32Hex(item) == fp
+	default:
+		return false
+	}
 }
