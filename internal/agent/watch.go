@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"log"
 	"slices"
 	"sort"
@@ -627,7 +626,7 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 	case strings.HasPrefix(data, "hr:"):
 		i, fp, ok := parseWatchIndexData(data, "hr:")
 		checks := a.watchCopy().HTTPChecks
-		if !ok || i < 0 || i >= len(checks) || crc32.ChecksumIEEE([]byte(checks[i].URL)) != fp {
+		if !ok || i < 0 || i >= len(checks) || callbackDigest(checks[i].URL) != fp {
 			text, kb := a.watchingView()
 			return text, kb, "stale list", true
 		}
@@ -667,34 +666,38 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 // watchIndexData binds a list index to a short fingerprint of the item so a
 // stale /watching keyboard cannot remove a different entry after the list shifts.
 func watchIndexData(prefix string, i int, item string) string {
-	return fmt.Sprintf("%s%d:%08x", prefix, i, crc32.ChecksumIEEE([]byte(item)))
+	return fmt.Sprintf("%s%d:%s", prefix, i, callbackDigest(item))
 }
 
-func parseWatchIndexData(data, prefix string) (int, uint32, bool) {
+func parseWatchIndexData(data, prefix string) (int, string, bool) {
 	rest, ok := strings.CutPrefix(data, prefix)
 	if !ok {
-		return 0, 0, false
+		return 0, "", false
 	}
 	idxStr, fpStr, ok := strings.Cut(rest, ":")
 	if !ok {
-		return 0, 0, false
+		return 0, "", false
 	}
 	i, err := strconv.Atoi(idxStr)
 	if err != nil {
-		return 0, 0, false
+		return 0, "", false
 	}
-	fp, err := strconv.ParseUint(fpStr, 16, 32)
-	if err != nil {
-		return 0, 0, false
+	if len(fpStr) != 16 {
+		return 0, "", false
 	}
-	return i, uint32(fp), true
+	for _, c := range fpStr {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return 0, "", false
+		}
+	}
+	return i, fpStr, true
 }
 
-func matchWatchItem(list []string, i int, fp uint32, parsed bool) (string, bool) {
+func matchWatchItem(list []string, i int, fp string, parsed bool) (string, bool) {
 	if !parsed || i < 0 || i >= len(list) {
 		return "", false
 	}
-	if crc32.ChecksumIEEE([]byte(list[i])) != fp {
+	if callbackDigest(list[i]) != fp {
 		return "", false
 	}
 	return list[i], true

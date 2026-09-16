@@ -389,9 +389,6 @@ func splitMessage(s string, limit int) []string {
 		}
 		open = newOpen
 		s = s[cut:]
-		if len(s) > 0 && s[0] == '\n' {
-			s = s[1:]
-		}
 	}
 	if len(chunks) == 0 {
 		return []string{""}

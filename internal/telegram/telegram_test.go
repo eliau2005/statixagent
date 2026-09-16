@@ -305,7 +305,7 @@ func TestSplitMessage(t *testing.T) {
 		t.Errorf("short = %v", got)
 	}
 	chunks := splitMessage("aaaa\nbbbb\ncccc", 10)
-	if len(chunks) != 2 || chunks[0] != "aaaa\nbbbb" || chunks[1] != "cccc" {
+	if len(chunks) != 2 || chunks[0] != "aaaa\nbbbb" || chunks[1] != "\ncccc" {
 		t.Errorf("chunks = %q", chunks)
 	}
 	// No newline available: hard cut.
@@ -342,13 +342,15 @@ func TestSplitMessageHTMLPre(t *testing.T) {
 	if len(chunks) > 1 && !strings.Contains(chunks[1], "<pre>") {
 		t.Errorf("second chunk missing reopen <pre>: %q", chunks[1][:min(40, len(chunks[1]))])
 	}
-	// Joining visible text across chunks should recover the original body text.
+	// Joining visible text across chunks should recover the original exactly
+	// (including newlines at split boundaries).
 	var joined strings.Builder
 	for _, c := range chunks {
 		joined.WriteString(stripHTMLTags(c))
 	}
-	if !strings.Contains(joined.String(), "line of text inside pre") {
-		t.Errorf("visible text lost across cuts: %q", joined.String()[:min(80, joined.Len())])
+	wantVisible := stripHTMLTags(msg)
+	if joined.String() != wantVisible {
+		t.Errorf("joined visible text != original\n got: %q\nwant: %q", joined.String()[:min(120, joined.Len())], wantVisible[:min(120, len(wantVisible))])
 	}
 }
 

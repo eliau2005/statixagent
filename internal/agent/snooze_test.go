@@ -47,7 +47,7 @@ func TestSnoozeCallback(t *testing.T) {
 func TestSnoozeShortKeySurvivesRestart(t *testing.T) {
 	before := testAgent(&fakeSender{})
 	data := before.snoozeCallbackData("docker:api")
-	if data != "snz:docker:api" {
+	if data != "snz:d:docker:api" {
 		t.Fatalf("short snooze callback = %q", data)
 	}
 
@@ -66,8 +66,8 @@ func TestSnoozeLongKeyFitsCallbackData(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	long := "docker-restart:myproject-very-long-service-name-worker-queue-1"
-	if len("snz:"+long) <= 64 {
-		t.Fatalf("fixture should exceed 64 as raw snz data; got %d", len("snz:"+long))
+	if len("snz:d:"+long) <= 64 {
+		t.Fatalf("fixture should exceed 64 as raw snz data; got %d", len("snz:d:"+long))
 	}
 	kb := a.alertKeyboard(long)
 	found := ""
@@ -96,7 +96,7 @@ func TestSnoozeStaleHash(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
-	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: "snz:hdeadbeef"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: "snz:h:deadbeefdeadbeef"})
 	send.mu.Lock()
 	answered := append([]string(nil), send.answered...)
 	send.mu.Unlock()

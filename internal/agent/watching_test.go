@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"strings"
 	"testing"
 
@@ -145,7 +144,7 @@ func TestWatchCallbackStaleListPath(t *testing.T) {
 	ctx := context.Background()
 	a.cfg.Watch.SSLHosts = []string{"only.example"}
 	// Wrong fingerprint at a valid index.
-	bad := fmt.Sprintf("cr:0:%08x", crc32.ChecksumIEEE([]byte("other")))
+	bad := fmt.Sprintf("cr:0:%s", callbackDigest("other"))
 	if _, _, toast, ok := a.handleWatchCallback(ctx, bad); !ok || toast != "stale list" {
 		t.Fatalf("bad fingerprint: ok=%v toast=%q", ok, toast)
 	}
