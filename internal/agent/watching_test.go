@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"hash/crc32"
 	"strings"
 	"testing"
 
@@ -145,7 +144,7 @@ func TestWatchCallbackStaleListPath(t *testing.T) {
 	ctx := context.Background()
 	a.cfg.Watch.SSLHosts = []string{"only.example"}
 	// Wrong fingerprint at a valid index.
-	bad := fmt.Sprintf("cr:0:%08x", crc32.ChecksumIEEE([]byte("other")))
+	bad := fmt.Sprintf("cr:0:%s", callbackDigest("other"))
 	if _, _, toast, ok := a.handleWatchCallback(ctx, bad); !ok || toast != "stale list" {
 		t.Fatalf("bad fingerprint: ok=%v toast=%q", ok, toast)
 	}
@@ -165,5 +164,57 @@ func TestWatchCallbackRemovesProcess(t *testing.T) {
 	}
 	if got := a.watchCopy().Processes; len(got) != 1 || got[0] != "nginx" {
 		t.Fatalf("processes after xr = %v", got)
+	}
+}
+
+func TestWatchLegacyCRC32Fingerprint(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	ctx := context.Background()
+	a.cfg.Watch.SSLHosts = []string{"legacy.example"}
+	a.cfg.Watch.Processes = []string{"nginx", "redis"}
+	a.cfg.Watch.HTTPChecks = []config.HTTPCheck{{URL: "https://legacy.example/healthz"}}
+
+	// Legacy #64 form: prefix + index + 8-char CRC32 hex.
+	cr := fmt.Sprintf("cr:0:%s", legacyCRC32Hex("legacy.example"))
+	if _, _, toast, ok := a.handleWatchCallback(ctx, cr); !ok || !strings.Contains(toast, "legacy.example") {
+		t.Fatalf("legacy cr: ok=%v toast=%q", ok, toast)
+	}
+	if hosts := a.watchCopy().SSLHosts; len(hosts) != 0 {
+		t.Fatalf("ssl hosts after legacy remove = %v", hosts)
+	}
+
+	xr := fmt.Sprintf("xr:1:%s", legacyCRC32Hex("redis"))
+	if _, _, toast, ok := a.handleWatchCallback(ctx, xr); !ok || toast != "🗑 redis" {
+		t.Fatalf("legacy xr: ok=%v toast=%q", ok, toast)
+	}
+
+	hr := fmt.Sprintf("hr:0:%s", legacyCRC32Hex("https://legacy.example/healthz"))
+	if _, _, toast, ok := a.handleWatchCallback(ctx, hr); !ok || !strings.Contains(toast, "healthz") {
+		t.Fatalf("legacy hr: ok=%v toast=%q", ok, toast)
+	}
+
+	// Emit path must still be 16-char SHA-256 only.
+	got := watchIndexData("cr:", 0, "new.example")
+	parts := strings.Split(got, ":")
+	if len(parts) != 3 || len(parts[2]) != 16 {
+		t.Fatalf("watchIndexData must emit 16-hex SHA-256, got %q", got)
+	}
+}
+
+func TestParseWatchIndexDataAcceptsBothFingerprints(t *testing.T) {
+	i, fp, ok := parseWatchIndexData("sr:2:"+callbackDigest("svc"), "sr:")
+	if !ok || i != 2 || len(fp) != 16 {
+		t.Fatalf("sha256 parse: i=%d fp=%q ok=%v", i, fp, ok)
+	}
+	i, fp, ok = parseWatchIndexData("sr:2:"+legacyCRC32Hex("svc"), "sr:")
+	if !ok || i != 2 || len(fp) != 8 {
+		t.Fatalf("crc32 parse: i=%d fp=%q ok=%v", i, fp, ok)
+	}
+	if _, _, ok := parseWatchIndexData("sr:2:abcd", "sr:"); ok {
+		t.Fatal("4-char fingerprint must be rejected")
+	}
+	if _, _, ok := parseWatchIndexData("sr:2:gggggggg", "sr:"); ok {
+		t.Fatal("non-hex fingerprint must be rejected")
 	}
 }

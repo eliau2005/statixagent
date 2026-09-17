@@ -131,9 +131,9 @@ type Agent struct {
 	// sequentially. Guarded by mu.
 	pendingKB telegram.Keyboard
 
-	// snoozeKeys maps crc32(key) → alert key for snz:<hash> callbacks.
+	// snoozeKeys maps truncated SHA-256 digest → alert key for snz:h:<digest> callbacks.
 	// Guarded by mu.
-	snoozeKeys map[uint32]string
+	snoozeKeys map[string]string
 
 	// trend is a ring of recent usage points for sparklines. Guarded by mu.
 	trend []trendPoint
@@ -186,7 +186,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		digestPoll:   30 * time.Second,
 		sslInterval:  12 * time.Hour,
 		dockerPoll:   time.Minute,
-		snoozeKeys:   map[uint32]string{},
+		snoozeKeys:   map[string]string{},
 	}
 	a.router = a.buildRouter()
 	return a

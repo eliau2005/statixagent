@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"hash/crc32"
 	"log"
@@ -229,35 +231,59 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	}
 }
 
+// callbackDigest returns a fixed-size hex fingerprint of s for Telegram
+// callback_data payloads (truncated SHA-256, 8 bytes → 16 hex chars).
+func callbackDigest(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
+}
+
 // snoozeCallbackData keeps ordinary alert keys in callback_data so buttons
 // remain valid across restarts. Only oversized keys use the in-memory hash map.
+// Namespaces: snz:d:<key> (direct) and snz:h:<digest> (hashed) never collide.
 func (a *Agent) snoozeCallbackData(key string) string {
-	direct := "snz:" + key
+	direct := "snz:d:" + key
 	if len(direct) <= 64 {
 		return direct
 	}
-	h := crc32.ChecksumIEEE([]byte(key))
+	digest := callbackDigest(key)
 	a.mu.Lock()
-	a.snoozeKeys[h] = key
+	a.snoozeKeys[digest] = key
 	a.mu.Unlock()
-	return fmt.Sprintf("snz:h%08x", h)
+	return "snz:h:" + digest
 }
 
 func (a *Agent) resolveSnoozeKey(data string) (string, bool) {
+	// New namespaced forms (preferred).
+	if key, ok := strings.CutPrefix(data, "snz:d:"); ok {
+		return key, key != ""
+	}
+	if digest, ok := strings.CutPrefix(data, "snz:h:"); ok {
+		if digest == "" {
+			return "", false
+		}
+		a.mu.Lock()
+		key, found := a.snoozeKeys[digest]
+		a.mu.Unlock()
+		return key, found
+	}
+	// Legacy forms from #64: snz:<key> and snz:h<8-hex CRC32>.
 	value, ok := strings.CutPrefix(data, "snz:")
-	if !ok {
+	if !ok || value == "" {
 		return "", false
 	}
-	hex, hashed := strings.CutPrefix(value, "h")
-	if !hashed {
-		return value, value != ""
+	if hexDigits, hashed := strings.CutPrefix(value, "h"); hashed && len(hexDigits) == 8 {
+		if _, err := strconv.ParseUint(hexDigits, 16, 32); err == nil {
+			a.mu.Lock()
+			key, found := a.snoozeKeys[hexDigits]
+			a.mu.Unlock()
+			return key, found
+		}
 	}
-	v, err := strconv.ParseUint(hex, 16, 32)
-	if err != nil || len(hex) != 8 {
-		return "", false
-	}
-	a.mu.Lock()
-	key, ok := a.snoozeKeys[uint32(v)]
-	a.mu.Unlock()
-	return key, ok
+	return value, true
+}
+
+// legacyCRC32Hex returns the 8-char lowercase CRC32 hex used by pre-SHA-256 callbacks.
+func legacyCRC32Hex(s string) string {
+	return fmt.Sprintf("%08x", crc32.ChecksumIEEE([]byte(s)))
 }
