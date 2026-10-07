@@ -151,6 +151,86 @@ func TestBruteDetector(t *testing.T) {
 	}
 }
 
+func TestBruteDetectorForgetsIdleIPs(t *testing.T) {
+	b := NewBruteDetector(time.Minute, 5)
+	// A scan: thousands of IPs, each failing once or twice, one of which
+	// crosses the threshold.
+	for i := 0; i < 5000; i++ {
+		ip := fmt.Sprintf("203.0.%d.%d", i/256, i%256)
+		at := t0.Add(time.Duration(i) * time.Millisecond)
+		b.Record(ip, at)
+		b.Record(ip, at)
+	}
+	attacker := "198.51.100.66"
+	for i := 0; i < 5; i++ {
+		b.Record(attacker, t0.Add(5*time.Second))
+	}
+
+	// Long after the scan, a single new attempt sweeps everything idle.
+	later := t0.Add(time.Hour)
+	b.Record("192.0.2.1", later)
+	b.mu.Lock()
+	attempts, fired := len(b.attempts), len(b.fired)
+	b.mu.Unlock()
+	if attempts != 1 || fired != 0 {
+		t.Fatalf("after the window: %d IPs with attempts, %d with fired state; want 1 and 0", attempts, fired)
+	}
+
+	// Forgetting must not change behaviour: the attacker fires afresh.
+	for i := 0; i < 4; i++ {
+		if b.Record(attacker, later.Add(time.Duration(i)*time.Second)) {
+			t.Fatalf("fired at attempt %d after being forgotten", i+1)
+		}
+	}
+	if !b.Record(attacker, later.Add(4*time.Second)) {
+		t.Error("a new burst from a forgotten IP must fire")
+	}
+}
+
+func TestBruteDetectorPruneOutOfOrder(t *testing.T) {
+	b := NewBruteDetector(time.Minute, 3)
+	ip := "198.51.100.42"
+	sec := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Second) }
+
+	// Seed another IP so the first Record establishes lastSweep.
+	b.Record("192.0.2.1", sec(0))
+	// Fresh attempt, then an older one appended out of order so the slice's last
+	// element is outside the upcoming sweep window while the max is still inside.
+	b.Record(ip, sec(50))
+	b.Record(ip, sec(5))
+
+	// Sweep at 70s: cutoff is 10s. Last element (5s) is outside; max (50s) is not.
+	// Using last-element prune would drop the IP; max-based prune must keep it.
+	b.Record("192.0.2.2", sec(70))
+	if b.Count(ip, sec(70)) != 1 {
+		t.Fatalf("Count after out-of-order prune = %d, want 1 (the in-window attempt)", b.Count(ip, sec(70)))
+	}
+	b.Record(ip, sec(72))
+	if !b.Record(ip, sec(74)) {
+		t.Fatal("third in-window attempt must fire; prune must not have dropped the IP")
+	}
+}
+
+func TestBruteDetectorKeepsActiveIPs(t *testing.T) {
+	b := NewBruteDetector(time.Minute, 3)
+	ip, other := "198.51.100.7", "192.0.2.1"
+	sec := func(n int) time.Time { return t0.Add(time.Duration(n) * time.Second) }
+	b.Record(other, sec(0)) // first sweep
+	b.Record(ip, sec(40))
+	b.Record(ip, sec(50))
+	b.Record(other, sec(60)) // a full window later: sweeps, ip is still inside the window
+	if !b.Record(ip, sec(70)) {
+		t.Fatal("third attempt inside the window must fire across a sweep")
+	}
+	// Still attacking, inside the quiet period. The Record at 120s sweeps
+	// again; it must not drop the fired time and allow a re-fire.
+	for _, n := range []int{100, 110, 120, 130} {
+		if b.Record(ip, sec(n)) {
+			t.Fatalf("ongoing attack re-fired at %ds", n)
+		}
+	}
+}
+
 func TestParseUtmp(t *testing.T) {
 	var buf bytes.Buffer
 	buf.Write(EncodeUtmpRecord(2, "", "~", "reboot", t0.Add(-time.Hour))) // BOOT_TIME, skipped
@@ -240,6 +320,26 @@ func TestGeoResolver(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("private IP must not hit the network")
+	}
+}
+
+func TestGeoResolverCacheIsBounded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"success","country":"Germany"}`)
+	}))
+	defer srv.Close()
+
+	g := NewGeoResolver()
+	g.BaseURL = srv.URL
+	g.Client = srv.Client()
+	for i := 0; i < geoCacheMax+10; i++ {
+		g.Lookup(context.Background(), fmt.Sprintf("203.0.%d.%d", i/256, i%256))
+	}
+	g.mu.Lock()
+	n := len(g.cache)
+	g.mu.Unlock()
+	if n > geoCacheMax {
+		t.Errorf("cache holds %d entries, cap is %d", n, geoCacheMax)
 	}
 }
 

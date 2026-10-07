@@ -32,6 +32,11 @@ func (g GeoInfo) String() string {
 	return s
 }
 
+// geoCacheMax bounds the lookup cache. Lookups happen for successful logins
+// and live sessions, so this is many times what a real host needs, while
+// keeping a long-running agent's memory flat.
+const geoCacheMax = 1024
+
 // GeoResolver looks up IPs against ip-api.com with an in-memory cache.
 // Lookups are best-effort: on any failure it returns a zero GeoInfo, never
 // an error — alerts must not depend on a third-party service being up.
@@ -91,6 +96,10 @@ func (g *GeoResolver) Lookup(ctx context.Context, ip string) GeoInfo {
 	}
 	info = GeoInfo{Country: body.Country, City: body.City, ISP: body.ISP}
 	g.mu.Lock()
+	if len(g.cache) >= geoCacheMax {
+		// Start over rather than track recency: a miss costs one lookup.
+		clear(g.cache)
+	}
 	g.cache[ip] = info
 	g.mu.Unlock()
 	return info
