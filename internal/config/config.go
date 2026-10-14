@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -25,6 +27,7 @@ type Config struct {
 	Watch      Watch      `toml:"watch"`
 	Update     Update     `toml:"update"`
 	Digest     Digest     `toml:"digest"`
+	SSH        SSH        `toml:"ssh"`
 
 	// SampleInterval is the metrics sampling period.
 	SampleInterval Duration `toml:"sample_interval"`
@@ -88,6 +91,39 @@ type Update struct {
 type Digest struct {
 	Enabled bool `toml:"enabled"`
 	Hour    int  `toml:"hour"` // local hour (0-23) to send at
+}
+
+// SSH tunes SSH login monitoring.
+type SSH struct {
+	// TrustedIPs are source addresses (single IPs or CIDR ranges, IPv4 or
+	// IPv6) whose successful logins do not push an alert. They are still
+	// recorded in history and the digest, and their failed attempts still
+	// count toward brute-force detection.
+	TrustedIPs []string `toml:"trusted_ips"`
+}
+
+// ParseTrustedIP parses one ssh.trusted_ips entry: a bare address (treated
+// as a single-host prefix) or a CIDR range. The result is masked so
+// "10.1.2.3/8" and "10.0.0.0/8" mean the same range, and IPv4-mapped IPv6
+// forms are reduced to plain IPv4 so they match what sshd logs.
+func ParseTrustedIP(entry string) (netip.Prefix, error) {
+	s := strings.TrimSpace(entry)
+	if strings.Contains(s, "/") {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			return netip.Prefix{}, fmt.Errorf("invalid CIDR range %q", entry)
+		}
+		if p.Addr().Is4In6() && p.Bits() >= 96 {
+			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		return p.Masked(), nil
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil || addr.Zone() != "" {
+		return netip.Prefix{}, fmt.Errorf("invalid IP address %q", entry)
+	}
+	addr = addr.Unmap()
+	return netip.PrefixFrom(addr, addr.BitLen()), nil
 }
 
 // Duration wraps time.Duration for TOML strings like "30s".
@@ -179,6 +215,11 @@ func (c Config) Validate() error {
 	}
 	if c.Digest.Hour < 0 || c.Digest.Hour > 23 {
 		errs = append(errs, fmt.Errorf("digest.hour %d out of range 0-23", c.Digest.Hour))
+	}
+	for i, ip := range c.SSH.TrustedIPs {
+		if _, err := ParseTrustedIP(ip); err != nil {
+			errs = append(errs, fmt.Errorf("ssh.trusted_ips[%d]: %w (want an IP like 203.0.113.7 or a CIDR like 10.0.0.0/8)", i, err))
+		}
 	}
 	if c.Update.Auto && c.Update.CheckInterval.Duration < time.Minute {
 		errs = append(errs, fmt.Errorf("update.check_interval %s is below 1m", c.Update.CheckInterval))

@@ -121,3 +121,97 @@ func TestDefaultsAreSane(t *testing.T) {
 		t.Error("auto-update must default off (MVP §5)")
 	}
 }
+
+func TestParseTrustedIP(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string // canonical prefix; "" means an error is expected
+	}{
+		{"203.0.113.7", "203.0.113.7/32"},
+		{" 203.0.113.7 ", "203.0.113.7/32"},
+		{"10.0.0.0/8", "10.0.0.0/8"},
+		{"10.1.2.3/8", "10.0.0.0/8"},
+		{"0.0.0.0/0", "0.0.0.0/0"},
+		{"192.168.1.1/32", "192.168.1.1/32"},
+		{"2001:db8::1", "2001:db8::1/128"},
+		{"2001:db8::/32", "2001:db8::/32"},
+		{"::/0", "::/0"},
+		{"::ffff:198.51.100.4", "198.51.100.4/32"},
+		{"::ffff:198.51.100.0/120", "198.51.100.0/24"},
+		{"", ""},
+		{"not-an-ip", ""},
+		{"203.0.113", ""},
+		{"256.1.1.1", ""},
+		{"10.0.0.0/33", ""},
+		{"2001:db8::/129", ""},
+		{"10.0.0.0/", ""},
+		{"fe80::1%eth0", ""},
+		{"example.com", ""},
+	}
+	for _, c := range cases {
+		got, err := ParseTrustedIP(c.in)
+		if c.want == "" {
+			if err == nil {
+				t.Errorf("ParseTrustedIP(%q) = %v, want error", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseTrustedIP(%q): %v", c.in, err)
+			continue
+		}
+		if got.String() != c.want {
+			t.Errorf("ParseTrustedIP(%q) = %s, want %s", c.in, got, c.want)
+		}
+	}
+}
+
+func TestValidateTrustedIPs(t *testing.T) {
+	c := validConfig()
+	if len(c.SSH.TrustedIPs) != 0 {
+		t.Fatalf("default trusted_ips = %v, want empty", c.SSH.TrustedIPs)
+	}
+	c.SSH.TrustedIPs = []string{"203.0.113.7", "10.0.0.0/8", "2001:db8::/32"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("valid trusted_ips rejected: %v", err)
+	}
+	c.SSH.TrustedIPs = []string{"10.0.0.0/8", "10.0.0.300"}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "ssh.trusted_ips[1]") || !strings.Contains(err.Error(), "10.0.0.300") {
+		t.Errorf("invalid entry error = %v, want index and value", err)
+	}
+}
+
+func TestLoadTrustedIPs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	base := "[telegram]\ntoken = \"t\"\nchat_id = 42\n"
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load without [ssh]: %v", err)
+	}
+	if len(cfg.SSH.TrustedIPs) != 0 {
+		t.Errorf("trusted_ips = %v, want empty when [ssh] is absent", cfg.SSH.TrustedIPs)
+	}
+
+	withSSH := base + "[ssh]\ntrusted_ips = [\"203.0.113.7\", \"2001:db8::/32\"]\n"
+	if err := os.WriteFile(path, []byte(withSSH), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = Load(path); err != nil {
+		t.Fatalf("Load with trusted_ips: %v", err)
+	}
+	if len(cfg.SSH.TrustedIPs) != 2 {
+		t.Errorf("trusted_ips = %v", cfg.SSH.TrustedIPs)
+	}
+
+	bad := base + "[ssh]\ntrusted_ips = [\"10.0.0.0/40\"]\n"
+	if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "ssh.trusted_ips[0]") {
+		t.Errorf("Load with bad CIDR: err = %v", err)
+	}
+}

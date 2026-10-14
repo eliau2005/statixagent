@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -101,6 +102,11 @@ type Agent struct {
 	geo    *sshwatch.GeoResolver
 	router *bot.Router
 
+	// trusted holds ssh.trusted_ips; logins from these sources skip the
+	// alert. Built once in New: the list is only changed by editing the
+	// config file and restarting.
+	trusted *sshwatch.TrustedIPs
+
 	mu      sync.Mutex
 	snap    collect.Snapshot
 	prevRaw collect.Sample
@@ -187,6 +193,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		sslInterval:  12 * time.Hour,
 		dockerPoll:   time.Minute,
 		snoozeKeys:   map[string]string{},
+		trusted:      trustedIPs(cfg.SSH.TrustedIPs),
 	}
 	a.router = a.buildRouter()
 	return a
@@ -462,6 +469,12 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 	a.noteSSHEvent(e.Kind)
 	switch e.Kind {
 	case sshwatch.EventLogin:
+		// A login from a trusted source is still in history and the digest
+		// above; only the push (and the geo lookup feeding it) is skipped.
+		// Root logins are included: trusting an address means trusting it.
+		if a.trusted.Contains(e.IP) {
+			return
+		}
 		geo := a.geo.Lookup(ctx, e.IP)
 		body := fmt.Sprintf("%s from %s via %s", e.User, e.IP, e.Method)
 		if g := geo.String(); g != "" {
@@ -477,6 +490,9 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 			a.pushAlert(ctx, *al)
 		}
 	case sshwatch.EventFailed, sshwatch.EventInvalidUser:
+		// Failures are counted regardless of ssh.trusted_ips: a burst from
+		// a trusted range can be a compromised machine on that network,
+		// and an owner mistyping a password never reaches the threshold.
 		if a.brute.Record(e.IP, now) {
 			n := a.brute.Count(e.IP, now)
 			body := fmt.Sprintf("%d failed attempts from %s in 2m (last user: %s)", n, e.IP, e.User)
@@ -485,6 +501,22 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 			}
 		}
 	}
+}
+
+// trustedIPs builds the matcher for ssh.trusted_ips. Load has already
+// validated the entries; one that still fails to parse is logged and
+// skipped rather than widening trust.
+func trustedIPs(entries []string) *sshwatch.TrustedIPs {
+	var prefixes []netip.Prefix
+	for _, e := range entries {
+		p, err := config.ParseTrustedIP(e)
+		if err != nil {
+			log.Printf("agent: ignoring ssh.trusted_ips entry: %v", err)
+			continue
+		}
+		prefixes = append(prefixes, p)
+	}
+	return sshwatch.NewTrustedIPs(prefixes)
 }
 
 func (a *Agent) keysLoop(ctx context.Context) {
