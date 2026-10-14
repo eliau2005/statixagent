@@ -143,6 +143,10 @@ stream of messages:
 - **Event alerts** — power loss, reboot, new SSH login, brute-force burst,
   key change, cert expiry, container down / restart-loop — which have no
   threshold and use the cooldown/dedupe machinery only.
+- **Trusted SSH sources** — `ssh.trusted_ips` (addresses or CIDR ranges,
+  parsed with `net/netip` and validated at load) suppresses only the login
+  alert. The event is still recorded in history and the digest, and failed
+  attempts from those sources still feed the brute-force detector.
 
 ## Update pipeline
 

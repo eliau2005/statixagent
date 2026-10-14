@@ -86,6 +86,25 @@ SSH visibility is a first-class feature, not an afterthought:
 - **`authorized_keys` change alerts** — the agent hashes root's and every home
   user's key files and alerts when one changes.
 
+#### Trusted IPs
+
+If you log in often from a known address, list it in the config to stop the
+per-login alert for it. Entries can be single IPv4/IPv6 addresses or CIDR
+ranges:
+
+```toml
+[ssh]
+trusted_ips = ["203.0.113.7", "198.51.100.0/24", "2001:db8:42::/48"]
+```
+
+The list is empty by default, which keeps the alert-on-every-login behavior.
+Invalid entries stop the agent at startup with an error naming the entry.
+A login from a trusted source (root included) still appears in
+`/ssh history` and the daily digest; only the push is skipped. Failed attempts
+are **not** exempt: a burst of failures from a trusted address still raises the
+brute-force alert. Edit `/etc/statix-agent/config.toml` and restart the
+service (`systemctl restart statix-agent`) to apply changes.
+
 ### Alerts and remediation
 
 Alerts arrive as push messages — you never have to ask for them:
