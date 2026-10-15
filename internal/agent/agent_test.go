@@ -680,15 +680,16 @@ func TestWatchButtons(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "sa:1" || !strings.Contains(kb[0][0].Text, "➕") {
+	wantSA := watchIndexData("sa:", 0, "nginx.service")
+	if kb == nil || kb[0][0].Data != wantSA || !strings.Contains(kb[0][0].Text, "➕") {
 		t.Fatalf("scan keyboard = %+v", kb)
 	}
 
 	// Pressing ➕ adds the unit, persists, and re-renders the scan.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: "sa:1"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: wantSA})
 	saved, err := config.Load(cfgPath)
 	if err != nil || len(saved.Watch.Services) != 1 || saved.Watch.Services[0] != "nginx.service" {
-		t.Fatalf("after sa:1 saved=%+v err=%v", saved.Watch, err)
+		t.Fatalf("after %s saved=%+v err=%v", wantSA, saved.Watch, err)
 	}
 	if last := send.lastEdit(); !strings.Contains(last.html, "already watched") {
 		t.Errorf("re-rendered scan should show empty candidates: %q", last.html)
@@ -727,6 +728,54 @@ func TestWatchButtons(t *testing.T) {
 	}
 	if last := send.lastEdit(); !strings.Contains(last.html, "Nothing yet") {
 		t.Errorf("empty watching view = %q", last.html)
+	}
+}
+
+// TestScanAddIdentity: a ➕ button adds only the unit it was drawn for, even
+// if a later scan shifted the list, and legacy sa:<n> never adds anything.
+func TestScanAddIdentity(t *testing.T) {
+	cases := []struct {
+		name      string
+		data      string
+		rescan    string // scan output before the tap, "" = unchanged
+		wantAdded string
+		wantToast string
+	}{
+		{"same list", watchIndexData("sa:", 0, "nginx.service"), "", "nginx.service", "watching nginx.service"},
+		{"list shifted", watchIndexData("sa:", 0, "nginx.service"),
+			"cron.service loaded active running Jobs\nnginx.service loaded active running Web\n", "", "stale list"},
+		{"unit gone", watchIndexData("sa:", 1, "redis.service"), "", "", "stale list"},
+		{"legacy index", "sa:1", "", "", "List refreshed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			send := &fakeSender{}
+			a := testAgent(send)
+			cfgPath := filepath.Join(t.TempDir(), "config.toml")
+			a.src.ConfigPath = cfgPath
+			runner := &scanRunner{listOutput: "nginx.service loaded active running Web\ncron.service loaded active running Jobs\n"}
+			a.src.Runner = runner
+			ctx := context.Background()
+
+			a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 5, Data: "scan_svc"})
+			if tc.rescan != "" {
+				runner.listOutput = tc.rescan
+				a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 6, Data: "scan_svc"})
+			}
+			a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 5, Data: tc.data})
+
+			saved, _ := config.Load(cfgPath)
+			added := strings.Join(saved.Watch.Services, ",")
+			if added != tc.wantAdded {
+				t.Errorf("watched services = %q, want %q", added, tc.wantAdded)
+			}
+			send.mu.Lock()
+			toast := send.answered[len(send.answered)-1]
+			send.mu.Unlock()
+			if !strings.Contains(toast, tc.wantToast) {
+				t.Errorf("toast = %q, want %q", toast, tc.wantToast)
+			}
+		})
 	}
 }
 
@@ -1299,10 +1348,22 @@ func (k *kickRunner) Run(_ context.Context, name string, args ...string) (string
 	return "", nil
 }
 
+// sshTestEpoch is fixed so every Sessions() call reports the same logins,
+// as utmp does; kick buttons fingerprint the start time.
+var sshTestEpoch = time.Now()
+
 func sshTestSessions() []sshwatch.Session {
 	return []sshwatch.Session{
-		{User: "alice", TTY: "pts/0", Host: "10.0.0.5", Since: time.Now().Add(-time.Hour)},
-		{User: "bob", TTY: "pts/1", Host: "10.0.0.6", Since: time.Now().Add(-time.Minute)},
+		{User: "alice", TTY: "pts/0", Host: "10.0.0.5", Since: sshTestEpoch.Add(-time.Hour)},
+		{User: "bob", TTY: "pts/1", Host: "10.0.0.6", Since: sshTestEpoch.Add(-time.Minute)},
+	}
+}
+
+// sessionsFrom serves *list on every call so a test can change the live
+// sessions between taps.
+func sessionsFrom(list *[]sshwatch.Session) func() ([]sshwatch.Session, error) {
+	return func() ([]sshwatch.Session, error) {
+		return append([]sshwatch.Session(nil), (*list)...), nil
 	}
 }
 
@@ -1323,7 +1384,10 @@ func TestSSHKickFlow(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "sk:1" || kb[1][0].Data != "sk:2" {
+	sessions := sshTestSessions()
+	wantSK1 := sessionCallbackData("sk:", 1, sessions[0])
+	wantSKK1 := sessionCallbackData("skk:", 1, sessions[0])
+	if kb == nil || kb[0][0].Data != wantSK1 || kb[1][0].Data != sessionCallbackData("sk:", 2, sessions[1]) {
 		t.Fatalf("ssh keyboard = %+v", kb)
 	}
 	if kb[2][0].Data != "status" {
@@ -1331,7 +1395,7 @@ func TestSSHKickFlow(t *testing.T) {
 	}
 
 	// The ask step warns and does NOT signal anything.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: "sk:1"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: wantSK1})
 	if len(runner.calls) != 0 {
 		t.Fatal("confirmation screen must not run pkill")
 	}
@@ -1339,12 +1403,12 @@ func TestSSHKickFlow(t *testing.T) {
 	if !strings.Contains(last.html, "Disconnect SSH session?") || !strings.Contains(last.html, "alice") {
 		t.Fatalf("ask view = %q", last.html)
 	}
-	if last.kb[0][0].Data != "skk:1" || last.kb[0][1].Data != "ssh" {
+	if last.kb[0][0].Data != wantSKK1 || last.kb[0][1].Data != "ssh" {
 		t.Fatalf("ask keyboard = %+v", last.kb)
 	}
 
 	// Confirming kicks the chosen tty and re-renders the list.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: "skk:1"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: wantSKK1})
 	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != "pkill -KILL -t pts/0" {
 		t.Fatalf("runner calls = %v", runner.calls)
 	}
@@ -1368,18 +1432,145 @@ func TestSSHKickStaleIndex(t *testing.T) {
 	ctx := context.Background()
 
 	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 7, Data: "ssh"})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: "sk:5"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7,
+		Data: sessionCallbackData("sk:", 5, sshTestSessions()[0])})
 	if len(runner.calls) != 0 {
 		t.Fatal("stale index must not run pkill")
 	}
 	send.mu.Lock()
 	toast := send.answered[len(send.answered)-1]
 	send.mu.Unlock()
-	if !strings.Contains(toast, "list changed") {
+	if !strings.Contains(toast, "Session changed, refreshed") {
 		t.Errorf("toast = %q", toast)
 	}
 	if last := send.lastEdit(); !strings.Contains(last.html, "Active sessions") {
 		t.Errorf("stale index must re-render the list: %q", last.html)
+	}
+}
+
+// TestSSHKickIdentity checks that a kick button only ever reaches the login
+// it was drawn for, whatever happens to the list between the two taps.
+func TestSSHKickIdentity(t *testing.T) {
+	alice, bob := sshTestSessions()[0], sshTestSessions()[1]
+	aliceAgain := alice
+	aliceAgain.Since = alice.Since.Add(30 * time.Second) // re-login on pts/0
+	cases := []struct {
+		name      string
+		data      string
+		after     []sshwatch.Session // live sessions at tap time
+		wantKill  string             // tty signalled, "" = none
+		wantToast string
+		wantYes   string // re-prompt's Yes button, "" = no prompt
+	}{
+		{"confirm same login", sessionCallbackData("skk:", 1, alice),
+			[]sshwatch.Session{alice, bob}, "pts/0", "disconnected", ""},
+		{"list shifted under index", sessionCallbackData("skk:", 1, alice),
+			[]sshwatch.Session{bob}, "", "Session changed, refreshed", ""},
+		{"same tty new login", sessionCallbackData("skk:", 1, alice),
+			[]sshwatch.Session{aliceAgain, bob}, "", "Session changed, refreshed", ""},
+		{"ask after shift", sessionCallbackData("sk:", 2, bob),
+			[]sshwatch.Session{bob}, "", "Session changed, refreshed", ""},
+		{"bad fingerprint", "skk:1:zzzzzzzzzzzzzzzz",
+			[]sshwatch.Session{alice}, "", "Session changed, refreshed", ""},
+		{"legacy sk refreshes", "sk:1",
+			[]sshwatch.Session{alice}, "", "List refreshed", ""},
+		{"legacy skk re-prompts", "skk:1",
+			[]sshwatch.Session{bob}, "", "Please confirm again", sessionCallbackData("skk:", 1, bob)},
+		{"legacy skk out of range", "skk:3",
+			[]sshwatch.Session{alice}, "", "Session changed, refreshed", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			send := &fakeSender{}
+			a := testAgent(send)
+			runner := &kickRunner{}
+			a.src.Runner = runner
+			live := tc.after
+			a.src.Sessions = sessionsFrom(&live)
+			ctx := context.Background()
+
+			a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: tc.data})
+			var killed string
+			if len(runner.calls) == 1 {
+				killed = runner.calls[0][len(runner.calls[0])-1]
+			} else if len(runner.calls) > 1 {
+				t.Fatalf("runner calls = %v", runner.calls)
+			}
+			if killed != tc.wantKill {
+				t.Errorf("killed %q, want %q", killed, tc.wantKill)
+			}
+			send.mu.Lock()
+			toast := send.answered[len(send.answered)-1]
+			send.mu.Unlock()
+			if !strings.Contains(toast, tc.wantToast) {
+				t.Errorf("toast = %q, want %q", toast, tc.wantToast)
+			}
+			last := send.lastEdit()
+			if tc.wantYes != "" {
+				if !strings.Contains(last.html, "Disconnect SSH session?") || last.kb[0][0].Data != tc.wantYes {
+					t.Errorf("re-prompt = %q %+v", last.html, last.kb)
+				}
+			}
+			for _, row := range last.kb {
+				for _, b := range row {
+					if len(b.Data) > 64 {
+						t.Errorf("callback_data %q exceeds 64 bytes", b.Data)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestSSHKickDoubleTap: the second Yes finds the session gone and must not
+// signal the tty again (it may already belong to someone else).
+func TestSSHKickDoubleTap(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	alice, bob := sshTestSessions()[0], sshTestSessions()[1]
+	live := []sshwatch.Session{alice, bob}
+	a.src.Sessions = sessionsFrom(&live)
+	runner := &kickRunner{}
+	a.src.Runner = runner
+	ctx := context.Background()
+	yes := sessionCallbackData("skk:", 1, alice)
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: yes})
+	live = []sshwatch.Session{bob} // alice is gone; bob moves to index 1
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: yes})
+
+	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != "pkill -KILL -t pts/0" {
+		t.Fatalf("runner calls = %v", runner.calls)
+	}
+	send.mu.Lock()
+	toast := send.answered[len(send.answered)-1]
+	send.mu.Unlock()
+	if !strings.Contains(toast, "Session changed, refreshed") {
+		t.Errorf("second tap toast = %q", toast)
+	}
+}
+
+func TestParseSessionData(t *testing.T) {
+	cases := []struct {
+		in     string
+		n      int
+		fp     string
+		wantOK bool
+	}{
+		{"1:0123456789abcdef", 1, "0123456789abcdef", true},
+		{"3", 3, "", true},
+		{"0", 0, "", false},
+		{"-1", 0, "", false},
+		{"x:0123456789abcdef", 0, "", false},
+		{"1:0123456789ABCDEF", 0, "", false},
+		{"1:abc", 0, "", false},
+		{"1:", 0, "", false},
+	}
+	for _, tc := range cases {
+		n, fp, ok := parseSessionData(tc.in)
+		if n != tc.n || fp != tc.fp || ok != tc.wantOK {
+			t.Errorf("parseSessionData(%q) = %d,%q,%v want %d,%q,%v", tc.in, n, fp, ok, tc.n, tc.fp, tc.wantOK)
+		}
 	}
 }
 
@@ -1398,7 +1589,7 @@ func TestSSHKickFailureIsVisible(t *testing.T) {
 	ctx := context.Background()
 
 	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 4, Data: "ssh"})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "skk:1"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: sessionCallbackData("skk:", 1, sshTestSessions()[0])})
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "Disconnect failed") || !strings.Contains(last.html, "Operation not permitted") {
@@ -1429,7 +1620,7 @@ func TestSSHKickAlreadyGone(t *testing.T) {
 	ctx := context.Background()
 
 	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 4, Data: "ssh"})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "skk:1"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: sessionCallbackData("skk:", 1, sshTestSessions()[0])})
 
 	if last := send.lastEdit(); strings.Contains(last.html, "Disconnect failed") {
 		t.Errorf("vanished session is not a failure: %q", last.html)
