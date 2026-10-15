@@ -56,3 +56,27 @@ func TestTrustedIPsZoneStripped(t *testing.T) {
 		t.Error("link-local address with zone must match fe80::/10")
 	}
 }
+
+func TestTrustedIPsMatchReportsUnparseableSource(t *testing.T) {
+	trusted := NewTrustedIPs([]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")})
+	cases := []struct {
+		ip      string
+		want    bool
+		wantErr bool
+	}{
+		{"10.1.2.3", true, false},
+		{"192.0.2.1", false, false}, // parseable, just not trusted
+		{"host.example.com", false, true},
+		{"", false, true},
+	}
+	for _, c := range cases {
+		got, err := trusted.Match(c.ip)
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("Match(%q) = %v, %v; want %v, err=%v", c.ip, got, err, c.want, c.wantErr)
+		}
+	}
+	// An empty set has nothing to explain, so it never reports an error.
+	if ok, err := NewTrustedIPs(nil).Match("host.example.com"); ok || err != nil {
+		t.Errorf("empty set Match = %v, %v", ok, err)
+	}
+}

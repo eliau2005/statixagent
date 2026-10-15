@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -96,31 +97,86 @@ type Digest struct {
 // SSH tunes SSH login monitoring.
 type SSH struct {
 	// TrustedIPs are source addresses (single IPs or CIDR ranges, IPv4 or
-	// IPv6) whose successful logins do not push an alert. They are still
+	// IPv6) whose successful non-root logins do not push an alert, unless
+	// the same source failed to authenticate recently. They are still
 	// recorded in history and the digest, and their failed attempts still
 	// count toward brute-force detection.
-	TrustedIPs []string `toml:"trusted_ips"`
+	TrustedIPs []TrustedIP `toml:"trusted_ips"`
 }
+
+// TrustedIP is one ssh.trusted_ips entry, parsed once when the config is
+// decoded so the agent never re-parses (and never has to drop) an entry.
+type TrustedIP struct{ netip.Prefix }
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (t *TrustedIP) UnmarshalText(b []byte) error {
+	p, err := ParseTrustedIP(string(b))
+	if err != nil {
+		return fmt.Errorf("ssh.trusted_ips: %w", err)
+	}
+	t.Prefix = p
+	return nil
+}
+
+// MarshalText implements encoding.TextMarshaler. Single hosts are written
+// as bare addresses, the way users usually type them.
+func (t TrustedIP) MarshalText() ([]byte, error) {
+	if !t.IsValid() {
+		return nil, errors.New("ssh.trusted_ips: empty entry")
+	}
+	if t.IsSingleIP() {
+		return t.Addr().MarshalText()
+	}
+	return t.Prefix.MarshalText()
+}
+
+// MustTrustedIPs parses entries with ParseTrustedIP and panics on error.
+// It is meant for tests and literals, not user input.
+func MustTrustedIPs(entries ...string) []TrustedIP {
+	out := make([]TrustedIP, 0, len(entries))
+	for _, e := range entries {
+		p, err := ParseTrustedIP(e)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, TrustedIP{p})
+	}
+	return out
+}
+
+// trustedIPHint is appended to every parse error so the fix is obvious.
+const trustedIPHint = "want an IP like 203.0.113.7 or a CIDR like 10.0.0.0/8"
 
 // ParseTrustedIP parses one ssh.trusted_ips entry: a bare address (treated
 // as a single-host prefix) or a CIDR range. The result is masked so
 // "10.1.2.3/8" and "10.0.0.0/8" mean the same range, and IPv4-mapped IPv6
 // forms are reduced to plain IPv4 so they match what sshd logs.
+//
+// Two shapes are rejected outright: a /0 range, which would silently
+// trust every source and turn login alerts off, and an IPv4-mapped CIDR
+// shorter than /96, which spans beyond the mapped space and has no clear
+// IPv4 meaning.
 func ParseTrustedIP(entry string) (netip.Prefix, error) {
 	s := strings.TrimSpace(entry)
 	if strings.Contains(s, "/") {
 		p, err := netip.ParsePrefix(s)
 		if err != nil {
-			return netip.Prefix{}, fmt.Errorf("invalid CIDR range %q", entry)
+			return netip.Prefix{}, fmt.Errorf("invalid CIDR range %q (%s)", entry, trustedIPHint)
 		}
-		if p.Addr().Is4In6() && p.Bits() >= 96 {
+		if p.Addr().Is4In6() {
+			if p.Bits() < 96 {
+				return netip.Prefix{}, fmt.Errorf("ambiguous IPv4-mapped range %q: prefix must be /96 or longer, or write the IPv4 CIDR directly", entry)
+			}
 			p = netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+		}
+		if p.Bits() == 0 {
+			return netip.Prefix{}, fmt.Errorf("range %q trusts every address and would disable all login alerts", entry)
 		}
 		return p.Masked(), nil
 	}
 	addr, err := netip.ParseAddr(s)
 	if err != nil || addr.Zone() != "" {
-		return netip.Prefix{}, fmt.Errorf("invalid IP address %q", entry)
+		return netip.Prefix{}, fmt.Errorf("invalid IP address %q (%s)", entry, trustedIPHint)
 	}
 	addr = addr.Unmap()
 	return netip.PrefixFrom(addr, addr.BitLen()), nil
@@ -191,6 +247,22 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// LoadSSH reads only the [ssh] table of an existing config file, ignoring
+// every other key, so the installer can carry hand-edited SSH settings
+// over a re-install. A missing file yields the zero SSH and no error.
+func LoadSSH(path string) (SSH, error) {
+	var partial struct {
+		SSH SSH `toml:"ssh"`
+	}
+	if _, err := toml.DecodeFile(path, &partial); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return SSH{}, nil
+		}
+		return SSH{}, fmt.Errorf("config: %w", err)
+	}
+	return partial.SSH, nil
+}
+
 // Validate checks invariants that would make the agent misbehave at runtime.
 func (c Config) Validate() error {
 	var errs []error
@@ -216,9 +288,13 @@ func (c Config) Validate() error {
 	if c.Digest.Hour < 0 || c.Digest.Hour > 23 {
 		errs = append(errs, fmt.Errorf("digest.hour %d out of range 0-23", c.Digest.Hour))
 	}
+	// Entries are parsed on decode; this only guards configs built in code.
 	for i, ip := range c.SSH.TrustedIPs {
-		if _, err := ParseTrustedIP(ip); err != nil {
-			errs = append(errs, fmt.Errorf("ssh.trusted_ips[%d]: %w (want an IP like 203.0.113.7 or a CIDR like 10.0.0.0/8)", i, err))
+		switch {
+		case !ip.IsValid():
+			errs = append(errs, fmt.Errorf("ssh.trusted_ips[%d] is empty (%s)", i, trustedIPHint))
+		case ip.Bits() == 0:
+			errs = append(errs, fmt.Errorf("ssh.trusted_ips[%d] %s trusts every address", i, ip.Prefix))
 		}
 	}
 	if c.Update.Auto && c.Update.CheckInterval.Duration < time.Minute {

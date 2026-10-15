@@ -102,9 +102,9 @@ type Agent struct {
 	geo    *sshwatch.GeoResolver
 	router *bot.Router
 
-	// trusted holds ssh.trusted_ips; logins from these sources skip the
-	// alert. Built once in New: the list is only changed by editing the
-	// config file and restarting.
+	// trusted holds ssh.trusted_ips; non-root logins from these sources
+	// skip the alert (see trustedLogin). Built once in New: the list is
+	// only changed by editing the config file and restarting.
 	trusted *sshwatch.TrustedIPs
 
 	mu      sync.Mutex
@@ -471,8 +471,7 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 	case sshwatch.EventLogin:
 		// A login from a trusted source is still in history and the digest
 		// above; only the push (and the geo lookup feeding it) is skipped.
-		// Root logins are included: trusting an address means trusting it.
-		if a.trusted.Contains(e.IP) {
+		if a.trustedLogin(e, now) {
 			return
 		}
 		geo := a.geo.Lookup(ctx, e.IP)
@@ -503,18 +502,28 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 	}
 }
 
-// trustedIPs builds the matcher for ssh.trusted_ips. Load has already
-// validated the entries; one that still fails to parse is logged and
-// skipped rather than widening trust.
-func trustedIPs(entries []string) *sshwatch.TrustedIPs {
-	var prefixes []netip.Prefix
-	for _, e := range entries {
-		p, err := config.ParseTrustedIP(e)
-		if err != nil {
-			log.Printf("agent: ignoring ssh.trusted_ips entry: %v", err)
-			continue
-		}
-		prefixes = append(prefixes, p)
+// trustedLogin reports whether a successful login may skip its alert under
+// ssh.trusted_ips. Root logins always alert, and so does a trusted source
+// that failed to authenticate within the brute-force window: a success
+// right after failures is exactly the login worth seeing.
+func (a *Agent) trustedLogin(e sshwatch.Event, now time.Time) bool {
+	if e.Root || a.trusted.Empty() {
+		return false
+	}
+	ok, err := a.trusted.Match(e.IP)
+	if err != nil {
+		log.Printf("agent: ssh.trusted_ips not applied to login: %v", err)
+		return false
+	}
+	return ok && a.brute.Count(e.IP, now) == 0
+}
+
+// trustedIPs builds the matcher for ssh.trusted_ips from the prefixes
+// already parsed when the config was decoded.
+func trustedIPs(entries []config.TrustedIP) *sshwatch.TrustedIPs {
+	prefixes := make([]netip.Prefix, len(entries))
+	for i, e := range entries {
+		prefixes[i] = e.Prefix
 	}
 	return sshwatch.NewTrustedIPs(prefixes)
 }
