@@ -29,6 +29,7 @@ type Config struct {
 	Update     Update     `toml:"update"`
 	Digest     Digest     `toml:"digest"`
 	SSH        SSH        `toml:"ssh"`
+	Firewall   Firewall   `toml:"firewall"`
 
 	// SampleInterval is the metrics sampling period.
 	SampleInterval Duration `toml:"sample_interval"`
@@ -112,6 +113,26 @@ type SSH struct {
 	// count toward brute-force detection.
 	TrustedIPs []TrustedIP `toml:"trusted_ips"`
 }
+
+// Firewall tunes firewall changes made from the bot.
+type Firewall struct {
+	// AllowCloseSSH lets the bot close the SSH port (Decision 15). Off by
+	// default: the button is not shown and the action is refused. It can
+	// only be set here, never from Telegram.
+	AllowCloseSSH bool `toml:"allow_close_ssh"`
+	// TrialSeconds is the dead-man switch window: a change rolls back
+	// unless Keep is tapped within it. 60-600; 0 means the default.
+	TrialSeconds int `toml:"trial_seconds"`
+}
+
+// DefaultTrialSeconds is the firewall trial window when none is set.
+const DefaultTrialSeconds = 120
+
+// MinTrialSeconds and MaxTrialSeconds bound firewall.trial_seconds.
+const (
+	MinTrialSeconds = 60
+	MaxTrialSeconds = 600
+)
 
 // TrustedIP is one ssh.trusted_ips entry, parsed once when the config is
 // decoded so the agent never re-parses (and never has to drop) an entry.
@@ -236,6 +257,7 @@ func Default() Config {
 			Enabled: true,
 			Hour:    9,
 		},
+		Firewall:       Firewall{TrialSeconds: DefaultTrialSeconds},
 		SampleInterval: Duration{15 * time.Second},
 	}
 }
@@ -310,6 +332,9 @@ func (c Config) Validate() error {
 		case ip.Bits() == 0:
 			errs = append(errs, fmt.Errorf("ssh.trusted_ips[%d] %s trusts every address", i, ip.Prefix))
 		}
+	}
+	if t := c.Firewall.TrialSeconds; t != 0 && (t < MinTrialSeconds || t > MaxTrialSeconds) {
+		errs = append(errs, fmt.Errorf("firewall.trial_seconds %d out of range %d-%d", t, MinTrialSeconds, MaxTrialSeconds))
 	}
 	if c.Update.Auto && c.Update.CheckInterval.Duration < time.Minute {
 		errs = append(errs, fmt.Errorf("update.check_interval %s is below 1m", c.Update.CheckInterval))

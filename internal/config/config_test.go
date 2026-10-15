@@ -328,3 +328,35 @@ func TestAdminUserIDs(t *testing.T) {
 		t.Errorf("admin_user_ids = %v", got.Telegram.AdminUserIDs)
 	}
 }
+
+func TestFirewallConfig(t *testing.T) {
+	c := Default()
+	if c.Firewall.AllowCloseSSH || c.Firewall.TrialSeconds != DefaultTrialSeconds {
+		t.Errorf("firewall defaults = %+v, want close off and %ds", c.Firewall, DefaultTrialSeconds)
+	}
+	for _, n := range []int{59, 601, -1} {
+		c := validConfig()
+		c.Firewall.TrialSeconds = n
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "firewall.trial_seconds") {
+			t.Errorf("trial_seconds %d: Validate = %v", n, err)
+		}
+	}
+	for _, n := range []int{0, 60, 600} {
+		c := validConfig()
+		c.Firewall.TrialSeconds = n
+		if err := c.Validate(); err != nil {
+			t.Errorf("trial_seconds %d: %v", n, err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[telegram]\ntoken = \"t\"\nchat_id = 1\n[firewall]\nallow_close_ssh = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Firewall.AllowCloseSSH || got.Firewall.TrialSeconds != DefaultTrialSeconds {
+		t.Errorf("loaded firewall = %+v", got.Firewall)
+	}
+}

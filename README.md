@@ -164,9 +164,21 @@ Remediation is intentionally minimal and always gated behind an explicit
 confirmation:
 
 - **SSH session disconnect** buttons in `/ssh`.
-- **`/firewall`** — open or close SSH port 22 via `ufw`, behind a mandatory
+- **`/firewall`** — open SSH port 22 via `ufw`, behind a mandatory
   confirmation screen. Hosts without `ufw` get a plain "cannot manage the
-  firewall here" and no buttons, never a guess about what is open.
+  firewall here" and no buttons, never a guess about what is open. Every
+  change runs as a **trial**: unless you tap **Keep** within 2 minutes, the
+  previous rules are restored byte for byte, even if the agent crashes or the
+  host reboots (a `systemd-run` timer, an in-process timer, and a check at
+  startup). Closing port 22 is off by default; to allow it, set it in the
+  config file (never from Telegram). Keep then also needs a new SSH connection
+  seen after the change:
+
+  ```toml
+  [firewall]
+  allow_close_ssh = true
+  trial_seconds = 120   # 60-600
+  ```
 - **🤝 Trust this IP** on plain SSH login alerts, behind a confirm screen (see
   [Trusted IPs](#trusted-ips)).
 

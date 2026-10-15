@@ -94,6 +94,14 @@ type Sources struct {
 	// AuditPath is the JSON-lines log of host-changing actions (see
 	// audit.go); empty means no audit file, only log lines.
 	AuditPath string
+	// FwDir keeps firewall trials (fwdeadman.go): current.json and the
+	// rule snapshots. UFWDir is ufw's rules directory (/etc/ufw). Both
+	// are needed for any firewall change; empty refuses changes.
+	FwDir  string
+	UFWDir string
+	// SelfPath is the agent binary, run by the systemd rollback timer;
+	// empty leaves only the in-process rollback.
+	SelfPath string
 	// ListListeners returns the local TCP ports in LISTEN state.
 	ListListeners func() ([]int, error)
 
@@ -228,6 +236,15 @@ type Agent struct {
 	// now is the clock for rendered durations; set once in New and
 	// overridden only by tests.
 	now func() time.Time
+
+	// fwMu serializes firewall trials (fwdeadman.go); fwTrial is the
+	// pending one's timers and buttons. fwAfter schedules a call (the
+	// trial's timers), fwCrash simulates a crash after an apply step;
+	// both are set in New and replaced only by tests.
+	fwMu    sync.Mutex
+	fwTrial *fwLive
+	fwAfter func(time.Duration, func()) func() bool
+	fwCrash func(step string)
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -261,6 +278,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		offset:       loadOffset(src.OffsetPath),
 		boot:         time.Now(),
 		now:          time.Now,
+		fwAfter:      func(d time.Duration, f func()) func() bool { return time.AfterFunc(d, f).Stop },
 	}
 	a.configTrusted = configPrefixes(cfg.SSH.TrustedIPs)
 	store, err := sshwatch.LoadTrustStore(src.TrustPath, config.ParseTrustedIP)
@@ -283,6 +301,9 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 
 // Run starts all loops and blocks until ctx is canceled.
 func (a *Agent) Run(ctx context.Context) error {
+	// A firewall trial left by a crash or reboot is settled before the
+	// bot answers anything (layer 3 of the dead-man switch).
+	a.reconcileFwTrial(ctx)
 	var wg sync.WaitGroup
 	loop := func(name string, f func(context.Context)) {
 		wg.Go(func() {

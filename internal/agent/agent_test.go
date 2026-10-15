@@ -1241,97 +1241,6 @@ func TestParseUFWStatus(t *testing.T) {
 	}
 }
 
-// ufwRunner fakes ufw: status flips according to the last rule applied.
-type ufwRunner struct {
-	state string // "open", "closed"
-	calls [][]string
-}
-
-func (u *ufwRunner) Run(_ context.Context, name string, args ...string) (string, error) {
-	if name != "ufw" {
-		return "", nil
-	}
-	u.calls = append(u.calls, args)
-	if args[0] == "status" {
-		if u.state == "closed" {
-			return "Status: active\n\n22/tcp  DENY  Anywhere\n", nil
-		}
-		return "Status: active\n\n22/tcp  ALLOW  Anywhere\n", nil
-	}
-	if args[0] == "reload" {
-		return "Firewall reloaded", nil
-	}
-	switch args[len(args)-2] { // "allow 22/tcp" or "deny 22/tcp"
-	case "allow":
-		u.state = "open"
-	case "deny":
-		u.state = "closed"
-	}
-	return "Rule updated", nil
-}
-
-func TestFirewallFlow(t *testing.T) {
-	send := &fakeSender{}
-	a := testAgent(send)
-	ufw := &ufwRunner{state: "open"}
-	a.src.Runner = ufw
-	ctx := context.Background()
-
-	// /firewall shows the open state with a close button.
-	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/firewall"})
-	if !strings.Contains(reply.Text, "🔓 <b>open</b>") {
-		t.Fatalf("/firewall = %q", reply.Text)
-	}
-	a.reply(ctx, cmd, reply)
-	send.mu.Lock()
-	kb := send.keyboards[len(send.keyboards)-1]
-	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "~1fc" {
-		t.Fatalf("firewall keyboard = %+v", kb)
-	}
-
-	// The ask step warns and does NOT touch ufw.
-	rulesBefore := len(ufw.calls)
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 8, Data: kb[0][0].Data})
-	if len(ufw.calls) != rulesBefore {
-		t.Fatal("confirmation screen must not run ufw commands")
-	}
-	last := send.lastEdit()
-	if !strings.Contains(last.html, "new SSH connections will be refused") || tokenData(last.kb, tgui.ActYes) == "" {
-		t.Fatalf("ask view = %q kb=%+v", last.html, last.kb)
-	}
-
-	// Closing SSH is confirmed twice; the first Yes changes nothing.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 8, Data: tokenData(last.kb, tgui.ActYes)})
-	last = send.lastEdit()
-	if len(ufw.calls) != rulesBefore || !strings.Contains(last.html, "Last check") {
-		t.Fatalf("first Yes: calls=%v view=%q", ufw.calls, last.html)
-	}
-	// Confirming again closes: delete allow, then deny, then re-render as closed.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2b", ChatID: 42, MessageID: 8, Data: tokenData(last.kb, tgui.ActYes)})
-	if ufw.state != "closed" {
-		t.Fatalf("ufw state = %s", ufw.state)
-	}
-	var applied [][]string
-	for _, c := range ufw.calls {
-		if c[0] != "status" {
-			applied = append(applied, c)
-		}
-	}
-	if len(applied) != 3 || applied[0][1] != "delete" || applied[1][0] != "deny" || applied[2][0] != "reload" {
-		t.Fatalf("ufw calls = %v, want delete-allow, deny, reload", applied)
-	}
-	if last := send.lastEdit(); !strings.Contains(last.html, "🔒 <b>closed</b>") {
-		t.Errorf("after close view = %q", last.html)
-	}
-
-	// Reopening takes one confirm.
-	confirmThrough(t, a, send, "fw_open_ask", 8)
-	if ufw.state != "open" {
-		t.Fatalf("ufw state after reopen = %s", ufw.state)
-	}
-}
-
 // failingUFW reports active+open status but fails on any rule change,
 // mimicking the read-only-filesystem sandbox error.
 type failingUFW struct{}
@@ -1347,6 +1256,7 @@ func TestFirewallChangeFailureIsVisible(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	a.src.Runner = failingUFW{}
+	allowFw(t, a)
 
 	id := confirmThrough(t, a, send, "fw_close_ask", 4)
 
@@ -1450,6 +1360,7 @@ func TestFirewallMissingUFWBlocksChange(t *testing.T) {
 	a := testAgent(send)
 	runner := &missingUFW{}
 	a.src.Runner = runner
+	allowFw(t, a)
 	// Telegram keeps inline keyboards live on old messages, so a confirm
 	// can be pressed after ufw was removed. The action path must refuse
 	// on its own.
@@ -1486,6 +1397,7 @@ func TestFirewallBlockedBinaryGetsNoSandboxHint(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	a.src.Runner = blockedUFW{}
+	allowFw(t, a)
 	confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
@@ -1504,6 +1416,7 @@ func TestFirewallInactiveBlocksChange(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	a.src.Runner = inactiveUFW{}
+	allowFw(t, a)
 	// The view was rendered while ufw was active, then someone ran
 	// `ufw disable`. Writing the rule anyway would report "port 22 closed"
 	// while nothing is enforced.
@@ -1546,8 +1459,12 @@ func TestFirewallSbinFallback(t *testing.T) {
 		t.Errorf("ufw in sbin must be found: %q", text)
 	}
 	// Rule changes go to the same resolved binary, not back to bare "ufw".
-	if _, fail := a.setSSHPort(ctx, false); fail != nil {
-		t.Fatalf("setSSHPort failed: %s", fail.display())
+	b := a.fwBackend("")
+	if p := b.Probe(ctx); !p.manageable() {
+		t.Fatalf("probe = %+v", p)
+	}
+	if _, err := b.Apply(ctx, fwPlan{{Op: opInsert, Spec: []string{"deny", sshPort}}}); err != nil {
+		t.Fatalf("Apply failed: %v", err)
 	}
 	var changed bool
 	for _, c := range runner.calls {
@@ -1559,7 +1476,7 @@ func TestFirewallSbinFallback(t *testing.T) {
 		if c[0] != "/usr/sbin/ufw" {
 			t.Errorf("rule change did not use the resolved path: %v", c)
 		}
-		if c[1] == "deny" {
+		if c[1] == "insert" {
 			changed = true
 		}
 	}

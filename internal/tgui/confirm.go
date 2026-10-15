@@ -112,7 +112,11 @@ func NewTokens(now func() time.Time, rnd io.Reader) *Tokens {
 func (t *Tokens) Epoch() string { return t.epoch }
 
 // Mint stores a pending token for in and returns its nonce.
-func (t *Tokens) Mint(in Intent) (string, error) {
+func (t *Tokens) Mint(in Intent) (string, error) { return t.MintTTL(in, TokenTTL) }
+
+// MintTTL is Mint with its own lifetime, for buttons that must outlive a
+// confirm screen, such as a firewall trial's Keep.
+func (t *Tokens) MintTTL(in Intent, ttl time.Duration) (string, error) {
 	var b [9]byte
 	if _, err := io.ReadFull(t.rand, b[:]); err != nil {
 		return "", fmt.Errorf("tgui: minting confirm token: %w", err)
@@ -125,7 +129,7 @@ func (t *Tokens) Mint(in Intent) (string, error) {
 		return "", fmt.Errorf("tgui: minting confirm token: nonce reused")
 	}
 	t.evict()
-	t.tokens[nonce] = &token{Intent: in, nonce: nonce, expires: t.now().Add(TokenTTL)}
+	t.tokens[nonce] = &token{Intent: in, nonce: nonce, expires: t.now().Add(ttl)}
 	t.order = append(t.order, nonce)
 	return nonce, nil
 }

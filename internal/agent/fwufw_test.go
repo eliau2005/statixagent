@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -280,6 +282,7 @@ func (u *verboseUFW) Run(ctx context.Context, name string, args ...string) (stri
 func TestFirewallViewOpenSSHProfile(t *testing.T) {
 	a := testAgent(&fakeSender{})
 	a.src.Runner = &verboseUFW{plain: ufwPlainOpenSSH, verbose: ufwVerboseOpenSSH}
+	a.cfg.Firewall.AllowCloseSSH = true
 	text, kb := a.firewallView(t.Context())
 
 	if !strings.Contains(text, "🔓 <b>open</b>") || !strings.Contains(text, "rule 1: 22/tcp (OpenSSH) ALLOW IN Anywhere") {
@@ -321,6 +324,7 @@ func TestFirewallViewRestrictedAndOtherPorts(t *testing.T) {
 		"22/tcp  ALLOW IN  10.0.0.0/8\n2222/tcp  LIMIT IN  Anywhere\n"
 	a.src.Runner = &verboseUFW{plain: verbose, verbose: verbose,
 		ssh: sshProbeRunner{"sshd": "port 2222\n"}}
+	a.cfg.Firewall.AllowCloseSSH = true
 	text, kb := a.firewallView(t.Context())
 
 	for _, want := range []string{
@@ -339,16 +343,25 @@ func TestFirewallViewRestrictedAndOtherPorts(t *testing.T) {
 	}
 }
 
+// TestFirewallCloseVerifiesResult: ufw exiting 0 is not success. Here
+// the rule changes take no effect, so the re-probe still finds the
+// OpenSSH profile first: the result is "failed", and the trial is ended
+// at once.
 func TestFirewallCloseVerifiesResult(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ufw := &verboseUFW{plain: ufwPlainOpenSSH, verbose: ufwVerboseOpenSSH}
 	a.src.Runner = ufw
+	allowFw(t, a)
+	if err := os.WriteFile(filepath.Join(a.src.UFWDir, "user.rules"), []byte("rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	id := confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "Change failed") || !strings.Contains(last.html, "port 22 is not closed") ||
-		!strings.Contains(last.html, "rule 1 (22/tcp (OpenSSH) ALLOW IN Anywhere) matches first") {
+		!strings.Contains(last.html, "rule 1 (22/tcp (OpenSSH) ALLOW IN Anywhere) matches first") ||
+		!strings.Contains(last.html, "Rolled back") {
 		t.Errorf("a shadowed close must be reported as failed: %q", last.html)
 	}
 	if strings.Contains(last.html, "ReadWritePaths") {
@@ -357,14 +370,17 @@ func TestFirewallCloseVerifiesResult(t *testing.T) {
 	if out := slowOutcome(t, send, id); strings.Contains(out, "Port 22 closed") {
 		t.Errorf("a failed close must not report success: %q", out)
 	}
-	// The write path itself is unchanged: delete allow, deny, reload.
+	if a.FwTrialPending() {
+		t.Error("a failed change left its trial pending")
+	}
+	// The corrected write path: insert at 1, then reload.
 	var applied []string
 	for _, c := range ufw.calls {
-		if c[0] != "status" {
+		if c[0] != "status" && c[0] != "show" {
 			applied = append(applied, strings.Join(c, " "))
 		}
 	}
-	if want := []string{"--force delete allow 22/tcp", "deny 22/tcp", "reload"}; !slices.Equal(applied, want) {
+	if want := []string{"insert 1 deny 22/tcp", "reload"}; !slices.Equal(applied, want) {
 		t.Errorf("ufw writes = %v, want %v", applied, want)
 	}
 }
