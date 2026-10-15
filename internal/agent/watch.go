@@ -11,6 +11,7 @@ import (
 
 	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/config"
+	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
@@ -102,7 +103,7 @@ func (a *Agent) scanServices(ctx context.Context) ([]unitInfo, error) {
 		if len(f) < 4 || !strings.HasSuffix(f[0], ".service") {
 			continue
 		}
-		if watched[f[0]] || f[0] == "statix-agent.service" {
+		if watched[f[0]] || f[0] == "statix-agent.service" || !services.ValidUnitName(f[0]) {
 			continue
 		}
 		found = append(found, unitInfo{f[0], strings.Join(f[4:], " ")})
@@ -180,6 +181,9 @@ func (a *Agent) servicesAdd(ctx context.Context, args []string) string {
 		if !strings.HasSuffix(name, ".service") {
 			name += ".service"
 		}
+	}
+	if !services.ValidUnitName(name) {
+		return "Invalid unit name: " + esc(name) + "\nUse a name like nginx.service (letters, digits, :_.@-)."
 	}
 	if slices.Contains(a.watchCopy().Services, name) {
 		return esc(name) + " is already watched."

@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -15,43 +16,72 @@ import (
 type fakeRunner map[string]string // unit name → systemctl show output
 
 func (f fakeRunner) Run(_ context.Context, name string, args ...string) (string, error) {
-	if name != "systemctl" || len(args) < 2 {
+	// The unit always comes last, after "--", so it cannot be an option.
+	if name != "systemctl" || len(args) < 3 || args[0] != "show" || args[len(args)-2] != "--" {
 		return "", errors.New("unexpected command")
 	}
-	out, ok := f[args[1]]
+	out, ok := f[args[len(args)-1]]
 	if !ok {
 		return "", errors.New("systemctl failed")
 	}
 	return out, nil
 }
 
-func TestCmdEnvForcesCLocale(t *testing.T) {
+type recordingRunner struct{ calls [][]string }
+
+func (r *recordingRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	r.calls = append(r.calls, append([]string{name}, args...))
+	return "ActiveState=active\nSubState=running\n", nil
+}
+
+func TestCmdEnvIsMinimal(t *testing.T) {
 	t.Setenv("LC_ALL", "fr_FR.UTF-8")
 	t.Setenv("LANG", "fr_FR.UTF-8")
 	t.Setenv("LANGUAGE", "fr_FR:fr")
-	env := cmdEnv()
+	t.Setenv("TELEGRAM_TOKEN", "123:secret")
+	t.Setenv("PATH", "/usr/sbin:/usr/bin")
 
-	// exec keeps the last occurrence of a duplicated key, so the forced
-	// values must come after whatever the agent inherited. ufw ships
-	// translations; a parser reading "Statut : actif" reports a healthy
-	// firewall as unreadable.
-	last := map[string]string{}
-	for _, kv := range env {
-		if k, v, ok := strings.Cut(kv, "="); ok {
-			last[k] = v
+	// ufw ships translations; a parser reading "Statut : actif" reports a
+	// healthy firewall as unreadable. Python's gettext reads LANGUAGE
+	// before LC_ALL and does not suppress it for a C locale, so it must be
+	// cleared too. Nothing else from the agent's environment is passed on.
+	want := []string{"PATH=/usr/sbin:/usr/bin", "LC_ALL=C", "LANG=C", "LANGUAGE="}
+	if got := cmdEnv(); !slices.Equal(got, want) {
+		t.Errorf("cmdEnv = %q, want %q", got, want)
+	}
+
+	t.Setenv("PATH", "")
+	if got := cmdEnv()[0]; got != "PATH="+defaultPath {
+		t.Errorf("cmdEnv without PATH = %q, want the default", got)
+	}
+}
+
+func TestValidUnitName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"nginx.service", true},
+		{"getty@tty1.service", true},
+		{"systemd-journald.socket", true},
+		{"apt-daily.timer", true},
+		{"user-1000.slice:x.service", true},
+		{"--host=x.service", false},
+		{"-H.service", false},
+		{"--host=x", false},
+		{"nginx", false},
+		{"nginx.mount", false},
+		{"", false},
+		{".service", false},
+		{"a b.service", false},
+		{"a/b.service", false},
+		{"nginx.service\n", false},
+		{strings.Repeat("a", 251) + ".service", true},
+		{strings.Repeat("a", 252) + ".service", false},
+	} {
+		if got := ValidUnitName(tc.name); got != tc.want {
+			t.Errorf("ValidUnitName(%q) = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-	if last["LC_ALL"] != "C" || last["LANG"] != "C" {
-		t.Errorf("cmdEnv locale = LC_ALL=%q LANG=%q, want C", last["LC_ALL"], last["LANG"])
-	}
-	// Python's gettext reads LANGUAGE before LC_ALL and does not suppress it
-	// for a C locale, so leaving it set keeps ufw translated regardless.
-	if last["LANGUAGE"] != "" {
-		t.Errorf("cmdEnv LANGUAGE = %q, want empty", last["LANGUAGE"])
-	}
-	// The rest of the environment is inherited, not replaced.
-	if len(env) <= 2 {
-		t.Errorf("cmdEnv must extend the process environment, got %d entries", len(env))
 	}
 }
 
@@ -78,6 +108,41 @@ func TestCheckSystemdUnits(t *testing.T) {
 		if res.Name == "flaky.service" && !strings.Contains(res.Detail, "restarts=7") {
 			t.Errorf("flaky detail = %q, want restart count surfaced", res.Detail)
 		}
+	}
+}
+
+func TestCheckSystemdUnitsRejectsInvalidNames(t *testing.T) {
+	r := &recordingRunner{}
+	got := CheckSystemdUnits(context.Background(), r, []string{"--host=x", "nginx.service"})
+	if len(got) != 2 {
+		t.Fatalf("got %d results, want 2", len(got))
+	}
+	// An invalid name already in the config is reported, not executed.
+	if got[0].State != StateUnknown || got[0].Detail != "invalid unit name" {
+		t.Errorf("--host=x = %+v, want unknown/invalid unit name", got[0])
+	}
+	if got[1].State != StateOK {
+		t.Errorf("nginx.service = %+v, want ok", got[1])
+	}
+	want := [][]string{{"systemctl", "show",
+		"--property=ActiveState,SubState,NRestarts", "--no-pager", "--no-ask-password", "--", "nginx.service"}}
+	if len(r.calls) != 1 || !slices.Equal(r.calls[0], want[0]) {
+		t.Errorf("calls = %q, want %q", r.calls, want)
+	}
+}
+
+func TestCheckSystemdUnitsBareName(t *testing.T) {
+	r := &recordingRunner{}
+	got := CheckSystemdUnits(context.Background(), r, []string{"nginx"})
+	// A bare name from a hand-edited config is queried as a .service, as
+	// systemctl itself would, and still reported under the configured name.
+	if len(got) != 1 || got[0].Name != "nginx" || got[0].State != StateOK {
+		t.Fatalf("got %+v, want nginx ok", got)
+	}
+	want := []string{"systemctl", "show",
+		"--property=ActiveState,SubState,NRestarts", "--no-pager", "--no-ask-password", "--", "nginx.service"}
+	if len(r.calls) != 1 || !slices.Equal(r.calls[0], want) {
+		t.Errorf("calls = %q, want %q", r.calls, want)
 	}
 }
 

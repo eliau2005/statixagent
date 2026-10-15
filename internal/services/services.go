@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -51,13 +52,35 @@ type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (string, error)
 }
 
+// unitNameRE is the unit-name shape we pass to systemctl: it cannot start
+// with "-", so a name can never be read as an option.
+var unitNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,250}\.(service|socket|timer)$`)
+
+// ValidUnitName reports whether name is a unit name we will hand to
+// systemctl.
+func ValidUnitName(name string) bool {
+	return unitNameRE.MatchString(name)
+}
+
 // CheckSystemdUnits queries each unit's ActiveState/SubState via
-// `systemctl show`, which is script-safe output (key=value lines).
+// `systemctl show`, which is script-safe output (key=value lines). A name
+// that fails ValidUnitName (one already in an older config, say) is
+// reported as unknown and never reaches systemctl.
 func CheckSystemdUnits(ctx context.Context, r Runner, units []string) []Result {
 	out := make([]Result, 0, len(units))
 	for _, u := range units {
-		raw, err := r.Run(ctx, "systemctl", "show", u,
-			"--property=ActiveState,SubState,NRestarts", "--no-pager")
+		// systemctl reads a name with no type suffix as a .service, so a
+		// hand-written "nginx" keeps working; query it under that full name.
+		unit := u
+		if !strings.Contains(unit, ".") {
+			unit += ".service"
+		}
+		if !ValidUnitName(unit) {
+			out = append(out, Result{Name: u, State: StateUnknown, Detail: "invalid unit name"})
+			continue
+		}
+		raw, err := r.Run(ctx, "systemctl", "show",
+			"--property=ActiveState,SubState,NRestarts", "--no-pager", "--no-ask-password", "--", unit)
 		if err != nil {
 			out = append(out, Result{Name: u, State: StateUnknown, Detail: err.Error()})
 			continue

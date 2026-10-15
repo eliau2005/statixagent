@@ -60,7 +60,11 @@ type Thresholds struct {
 
 // Watch lists the specific things to check beyond category defaults.
 type Watch struct {
-	Services   []string    `toml:"services"`  // systemd unit names
+	// Services are systemd unit names. They are checked where they are used
+	// (services.ValidUnitName), not here: an invalid entry in an existing
+	// file is reported as unknown rather than stopping the agent, and Save
+	// must keep working so the user can remove it from Telegram.
+	Services   []string    `toml:"services"`
 	Processes  []string    `toml:"processes"` // executable names (e.g. nginx)
 	Ports      []PortCheck `toml:"ports"`
 	HTTPChecks []HTTPCheck `toml:"http_checks"`
