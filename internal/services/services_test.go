@@ -131,6 +131,21 @@ func TestCheckSystemdUnitsRejectsInvalidNames(t *testing.T) {
 	}
 }
 
+func TestCheckSystemdUnitsBareName(t *testing.T) {
+	r := &recordingRunner{}
+	got := CheckSystemdUnits(context.Background(), r, []string{"nginx"})
+	// A bare name from a hand-edited config is queried as a .service, as
+	// systemctl itself would, and still reported under the configured name.
+	if len(got) != 1 || got[0].Name != "nginx" || got[0].State != StateOK {
+		t.Fatalf("got %+v, want nginx ok", got)
+	}
+	want := []string{"systemctl", "show",
+		"--property=ActiveState,SubState,NRestarts", "--no-pager", "--no-ask-password", "--", "nginx.service"}
+	if len(r.calls) != 1 || !slices.Equal(r.calls[0], want) {
+		t.Errorf("calls = %q, want %q", r.calls, want)
+	}
+}
+
 func TestCheckProcesses(t *testing.T) {
 	proc := fstest.MapFS{
 		"1/comm":    {Data: []byte("systemd\n")},

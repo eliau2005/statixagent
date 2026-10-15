@@ -69,12 +69,18 @@ func ValidUnitName(name string) bool {
 func CheckSystemdUnits(ctx context.Context, r Runner, units []string) []Result {
 	out := make([]Result, 0, len(units))
 	for _, u := range units {
-		if !ValidUnitName(u) {
+		// systemctl reads a name with no type suffix as a .service, so a
+		// hand-written "nginx" keeps working; query it under that full name.
+		unit := u
+		if !strings.Contains(unit, ".") {
+			unit += ".service"
+		}
+		if !ValidUnitName(unit) {
 			out = append(out, Result{Name: u, State: StateUnknown, Detail: "invalid unit name"})
 			continue
 		}
 		raw, err := r.Run(ctx, "systemctl", "show",
-			"--property=ActiveState,SubState,NRestarts", "--no-pager", "--no-ask-password", "--", u)
+			"--property=ActiveState,SubState,NRestarts", "--no-pager", "--no-ask-password", "--", unit)
 		if err != nil {
 			out = append(out, Result{Name: u, State: StateUnknown, Detail: err.Error()})
 			continue
