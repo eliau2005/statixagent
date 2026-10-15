@@ -146,10 +146,11 @@ func TestUsageAndErrorRepliesAreValidHTML(t *testing.T) {
 		{name: "update current version", text: "/update", setup: func(a *Agent) {
 			a.src.UpdateCheck = func(context.Context) (string, bool, error) { return "v1<2>&", false, nil }
 		}, want: "Already up to date"},
-		{name: "update apply error", text: "/update_confirm", setup: func(a *Agent) {
+		{name: "update confirm prompt", text: "/update_confirm", setup: func(a *Agent) {
 			a.src.UpdateCheck = func(context.Context) (string, bool, error) { return "v2", true, nil }
 			a.src.UpdateApply = func(context.Context) error { return hostileErr }
-		}, want: "Update failed"},
+		}, want: "Install the update?"},
+		{name: "clear chat prompt", text: "/clear_chat", want: "Delete recent messages?"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := testAgent(&fakeSender{})
@@ -167,23 +168,38 @@ func TestUsageAndErrorRepliesAreValidHTML(t *testing.T) {
 	}
 }
 
-func TestClearChatErrorsAreValidHTML(t *testing.T) {
+// TestConfirmedErrorsAreValidHTML presses Yes on the update and clear-chat
+// prompts down their error paths: the outcome must parse as HTML.
+func TestConfirmedErrorsAreValidHTML(t *testing.T) {
 	for _, tc := range []struct {
 		name                 string
+		data                 string
 		failSend, failDelete bool
+		want                 string
 	}{
-		{"anchor send fails", true, false},
-		{"delete fails", false, true},
+		{"update apply fails", cbUpdateYes, false, false, "Update failed"},
+		{"anchor send fails", cbClearYes, true, false, "Could not clear"},
+		{"delete fails", cbClearYes, false, true, "Could not clear"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			send := &clearFailSender{fakeSender: &fakeSender{}, failSend: tc.failSend, failDelete: tc.failDelete}
 			a := New(testConfig(), send, nil, testAgent(send.fakeSender).src)
-			reply := dispatchText(t, a, "/clear_chat")
-			if !strings.Contains(reply, "Could not clear") {
-				t.Errorf("reply = %q", reply)
+			a.src.UpdateCheck = func(context.Context) (string, bool, error) { return "v2", true, nil }
+			a.src.UpdateApply = func(context.Context) error { return hostileErr }
+			a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: tc.data})
+			var out string
+			if tc.data == cbClearYes {
+				// The clear outcome is a new message: the prompt is gone.
+				sent := send.all()
+				out = sent[len(sent)-1]
+			} else {
+				out = send.lastEdit().html
 			}
-			if err := checkTelegramHTML(reply); err != nil {
-				t.Errorf("reply %q is not valid Telegram HTML: %v", reply, err)
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("outcome = %q, want it to contain %q", out, tc.want)
+			}
+			if err := checkTelegramHTML(out); err != nil {
+				t.Errorf("outcome %q is not valid Telegram HTML: %v", out, err)
 			}
 		})
 	}

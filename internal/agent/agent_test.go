@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os/exec"
 	"path/filepath"
@@ -34,8 +35,12 @@ type fakeSender struct {
 	answered  []string
 	deleted   []int64
 	cmds      []telegram.BotCommand
-	nextID    int64
-	markups   []markupEdit
+	// scopes logs SetMyCommands ("set:<scope>") and DeleteMyCommands
+	// ("delete:<scope>") calls in order; setCmdsErr fails SetMyCommands.
+	scopes     []string
+	setCmdsErr error
+	nextID     int64
+	markups    []markupEdit
 	// events logs sends, edits and answers in call order.
 	events []string
 	// editErr, when set, fails every EditMessageKB.
@@ -100,10 +105,21 @@ func (f *fakeSender) DeleteMessages(_ context.Context, _ int64, ids []int64) err
 	return nil
 }
 
-func (f *fakeSender) SetMyCommands(_ context.Context, cmds []telegram.BotCommand) error {
+func (f *fakeSender) SetMyCommands(_ context.Context, cmds []telegram.BotCommand, scope telegram.CommandScope) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.scopes = append(f.scopes, fmt.Sprintf("set:%s:%d", scope.Type, scope.ChatID))
+	if f.setCmdsErr != nil {
+		return f.setCmdsErr
+	}
 	f.cmds = cmds
+	return nil
+}
+
+func (f *fakeSender) DeleteMyCommands(_ context.Context, scope telegram.CommandScope) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scopes = append(f.scopes, fmt.Sprintf("delete:%s:%d", scope.Type, scope.ChatID))
 	return nil
 }
 
@@ -264,11 +280,29 @@ func TestUpdateCommandFlow(t *testing.T) {
 	if applied {
 		t.Fatal("/update alone must not apply (MVP §7 confirmation rule)")
 	}
-	// The legacy "/update confirm" form keeps working for old habits.
-	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update confirm"})
-	if !applied || !strings.Contains(reply, "restart") {
-		t.Errorf("confirm: applied=%v reply=%q", applied, reply)
+	// The legacy "/update confirm" form asks, like /update_confirm.
+	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update confirm"})
+	a.reply(ctx, cmd, reply)
+	if applied || !strings.Contains(reply, "Install the update?") {
+		t.Fatalf("/update confirm: applied=%v reply=%q", applied, reply)
 	}
+	if yes := lastKeyboard(send)[0][0].Data; yes != cbUpdateYes {
+		t.Fatalf("/update confirm Yes = %q", yes)
+	}
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 9, Data: cbUpdateYes})
+	if !applied || !strings.Contains(send.lastEdit().html, "restart") {
+		t.Errorf("Yes: applied=%v edit=%q", applied, send.lastEdit().html)
+	}
+}
+
+// lastKeyboard returns the keyboard of the last message sent.
+func lastKeyboard(send *fakeSender) telegram.Keyboard {
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if len(send.keyboards) == 0 {
+		return nil
+	}
+	return send.keyboards[len(send.keyboards)-1]
 }
 
 func TestRunStartsAndStops(t *testing.T) {
@@ -438,42 +472,77 @@ func TestWatchWithoutConfigPath(t *testing.T) {
 	}
 }
 
+// TestUpdateConfirmCommand: typed /update_confirm only asks; the update
+// runs from the Yes button, and Cancel leaves it alone.
 func TestUpdateConfirmCommand(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
-	applied := false
+	applied := 0
 	a.src.UpdateCheck = func(ctx context.Context) (string, bool, error) { return "v9.9.9", true, nil }
-	a.src.UpdateApply = func(ctx context.Context) error { applied = true; return nil }
+	a.src.UpdateApply = func(ctx context.Context) error { applied++; return nil }
 	ctx := context.Background()
 
 	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
 	if !strings.Contains(reply, "/update_confirm") {
 		t.Errorf("/update must advertise the tappable command: %q", reply)
 	}
-	if applied {
-		t.Fatal("/update must not apply")
+	a.src.OffsetPath = filepath.Join(t.TempDir(), "tg-offset") // handleUpdate saves the cursor
+	a.handleUpdate(ctx, telegram.Update{ChatID: 42, ChatType: "private", FromID: 42, Text: "/update_confirm"})
+	if applied != 0 || !send.find("Install the update?") {
+		t.Fatalf("/update_confirm: applied=%d sent=%v", applied, send.all())
 	}
-	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update_confirm"})
-	if !applied || !strings.Contains(reply, "restart") {
-		t.Errorf("update_confirm: applied=%v reply=%q", applied, reply)
+	kb := lastKeyboard(send)
+	if len(kb) != 1 || len(kb[0]) != 2 || kb[0][0].Data != cbUpdateYes || kb[0][1].Data != "dismiss" {
+		t.Fatalf("confirm keyboard = %+v", kb)
+	}
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, ChatType: "private", FromID: 42, MessageID: 9, Data: "dismiss"})
+	if applied != 0 || !strings.Contains(send.lastEdit().html, "postponed") {
+		t.Fatalf("Cancel: applied=%d edit=%q", applied, send.lastEdit().html)
+	}
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, ChatType: "private", FromID: 42, MessageID: 9, Data: cbUpdateYes})
+	if applied != 1 || !strings.Contains(send.lastEdit().html, "restart") {
+		t.Errorf("Yes: applied=%d edit=%q", applied, send.lastEdit().html)
 	}
 }
 
+// TestClearChat: typed /clear_chat only asks; Yes sweeps the chat and
+// reports in a new message (the prompt is deleted too), Cancel keeps it.
 func TestClearChat(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
-	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/clear_chat"})
-	if reply != "🧹 cleared" {
-		t.Errorf("reply = %q", reply)
+	a.src.OffsetPath = filepath.Join(t.TempDir(), "tg-offset") // handleUpdate saves the cursor
+	a.handleUpdate(ctx, telegram.Update{ChatID: 42, ChatType: "private", FromID: 42, Text: "/clear_chat"})
+	send.mu.Lock()
+	deleted := len(send.deleted)
+	send.mu.Unlock()
+	if deleted != 0 || !send.find("Delete recent messages?") {
+		t.Fatalf("/clear_chat: deleted=%d sent=%v", deleted, send.all())
 	}
+	kb := lastKeyboard(send)
+	if len(kb) != 1 || len(kb[0]) != 2 || kb[0][0].Data != cbClearYes || kb[0][1].Data != cbClearNo {
+		t.Fatalf("confirm keyboard = %+v", kb)
+	}
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 1001, Data: cbClearNo})
+	if !strings.Contains(send.lastEdit().html, "left as it is") {
+		t.Errorf("Cancel edit = %q", send.lastEdit().html)
+	}
+
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 1001, Data: cbClearYes})
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	if len(send.deleted) != 301 {
 		t.Fatalf("deleted %d ids, want 301", len(send.deleted))
 	}
-	if send.deleted[0] != 1001 { // anchor message id from the fake
+	if send.deleted[0] != 1002 { // anchor message id from the fake
 		t.Errorf("sweep must start at the anchor id, got %d", send.deleted[0])
+	}
+	if last := send.sent[len(send.sent)-1]; last != "🧹 cleared" {
+		t.Errorf("outcome = %q, want a new 🧹 cleared message", last)
+	}
+	if got := send.answered[len(send.answered)-1]; got != "c2:Clearing…" {
+		t.Errorf("Yes answered %q", got)
 	}
 }
 
@@ -571,12 +640,12 @@ func TestUpdateOfferKeyboardAndInstallButton(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "update_confirm" {
+	if kb == nil || kb[0][0].Data != cbUpdateYes {
 		t.Fatalf("update offer keyboard = %+v", kb)
 	}
 
 	// Pressing Install runs the update; pressing Later dismisses.
-	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: "update_confirm"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: cbUpdateYes})
 	if !applied {
 		t.Error("install button must apply the update")
 	}
