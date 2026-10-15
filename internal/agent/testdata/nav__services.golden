@@ -1,0 +1,7 @@
+
+--- keyboard ---
+[📊 Status] → status  [🖥 CPU] → cpu  [🧠 Mem] → mem
+[💾 Disk] → disk  [🌐 Net] → net  [🌡 Temp] → temp
+[🔋 Power] → battery  [• 🧩 Svc] → services  [🐳 Dock] → docker
+[🔐 SSH] → ssh  [▶️ Live] → live  [🔄 Refresh] → services
+[🔝 Top] → top  [👁 Watching] → watching  [⚙️ Settings] → settings

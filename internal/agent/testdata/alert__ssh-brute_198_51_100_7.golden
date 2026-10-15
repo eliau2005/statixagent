@@ -1,0 +1,3 @@
+ssh-brute:198.51.100.7
+--- keyboard ---
+[👥 Sessions] → ssh  [🚫 Fails] → ssh_fails  [🛡 Firewall] → firewall  [🔕 1h] → snz:d:ssh-brute:198.51.100.7

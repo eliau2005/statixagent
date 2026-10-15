@@ -14,6 +14,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/alert"
 	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // navViews are the commands reachable from the navigation keyboard. A reply
@@ -217,6 +218,10 @@ func slowCallback(data string) (toast string, slow bool) {
 // name, executed and rendered into the message the button lives on. Every
 // press that authorize does not ignore is answered exactly once.
 func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
+	if tgui.IsCall(cb.Data) {
+		a.handleCall(ctx, cb)
+		return
+	}
 	// Foreign chats and impostors are ignored entirely, not even answered.
 	// A press counts as a view only for the navigation views.
 	v := a.authorize(ctx, sender{chatID: cb.ChatID, fromID: cb.FromID, chatType: cb.ChatType}, navViews[cb.Data])

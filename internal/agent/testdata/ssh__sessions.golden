@@ -1,0 +1,25 @@
+👥 <b>Active sessions</b> — 4
+<pre> alice     pts/0  3h 0m
+   from 10.0.0.5
+   📍 local network
+
+ bob       pts/1  1m 30s
+   from 192.168.1.20
+   📍 local network
+
+ carol-wit pts/12 1d 2h
+   from 10.0.0.7
+   📍 local network
+
+ mallory   -rf    1m 0s
+   from 10.0.0.8
+   📍 local network</pre>
+--- keyboard ---
+[🚫 Kick alice pts/0] → sk:1:a9830e264ff7e802
+[🚫 Kick bob pts/1] → sk:2:43b108b4ab576fb4
+[🚫 Kick carol-with-a-long-name …] → sk:3:efb11c4104579c44
+[📊 Status] → status  [🖥 CPU] → cpu  [🧠 Mem] → mem
+[💾 Disk] → disk  [🌐 Net] → net  [🌡 Temp] → temp
+[🔋 Power] → battery  [🧩 Svc] → services  [🐳 Dock] → docker
+[• 🔐 SSH] → ssh  [▶️ Live] → live  [🔄 Refresh] → ssh
+[🔝 Top] → top  [👁 Watching] → watching  [⚙️ Settings] → settings

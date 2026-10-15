@@ -1,0 +1,6 @@
+🛡 <b>Firewall</b>
+<code>ufw</code> is not installed (or not on the agent's PATH) — the agent cannot manage this host's firewall.
+That does not mean the host is open: firewalld, nftables or iptables may be enforcing rules, and containers are usually filtered by the host.
+To let the agent manage port 22, install ufw on the server: <code>apt install ufw</code> · <code>dnf install ufw</code> (EPEL) · <code>apk add ufw</code> · <code>pacman -S ufw</code>
+--- keyboard ---
+[⬅️ Status] → status  [🔐 SSH] → ssh

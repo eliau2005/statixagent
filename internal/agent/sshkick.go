@@ -53,7 +53,7 @@ func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard)
 		}
 	}
 	kb = append(kb, navKeyboard("ssh")...)
-	return bot.Sessions(sessions, geo, time.Now()), kb
+	return bot.Sessions(sessions, geo, a.now()), kb
 }
 
 // handleSSHCallback processes 👥 buttons; same contract as the other
