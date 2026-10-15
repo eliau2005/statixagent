@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +17,17 @@ import (
 // trustedAgent returns a test agent with ssh.trusted_ips set. Sources are
 // private or ULA addresses so the geo lookup never leaves the machine.
 func trustedAgent(send *fakeSender, entries ...string) *Agent {
+	return trustedAgentWithKeys(send, "", entries...)
+}
+
+// trustedAgentWithKeys is trustedAgent with a known-keys store at path
+// ("" = in-memory only).
+func trustedAgentWithKeys(send *fakeSender, path string, entries ...string) *Agent {
 	cfg := testConfig()
 	cfg.SSH.TrustedIPs = config.MustTrustedIPs(entries...)
-	return New(cfg, send, nil, testAgent(send).src)
+	src := testAgent(send).src
+	src.KnownKeysPath = path
+	return New(cfg, send, nil, src)
 }
 
 func TestTrustedLoginSuppressed(t *testing.T) {
@@ -142,5 +151,106 @@ func TestTrustedLoginUnparseableSourceLogged(t *testing.T) {
 	a.handleAuthLine(context.Background(), "Accepted publickey for deploy from 10.0.0.7 port 22 ssh2", time.Now())
 	if buf.Len() != 0 {
 		t.Errorf("unexpected log for a parseable source: %q", buf.String())
+	}
+}
+
+func keyLogin(user, ip, fp string) string {
+	return "Accepted publickey for " + user + " from " + ip + " port 22 ssh2: ED25519 " + fp
+}
+
+func TestTrustedLoginNewKey(t *testing.T) {
+	type login struct {
+		line  string
+		title string // expected alert title; "" means no alert
+	}
+	const trustedIP, otherIP = "10.0.0.7", "10.9.9.9"
+	cases := []struct {
+		name   string
+		known  string // known_keys file content before start
+		logins []login
+	}{
+		{"known key suppressed", "deploy SHA256:aaa\n", []login{
+			{keyLogin("deploy", trustedIP, "SHA256:aaa"), ""},
+		}},
+		{"new key alerts once, then suppressed", "", []login{
+			{keyLogin("deploy", trustedIP, "SHA256:aaa"), "SSH login with new key"},
+			{keyLogin("deploy", trustedIP, "SHA256:aaa"), ""},
+		}},
+		{"another new key for the same user alerts", "deploy SHA256:aaa\n", []login{
+			{keyLogin("deploy", trustedIP, "SHA256:bbb"), "SSH login with new key"},
+		}},
+		{"same key, different user alerts", "deploy SHA256:aaa\n", []login{
+			{keyLogin("alice", trustedIP, "SHA256:aaa"), "SSH login with new key"},
+			{keyLogin("alice", trustedIP, "SHA256:aaa"), ""},
+		}},
+		{"key first seen from an untrusted IP is known later", "", []login{
+			{keyLogin("deploy", otherIP, "SHA256:aaa"), "SSH login"},
+			{keyLogin("deploy", trustedIP, "SHA256:aaa"), ""},
+		}},
+		{"password login suppressed", "", []login{
+			{"Accepted password for deploy from " + trustedIP + " port 22 ssh2", ""},
+		}},
+		{"keyboard-interactive login suppressed", "", []login{
+			{"Accepted keyboard-interactive/pam for deploy from " + trustedIP + " port 22 ssh2", ""},
+		}},
+		{"root with known key still alerts", "root SHA256:aaa\n", []login{
+			{keyLogin("root", trustedIP, "SHA256:aaa"), "ROOT SSH login"},
+		}},
+		{"root with new key alerts as root", "", []login{
+			{keyLogin("root", trustedIP, "SHA256:aaa"), "ROOT SSH login"},
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "known_keys")
+			if c.known != "" {
+				if err := os.WriteFile(path, []byte(c.known), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			now := time.Now()
+			for i, l := range c.logins {
+				send := &fakeSender{}
+				// A fresh agent per login also proves the store, not the
+				// alert cooldown, is what keeps a repeat quiet.
+				a := trustedAgentWithKeys(send, path, "10.0.0.0/24")
+				a.handleAuthLine(context.Background(), l.line, now.Add(time.Duration(i)*time.Minute))
+				if l.title == "" && len(send.all()) != 0 {
+					t.Errorf("login %d must not alert: %v", i, send.all())
+				}
+				if l.title != "" && !send.find(l.title) {
+					t.Errorf("login %d: want %q alert: %v", i, l.title, send.all())
+				}
+				if l.title == "SSH login" && send.find("new key") {
+					t.Errorf("login %d from an untrusted IP is a plain login alert: %v", i, send.all())
+				}
+			}
+		})
+	}
+}
+
+func TestTrustedNewKeyAlertWording(t *testing.T) {
+	send := &fakeSender{}
+	a := trustedAgent(send, "10.0.0.0/24")
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), time.Now())
+	for _, want := range []string{"SSH login with new key", "deploy from 10.0.0.7 via publickey", "local network", "source IP is trusted", "SHA256:aaa"} {
+		if !send.find(want) {
+			t.Errorf("alert missing %q: %v", want, send.all())
+		}
+	}
+}
+
+func TestTrustedNewKeyStillSubjectToFailureRule(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_keys")
+	if err := os.WriteFile(path, []byte("deploy SHA256:aaa\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	send := &fakeSender{}
+	a := trustedAgentWithKeys(send, path, "10.0.0.0/24")
+	now := time.Now()
+	a.handleAuthLine(context.Background(), "Failed publickey for deploy from 10.0.0.7 port 22 ssh2", now)
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), now.Add(time.Second))
+	if !send.find("SSH login") || send.find("new key") {
+		t.Errorf("known key after a recent failure must raise the plain login alert: %v", send.all())
 	}
 }

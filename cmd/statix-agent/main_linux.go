@@ -158,6 +158,7 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		OSRelease:     readOSRelease,
 		KeyPaths:      findAuthorizedKeys(),
 		ConfigPath:    cfgPath,
+		KnownKeysPath: filepath.Join(filepath.Dir(cfgPath), "known_keys"),
 		ListListeners: listListeners,
 	}
 	if cfg.Monitors.SSH {

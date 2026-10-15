@@ -75,6 +75,9 @@ type Sources struct {
 	// ConfigPath is where watch-list changes are persisted; empty means
 	// in-memory only (replies say so).
 	ConfigPath string
+	// KnownKeysPath is where the user+key fingerprints seen in SSH key
+	// logins are remembered across restarts; empty means in-memory only.
+	KnownKeysPath string
 	// ListListeners returns the local TCP ports in LISTEN state.
 	ListListeners func() ([]int, error)
 
@@ -106,6 +109,9 @@ type Agent struct {
 	// skip the alert (see trustedLogin). Built once in New: the list is
 	// only changed by editing the config file and restarting.
 	trusted *sshwatch.TrustedIPs
+	// knownKeys remembers user+key fingerprints from key logins, so a
+	// trusted source logging in with a new key still alerts.
+	knownKeys *sshwatch.KnownKeys
 
 	mu      sync.Mutex
 	snap    collect.Snapshot
@@ -195,6 +201,13 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		snoozeKeys:   map[string]string{},
 		trusted:      trustedIPs(cfg.SSH.TrustedIPs),
 	}
+	known, err := sshwatch.LoadKnownKeys(src.KnownKeysPath)
+	if err != nil {
+		// Keep what was read: an unreadable store only means a known key
+		// may alert once more as new.
+		log.Printf("agent: %v", err)
+	}
+	a.knownKeys = known
 	a.router = a.buildRouter()
 	return a
 }
@@ -470,8 +483,11 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 	switch e.Kind {
 	case sshwatch.EventLogin:
 		// A login from a trusted source is still in history and the digest
-		// above; only the push (and the geo lookup feeding it) is skipped.
-		if a.trustedLogin(e, now) {
+		// above; only the push (and the geo lookup feeding it) is skipped,
+		// unless it used a key this user has never logged in with.
+		newKey := a.learnKey(e)
+		trusted := a.trustedLogin(e, now)
+		if trusted && !newKey {
 			return
 		}
 		geo := a.geo.Lookup(ctx, e.IP)
@@ -480,6 +496,10 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 			body += " — " + g
 		}
 		sev, title := alert.Info, "SSH login"
+		if trusted {
+			sev, title = alert.Warning, "SSH login with new key"
+			body += fmt.Sprintf("\nThe source IP is trusted, but %s has never logged in with key %s before.", e.User, e.KeyPrint)
+		}
 		if e.Root {
 			sev, title = alert.Critical, "ROOT SSH login"
 		}
@@ -516,6 +536,22 @@ func (a *Agent) trustedLogin(e sshwatch.Event, now time.Time) bool {
 		return false
 	}
 	return ok && a.brute.Count(e.IP, now) == 0
+}
+
+// learnKey remembers the user+fingerprint of a key login and reports
+// whether the pair was new. Logins without a fingerprint (password,
+// keyboard-interactive) are never new. Every key login is learned,
+// trusted source or not, so a key first used from elsewhere is already
+// known when it later logs in from a trusted address.
+func (a *Agent) learnKey(e sshwatch.Event) bool {
+	if e.KeyPrint == "" {
+		return false
+	}
+	added, err := a.knownKeys.Learn(e.User, e.KeyPrint)
+	if err != nil {
+		log.Printf("agent: %v", err)
+	}
+	return added
 }
 
 // trustedIPs builds the matcher for ssh.trusted_ips from the prefixes
