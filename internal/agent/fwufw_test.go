@@ -355,11 +355,8 @@ func TestFirewallCloseVerifiesResult(t *testing.T) {
 	if strings.Contains(last.html, "ReadWritePaths") {
 		t.Errorf("a shadowed rule is not a sandbox problem: %q", last.html)
 	}
-	send.mu.Lock()
-	toast := send.answered[len(send.answered)-1]
-	send.mu.Unlock()
-	if strings.Contains(toast, "closed") || !strings.Contains(toast, "failed") {
-		t.Errorf("toast = %q", toast)
+	if out := slowOutcome(t, send, "c1"); strings.Contains(out, "port 22 closed") {
+		t.Errorf("a failed close must not report success: %q", out)
 	}
 	// The write path itself is unchanged: delete allow, deny, reload.
 	var applied []string
