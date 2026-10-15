@@ -1,4 +1,6 @@
 🔒 <b>Last check: refuse new SSH connections?</b>
 If your SSH session drops after this, you cannot log in again over SSH until port 22 is reopened from this bot.
+Trial: the old rules return after 2:00 unless you tap Keep.
+Keep needs a new SSH connection seen after the change.
 --- keyboard ---
 [✅ Yes, refuse new SSH] → ~1y|ON2Gc3RhdGl4LWdv (danger)  [❌ Cancel] → ~1n|c3RhdGl4LWdv

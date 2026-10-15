@@ -44,10 +44,16 @@ var (
 func main() {
 	cfgPath := flag.String("config", config.DefaultPath, "path to config.toml")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	fwRollback := flag.String("fw-rollback", "", "roll back the pending firewall trial with this ID, then exit (run by its rollback timer)")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)
 		return
+	}
+	// Before the crash-loop guard: a rollback run is not an agent start,
+	// and it must work even when the config no longer loads.
+	if *fwRollback != "" {
+		os.Exit(runFwRollback(*cfgPath, *fwRollback))
 	}
 
 	cfg, err := config.Load(*cfgPath)
@@ -76,15 +82,16 @@ func main() {
 	tg := telegram.New(cfg.Telegram.Token)
 	src := buildSources(ctx, cfg, *cfgPath)
 
-	if up := buildUpdater(cfg); up != nil {
+	up := buildUpdater(cfg)
+	if up != nil {
 		src.UpdateCheck = up.Check
 		src.UpdateApply = up.Apply
-		if cfg.Update.Auto {
-			go autoUpdateLoop(ctx, up, cfg.Update.CheckInterval.Duration)
-		}
 	}
 
 	a := agent.New(cfg, tg, tg, src)
+	if up != nil && cfg.Update.Auto {
+		go autoUpdateLoop(ctx, up, cfg.Update.CheckInterval.Duration, a.FwTrialPending)
+	}
 	if err := a.Run(ctx); err != nil && err != context.Canceled {
 		log.Fatalf("statix-agent: %v", err)
 	}
@@ -121,7 +128,9 @@ func buildUpdater(cfg config.Config) *update.Updater {
 	}
 }
 
-func autoUpdateLoop(ctx context.Context, up *update.Updater, interval time.Duration) {
+// autoUpdateLoop installs new versions as they appear, except while
+// blocked says a firewall trial is pending.
+func autoUpdateLoop(ctx context.Context, up *update.Updater, interval time.Duration, blocked func() bool) {
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 	for {
@@ -129,6 +138,10 @@ func autoUpdateLoop(ctx context.Context, up *update.Updater, interval time.Durat
 		case <-ctx.Done():
 			return
 		case <-tick.C:
+			if blocked() {
+				log.Printf("statix-agent: auto-update: skipped while a firewall change is on trial")
+				continue
+			}
 			if _, ok, err := up.Check(ctx); err == nil && ok {
 				if err := up.Apply(ctx); err != nil {
 					log.Printf("statix-agent: auto-update: %v", err)
@@ -136,6 +149,47 @@ func autoUpdateLoop(ctx context.Context, up *update.Updater, interval time.Durat
 			}
 		}
 	}
+}
+
+// fwSources is what a firewall trial needs: its state directory next to
+// the config, ufw's rules, and this binary for the rollback timer. The
+// config path is made absolute, since the timer runs from elsewhere.
+func fwSources(cfgPath string) agent.Sources {
+	if abs, err := filepath.Abs(cfgPath); err == nil {
+		cfgPath = abs
+	}
+	src := agent.Sources{
+		Runner:     services.ExecRunner{},
+		SSHDConfig: readSSHDConfig,
+		ConfigPath: cfgPath,
+		FwDir:      filepath.Join(filepath.Dir(cfgPath), "fw-pending"),
+		UFWDir:     "/etc/ufw",
+		AuditPath:  filepath.Join(filepath.Dir(cfgPath), "audit", "actions.jsonl"),
+	}
+	if exe, err := os.Executable(); err == nil {
+		src.SelfPath = exe
+	}
+	return src
+}
+
+// runFwRollback is --fw-rollback: the dead-man switch's systemd timer
+// rolling a firewall trial back. Without a readable config it still
+// rolls back, only without the chat notice.
+func runFwRollback(cfgPath, id string) int {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	var send agent.Sender
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		log.Printf("statix-agent: %v (rolling back without a chat notice)", err)
+	} else {
+		send = telegram.New(cfg.Telegram.Token)
+	}
+	if err := agent.RunFwRollback(ctx, cfg, fwSources(cfgPath), send, id); err != nil {
+		log.Printf("statix-agent: firewall rollback: %v", err)
+		return 1
+	}
+	return 0
 }
 
 func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.Sources {
@@ -165,6 +219,8 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		AuditPath:     filepath.Join(filepath.Dir(cfgPath), "audit", "actions.jsonl"),
 		ListListeners: listListeners,
 	}
+	fw := fwSources(cfgPath)
+	src.ConfigPath, src.FwDir, src.UFWDir, src.SelfPath = fw.ConfigPath, fw.FwDir, fw.UFWDir, fw.SelfPath
 	if cfg.Monitors.SSH {
 		src.AuthLines = tailAuthLog(ctx)
 	}

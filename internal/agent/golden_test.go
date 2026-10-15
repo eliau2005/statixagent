@@ -152,6 +152,7 @@ func TestGoldenFirewall(t *testing.T) {
 	for _, data := range []string{"fw_close_ask", "fw_open_ask"} {
 		send := &fakeSender{}
 		a := testAgent(send)
+		a.cfg.Firewall.AllowCloseSSH = true
 		// Fixed randomness: the screen's tokens are part of the golden.
 		a.tokens = tgui.NewTokens(a.now, strings.NewReader(strings.Repeat("statix-golden-", 8)))
 		a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: data})

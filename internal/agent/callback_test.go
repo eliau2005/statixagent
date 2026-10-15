@@ -110,6 +110,7 @@ func TestSlowCallbacksAnswerBeforeWork(t *testing.T) {
 	}{
 		{"firewall apply", "fw_close_ask", func(a *Agent, send *fakeSender) {
 			a.src.Runner = eventRunner{send, failingUFW{}}
+			allowFw(t, a)
 		}},
 		{"ssh kick", sessionCallbackData("sk:", 1, sshTestSessions()[0]), func(a *Agent, send *fakeSender) {
 			a.src.Runner = eventRunner{send, &kickRunner{}}

@@ -85,9 +85,15 @@ type actionResult struct {
 	// fresh view and driftToast says why.
 	drift      bool
 	driftToast string
+	// refused: the action would not run (a disabled action, Keep without
+	// evidence); like drift, text and driftToast say why.
+	refused bool
 	// newMessage: the pressed message is gone (clear chat), so the
 	// outcome is sent rather than edited in.
 	newMessage bool
+	// rebind, when set, is told the message the outcome ended up in if
+	// that is not the pressed one, so buttons bound to it follow.
+	rebind func(messageID int64)
 }
 
 // buildConfirms registers the confirm actions.
@@ -99,6 +105,10 @@ func (a *Agent) buildConfirms() map[string]confirmAction {
 		actUpdate:  a.updateAction(),
 		actClear:   a.clearAction(),
 		actUntrust: a.untrustAction(),
+		// A firewall trial's buttons: minted with the trial, never from
+		// a confirm screen of their own.
+		actFwKeep:     a.trialAction(a.keepTrial),
+		actFwRollback: a.trialAction(a.rollbackTrial),
 	}
 }
 
@@ -232,11 +242,14 @@ func (a *Agent) confirmPress(ctx context.Context, cb *telegram.Callback, c tgui.
 		log.Printf("agent: confirm: %v", err)
 	}
 	start := time.Now()
-	res := act.run(ctx, in.Target)
+	res := act.run(withIntent(ctx, in), in.Target)
 	a.tokens.Finish(nonce)
 	dur := time.Since(start)
-	if res.drift {
+	if res.drift || res.refused {
 		rec.Phase = phaseStale
+		if res.refused {
+			rec.Phase = phaseDenied
+		}
 		a.writeAudit(rec)
 		a.finishCallback(ctx, cb, true, res.text, res.kb, res.driftToast)
 		return
@@ -260,7 +273,9 @@ func (a *Agent) confirmPress(ctx context.Context, cb *telegram.Callback, c tgui.
 		}
 		return
 	}
-	a.finishCallback(ctx, cb, true, text, res.kb, "")
+	if id := a.finishCallback(ctx, cb, true, text, res.kb, ""); id != cb.MessageID && id != 0 && res.rebind != nil {
+		res.rebind(id)
+	}
 }
 
 // refuseConfirm answers a Yes that lost: it never runs anything.
@@ -367,38 +382,34 @@ func (a *Agent) kickAction() confirmAction {
 	}
 }
 
-// firewallAction opens or closes SSH port 22. Closing is always double
-// confirmed: it can lock the user out of SSH.
+// firewallAction opens or closes SSH port 22, under the dead-man switch
+// (fwdeadman.go). Closing is offered only with firewall.allow_close_ssh,
+// and always double confirmed: it can lock the user out of SSH.
 func (a *Agent) firewallAction(open bool) confirmAction {
 	act := confirmAction{
 		back: scrFirewall, backLabel: "🛡 Firewall",
 		prompt: func(_ context.Context, _ string, final bool) confirmPrompt {
+			trial := "\nTrial: the old rules return after " + mmss(a.trialWindow()) + " unless you tap Keep."
 			switch {
 			case open:
-				return confirmPrompt{text: "<b>Open SSH port 22?</b>\nIncoming SSH connections will be allowed.", yes: "✅ Yes, open it"}
+				return confirmPrompt{text: "<b>Open SSH port 22?</b>\nIncoming SSH connections will be allowed." + trial,
+					yes: "✅ Yes, open it"}
+			case !a.cfg.Firewall.AllowCloseSSH:
+				return confirmPrompt{text: closeSSHOff, kb: fwBackKB(), toast: "Closing SSH is turned off"}
 			case final:
 				return confirmPrompt{text: "🔒 <b>Last check: refuse new SSH connections?</b>\n" +
 					"If your SSH session drops after this, you cannot log in again over SSH " +
-					"until port 22 is reopened from this bot.", yes: "✅ Yes, refuse new SSH"}
+					"until port 22 is reopened from this bot." + trial +
+					"\nKeep needs a new SSH connection seen after the change.", yes: "✅ Yes, refuse new SSH"}
 			}
 			return confirmPrompt{text: "⚠️ <b>Close SSH port 22?</b>\n" +
 				"Active sessions stay up, but <b>new SSH connections will be refused</b>.\n" +
-				"This bot keeps working and can reopen the port.", yes: "✅ Yes, close it"}
+				"This bot keeps working and can reopen the port." + trial, yes: "✅ Yes, close it"}
 		},
-		// setSSHPort probes ufw afresh and refuses any state the view
+		// The trial probes ufw afresh and refuses any state the view
 		// would not offer the change in.
 		run: func(ctx context.Context, _ string) actionResult {
-			text, kb, ok, trace := a.applyAndRender(ctx, open)
-			res := actionResult{ok: ok, target: "port " + sshPort, text: text, kb: kb, trace: trace}
-			switch {
-			case !ok:
-				res.what = "Firewall change failed"
-			case open:
-				res.what = "Port 22 opened"
-			default:
-				res.what = "Port 22 closed"
-			}
-			return res
+			return a.runFirewallTrial(ctx, open)
 		},
 		cancel: a.firewallView,
 	}
@@ -408,14 +419,31 @@ func (a *Agent) firewallAction(open bool) confirmAction {
 	return act
 }
 
+// trialAction is a firewall trial's Keep or Roll back button; its target
+// is the trial ID, checked against the pending trial before acting.
+func (a *Agent) trialAction(run func(context.Context, string) actionResult) confirmAction {
+	return confirmAction{
+		back: scrFirewall, backLabel: "🛡 Firewall",
+		prompt: func(ctx context.Context, _ string, _ bool) confirmPrompt {
+			text, kb := a.firewallView(ctx)
+			return confirmPrompt{text: text, kb: kb}
+		},
+		run:    run,
+		cancel: a.firewallView,
+	}
+}
+
 // updateAction installs the self-update; the agent restarts on success.
 func (a *Agent) updateAction() confirmAction {
 	configured := func() bool { return a.src.UpdateCheck != nil && a.src.UpdateApply != nil }
 	return confirmAction{
 		back: scrUpdate, backLabel: "⬇️ Update",
 		prompt: func(context.Context, string, bool) confirmPrompt {
-			if !configured() {
+			switch {
+			case !configured():
 				return confirmPrompt{text: "Self-update is not configured in this build."}
+			case a.FwTrialPending():
+				return confirmPrompt{text: trialPendingText}
 			}
 			return confirmPrompt{text: "⬇️ <b>Install the update?</b>\nThe agent will restart.", yes: "✅ Yes, install"}
 		},
@@ -424,6 +452,9 @@ func (a *Agent) updateAction() confirmAction {
 			switch {
 			case !configured():
 				res.what, res.text = "Update unavailable", "Self-update is not configured in this build."
+			case a.FwTrialPending():
+				// A trial started after the confirm screen was shown.
+				return actionResult{refused: true, driftToast: "Update blocked", text: trialPendingText}
 			default:
 				if err := a.src.UpdateApply(ctx); err != nil {
 					res.what, res.text = "Update failed", "Update failed: "+esc(err.Error())

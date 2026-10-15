@@ -228,11 +228,7 @@ func TestLegacyDestructiveDataReprompts(t *testing.T) {
 		t.Run(tc.data, func(t *testing.T) {
 			live := sshTestSessions()
 			a, send, runner := kickAgent(t, &live)
-			ufw := &ufwRunner{state: "open"}
-			a.src.Runner = runFunc(func(name string, args ...string) (string, error) {
-				runner.Run(context.Background(), name, args...)
-				return ufw.Run(context.Background(), name, args...)
-			})
+			a.cfg.Firewall.AllowCloseSSH = true
 			applied := false
 			a.src.UpdateCheck = func(context.Context) (string, bool, error) { return "v2", true, nil }
 			a.src.UpdateApply = func(context.Context) error { applied = true; return nil }
@@ -271,6 +267,7 @@ func TestConfirmReceipt(t *testing.T) {
 	send = &fakeSender{}
 	a = testAgent(send)
 	a.src.Runner = failingUFW{}
+	allowFw(t, a)
 	id = confirmThrough(t, a, send, "fw_open_ask", 4)
 	if first, _, _ := strings.Cut(slowOutcome(t, send, id), "\n"); !strings.HasPrefix(first, "🧾 Firewall change failed · port 22/tcp · by 0 · ") ||
 		!strings.HasSuffix(first, " · failed") {

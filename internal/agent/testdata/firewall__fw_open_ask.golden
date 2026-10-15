@@ -1,4 +1,5 @@
 <b>Open SSH port 22?</b>
 Incoming SSH connections will be allowed.
+Trial: the old rules return after 2:00 unless you tap Keep.
 --- keyboard ---
 [✅ Yes, open it] → ~1y|ON2GeC1nb2xkZW4t (danger)  [❌ Cancel] → ~1n|eC1nb2xkZW4t

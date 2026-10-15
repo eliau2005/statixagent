@@ -1,5 +1,5 @@
 🛡 <b>Firewall</b>
 SSH port 22: no explicit rule (ufw default policy applies)
 --- keyboard ---
-[🔓 Open port 22] → ~1fo  [🔒 Close port 22] → ~1fc (danger)
+[🔓 Open port 22] → ~1fo
 [⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fw

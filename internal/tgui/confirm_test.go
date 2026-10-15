@@ -227,3 +227,21 @@ func TestMintRefusesReusedNonce(t *testing.T) {
 		t.Error("a repeated nonce replaced a pending token")
 	}
 }
+
+func TestMintTTL(t *testing.T) {
+	tk, clk := newTestTokens()
+	nonce, err := tk.MintTTL(testIntent, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arg := tk.Yes(nonce).Args[0]
+	clk.t = clk.t.Add(TokenTTL + time.Minute)
+	if _, c := tk.Claim(arg, 7, 42, 5); c != Confirmed {
+		t.Errorf("long-lived token past TokenTTL = %v, want Confirmed", c)
+	}
+	nonce, _ = tk.MintTTL(testIntent, 10*time.Minute)
+	clk.t = clk.t.Add(10 * time.Minute)
+	if _, c := tk.Claim(tk.Yes(nonce).Args[0], 7, 42, 5); c != Expired {
+		t.Errorf("token past its own TTL = %v, want Expired", c)
+	}
+}
