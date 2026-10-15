@@ -492,6 +492,7 @@ func planAgent(t *testing.T, rules ...string) (*Agent, *fakeSender, *fakeClock, 
 	f := newFakeUFW(t, rules...)
 	f.setSS(adminPeer)
 	a, send, clk := fwAgent(t, f)
+	unlimitPresses(a) // these flows press faster than any person; the limit has its own tests
 	a.src.Runner = planUFW{f}
 	a.cfg.Firewall.AllowCloseSSH = false
 	return a, send, clk, f
@@ -512,10 +513,6 @@ func typed(t *testing.T, a *Agent, send *fakeSender, text string) (string, teleg
 }
 
 // pressOn is an owner press of data on message msg.
-func pressOn(a *Agent, id string, msg int64, data string) {
-	a.handleCallback(context.Background(), &telegram.Callback{ID: id, ChatID: 42, FromID: 42, ChatType: "private", MessageID: msg, Data: data})
-}
-
 func TestTypedOpenAppliesUnderTrialAndRollsBack(t *testing.T) {
 	a, send, clk, f := planAgent(t, "allow 22/tcp")
 	before := f.files()

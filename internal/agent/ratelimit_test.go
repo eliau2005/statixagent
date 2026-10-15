@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -118,5 +119,35 @@ func TestPressRateLimitToast(t *testing.T) {
 	}
 	if got, want := strings.Join(phases, " "), "requested rate_limited cancelled"; got != want {
 		t.Errorf("phases = %s, want %s", got, want)
+	}
+}
+
+// TestRateLimitedPlanAsk: an ask whose target is built only when it runs
+// (a firewall plan) has no resolve; a press of it over the limit is
+// answered and audited, not a nil call.
+func TestRateLimitedPlanAsk(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	a.presses = &pressLimiter{burst: 0, every: time.Hour}
+	path := filepath.Join(t.TempDir(), "audit", "actions.jsonl")
+	a.audit = newAuditLog(path)
+	for _, data := range []string{"~1fps|web", "~1frd|0123456789abcdef", "~1fx|abc"} {
+		send.mu.Lock()
+		send.answered = nil
+		send.mu.Unlock()
+		a.handleCallback(context.Background(), &telegram.Callback{ID: "c", ChatID: 42, ChatType: "private", FromID: 42, MessageID: 4, Data: data})
+		send.mu.Lock()
+		answered := slices.Clone(send.answered)
+		send.mu.Unlock()
+		if !slices.Equal(answered, []string{"c:" + slowDownToast}) {
+			t.Errorf("%s: answered = %v, want the slow-down toast once", data, answered)
+		}
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(raw), `"phase":"rate_limited"`); n != 3 {
+		t.Errorf("audit has %d rate_limited records, want 3:\n%s", n, raw)
 	}
 }
