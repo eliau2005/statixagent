@@ -122,6 +122,8 @@ type Agent struct {
 	// ui holds the tgui screens; callback data starting with "~" is
 	// dispatched through it (see handleCall).
 	ui *tgui.Registry
+	// legacy routes all other callback data (see handleCallback).
+	legacy *tgui.LegacyTable
 
 	// trusted is the merged matcher for ssh.trusted_ips (configTrusted,
 	// static) and the bot-managed trustStore; non-root logins from these
@@ -258,6 +260,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	a.rebuildTrust()
 	a.router = a.buildRouter()
 	a.ui = a.buildScreens()
+	a.legacy = a.buildLegacy()
 	return a
 }
 

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"hash/crc32"
 	"log"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -197,21 +199,62 @@ const editFailedToast = "Couldn't update; sent as new message"
 // button from an older version, or forged data such as a bare clear_chat.
 const outdatedToast = "This button is outdated. Send /status for a fresh view."
 
-// slowCallback reports presses whose work can take seconds (ufw, pkill,
-// the Docker API, the updater) and the toast to answer them with before
-// that work starts, so the client spinner stops at once.
-func slowCallback(data string) (toast string, slow bool) {
-	switch {
-	case data == "fw_close", data == "fw_open", strings.HasPrefix(data, "skk:"):
-		return "Working…", true
-	case data == "docker":
-		return "", true
-	case data == cbUpdateYes:
-		return "Updating…", true
-	case data == cbClearYes:
-		return "Clearing…", true
-	}
-	return "", false
+// buildLegacy is the table of legacy callback data: every button the bot
+// sends today, and those of older versions still sitting in the chat.
+// Rules are tried in order, most specific first; NewLegacyTable panics at
+// startup if one shadows another. Slow rules (ufw, pkill, the Docker API,
+// the updater) are answered with their Ack before the work starts, so
+// the client spinner stops at once. Data no rule claims is outdated.
+func (a *Agent) buildLegacy() *tgui.LegacyTable {
+	views := slices.DeleteFunc(slices.Sorted(maps.Keys(navViews)), func(v string) bool {
+		return v == "ssh" || v == "docker" // claimed by earlier rules
+	})
+	return tgui.NewLegacyTable(
+		// The four snooze forms; a stale one is refused by its handler.
+		tgui.LegacyRule{Name: "snooze", Prefixes: []string{"snz:"}, Handle: a.snoozeCallback},
+		tgui.LegacyRule{Name: "trust", Prefixes: []string{cbTrustConfirm, cbTrustCancel, cbTrust},
+			Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) { a.handleTrustCallback(ctx, cb) }},
+		tgui.LegacyRule{Name: "dismiss", Exact: []string{"dismiss"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
+			a.finishCallback(ctx, cb, false, "Update postponed — /update any time.", nil, "")
+		}},
+		tgui.LegacyRule{Name: "live", Exact: []string{"live"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
+			a.answer(ctx, cb, "Live mode active (tap Stop to exit)")
+			a.startLive(ctx, cb.ChatID, cb.MessageID)
+		}},
+		tgui.LegacyRule{Name: "live_stop", Exact: []string{"live_stop"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
+			a.answer(ctx, cb, "")
+			if !a.stopLive(cb.MessageID) {
+				// No session on this message (agent restarted, or a newer
+				// session took over): restore Status instead of a dead end.
+				a.finishLive(cb.ChatID, cb.MessageID)
+			}
+		}},
+		tgui.LegacyRule{Name: "firewall-apply", Exact: []string{"fw_close", "fw_open"}, Slow: true, Ack: "Working…",
+			Handle: a.viewCallback(a.handleFirewallCallback)},
+		tgui.LegacyRule{Name: "firewall", Exact: []string{"firewall", "fw_close_ask", "fw_open_ask"},
+			Handle: a.viewCallback(a.handleFirewallCallback)},
+		tgui.LegacyRule{Name: "ssh-kick", Prefixes: []string{"skk:"}, Slow: true, Ack: "Working…",
+			Handle: a.viewCallback(a.handleSSHCallback)},
+		tgui.LegacyRule{Name: "ssh", Exact: []string{"ssh"}, Prefixes: []string{"sk:"},
+			Handle: a.viewCallback(a.handleSSHCallback)},
+		tgui.LegacyRule{Name: "settings", Exact: []string{"settings", "noop", "dg:toggle"}, Prefixes: []string{"dg:hour:", "th:"},
+			Handle: a.viewCallback(a.handleSettingsCallback)},
+		tgui.LegacyRule{Name: "watch", Exact: []string{"watching", "scan_svc", "scan_port"},
+			Prefixes: []string{"sa:", "pa:", "sr:", "xr:", "cr:", "hr:", "pr:"},
+			Handle:   a.viewCallback(a.handleWatchCallback)},
+		tgui.LegacyRule{Name: "update-yes", Exact: []string{cbUpdateYes}, Slow: true, Ack: "Updating…",
+			Handle: a.viewCallback(a.handleConfirmCallback)},
+		tgui.LegacyRule{Name: "clear-yes", Exact: []string{cbClearYes}, Slow: true, Ack: "Clearing…",
+			Handle: a.viewCallback(a.handleConfirmCallback)},
+		tgui.LegacyRule{Name: "confirm", Exact: []string{cbClearNo, "update_confirm"},
+			Handle: a.viewCallback(a.handleConfirmCallback)},
+		// The Docker API can take seconds: stop the spinner first.
+		tgui.LegacyRule{Name: "docker", Exact: []string{"docker"}, Slow: true, Handle: a.navCallback},
+		// Only the views a button emits reach the router; anything else,
+		// including the old update_confirm and a forged clear_chat, is
+		// left unclaimed and refused.
+		tgui.LegacyRule{Name: "view", Exact: views, Handle: a.navCallback},
+	)
 }
 
 // handleCallback routes a button press: the callback data is a command
@@ -236,60 +279,55 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 		a.answer(ctx, cb, adminOnlyToast)
 		return
 	}
-	if key, ok := a.resolveSnoozeKey(cb.Data); ok {
-		a.engine.Snooze(key, time.Now().Add(time.Hour))
-		a.answer(ctx, cb, "Snoozed for 1h")
+	rule, ok := a.legacy.Lookup(cb.Data)
+	if !ok {
+		a.refuseCallback(ctx, cb, false)
 		return
 	}
-	if strings.HasPrefix(cb.Data, "snz:") {
+	if rule.Slow {
+		a.answer(ctx, cb, rule.Ack)
+	}
+	rule.Handle(ctx, cb, rule.Slow)
+}
+
+// refuseCallback answers data no button emits with the outdated toast,
+// unless a slow rule answered it already.
+func (a *Agent) refuseCallback(ctx context.Context, cb *telegram.Callback, answered bool) {
+	log.Printf("agent: refusing callback data of %d bytes that no button emits", len(cb.Data))
+	if !answered {
+		a.answer(ctx, cb, outdatedToast)
+	}
+}
+
+// snoozeCallback snoozes the alert a 🔕 button names for an hour.
+func (a *Agent) snoozeCallback(ctx context.Context, cb *telegram.Callback, _ bool) {
+	key, ok := a.resolveSnoozeKey(cb.Data)
+	if !ok {
 		a.answer(ctx, cb, "stale snooze")
 		return
 	}
-	if a.handleTrustCallback(ctx, cb) {
-		return
-	}
-	switch cb.Data {
-	case "dismiss":
-		a.finishCallback(ctx, cb, false, "Update postponed — /update any time.", nil, "")
-		return
-	case "live":
-		a.answer(ctx, cb, "Live mode active (tap Stop to exit)")
-		a.startLive(ctx, cb.ChatID, cb.MessageID)
-		return
-	case "live_stop":
-		a.answer(ctx, cb, "")
-		if !a.stopLive(cb.MessageID) {
-			// No session on this message (agent restarted, or a newer
-			// session took over): restore Status instead of a dead end.
-			a.finishLive(cb.ChatID, cb.MessageID)
-		}
-		return
-	}
-	toast, answered := slowCallback(cb.Data)
-	if answered {
-		a.answer(ctx, cb, toast)
-	}
-	handlers := []func(context.Context, string) (string, telegram.Keyboard, string, bool){
-		a.handleFirewallCallback, a.handleSSHCallback, a.handleSettingsCallback, a.handleWatchCallback,
-		a.handleConfirmCallback,
-	}
-	for _, h := range handlers {
-		if text, kb, toast, handled := h(ctx, cb.Data); handled {
-			a.finishCallback(ctx, cb, answered, text, kb, toast)
+	a.engine.Snooze(key, time.Now().Add(time.Hour))
+	a.answer(ctx, cb, "Snoozed for 1h")
+}
+
+// viewCallback adapts a handler that renders a view for data into a
+// legacy rule handler that edits it into the pressed message.
+func (a *Agent) viewCallback(h func(context.Context, string) (string, telegram.Keyboard, string, bool)) tgui.LegacyHandler {
+	return func(ctx context.Context, cb *telegram.Callback, answered bool) {
+		text, kb, toast, handled := h(ctx, cb.Data)
+		if !handled {
+			a.refuseCallback(ctx, cb, answered)
 			return
 		}
+		a.finishCallback(ctx, cb, answered, text, kb, toast)
 	}
-	// Only the views a button emits reach the router; anything else,
-	// including the old update_confirm and a forged clear_chat, is refused.
-	reply, ok := "", navViews[cb.Data]
-	if ok {
-		reply, ok = a.router.Invoke(ctx, cb.Data, nil)
-	}
+}
+
+// navCallback renders a navigation view through the router.
+func (a *Agent) navCallback(ctx context.Context, cb *telegram.Callback, answered bool) {
+	reply, ok := a.router.Invoke(ctx, cb.Data, nil)
 	if !ok {
-		log.Printf("agent: refusing callback data of %d bytes that no button emits", len(cb.Data))
-		if !answered {
-			a.answer(ctx, cb, outdatedToast)
-		}
+		a.refuseCallback(ctx, cb, answered)
 		return
 	}
 	a.finishCallback(ctx, cb, answered, reply, navKeyboard(cb.Data), "")
