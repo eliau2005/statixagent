@@ -84,7 +84,7 @@ func (a *Agent) homeView(ctx context.Context, c tgui.Call) tgui.View {
 	kb = append(kb,
 		[]tgui.Button{{Label: "📈 Metrics", Call: tgui.Open(scrMetrics)}, {Label: "🧩 Services", Call: tgui.Open(scrServices)}},
 		[]tgui.Button{{Label: "🔐 Security", Call: tgui.Open(scrSecurity)}, {Label: "⚙️ Settings", Call: tgui.Open(scrSettings)}},
-		[]tgui.Button{{Label: "▶️ Live", Legacy: "live"}, {Label: "🔄 Refresh", Call: c}},
+		[]tgui.Button{{Label: "▶️ Live", Call: tgui.Call{Act: actLive}}, {Label: "🔄 Refresh", Call: c}},
 	)
 	return tgui.View{Text: b.String(), Rows: kb}
 }

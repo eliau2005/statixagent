@@ -38,6 +38,7 @@ func TestDigestDue(t *testing.T) {
 func TestDigestSettingsButtons(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
+	unlimitPresses(a)
 
 	// The settings view shows the digest row; its buttons carry the state
 	// and hour they set.

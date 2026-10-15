@@ -140,6 +140,7 @@ func TestWatchCallbackStaleAfterShift(t *testing.T) {
 func TestWatchingPages120Items(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
+	unlimitPresses(a)
 	for i := range 40 {
 		a.cfg.Watch.Services = append(a.cfg.Watch.Services, fmt.Sprintf("svc-%02d.service", i))
 		a.cfg.Watch.Processes = append(a.cfg.Watch.Processes, fmt.Sprintf("proc-%02d", i))

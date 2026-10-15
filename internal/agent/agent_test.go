@@ -593,7 +593,7 @@ func TestReplyAttachesHomeKeyboard(t *testing.T) {
 		}
 	}
 	joined := strings.Join(labels, " ")
-	for _, want := range []string{"📈 Metrics=~1v|met", "🔐 Security=~1v|sec", "▶️ Live=live", "🔄 Refresh=~1v|home"} {
+	for _, want := range []string{"📈 Metrics=~1v|met", "🔐 Security=~1v|sec", "▶️ Live=~1lv", "🔄 Refresh=~1v|home"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("keyboard missing %q in %s", want, joined)
 		}
@@ -736,7 +736,7 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 				t.Errorf("frame missing elapsed time format: %q", e.html)
 			}
 		}
-		if len(e.kb) == 1 && e.kb[0][0].Data == "live_stop" {
+		if len(e.kb) == 1 && e.kb[0][0].Data == "~1ls" {
 			stopButtonSeen = true
 		}
 	}
@@ -753,7 +753,7 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 			flatNav += b.Data + " "
 		}
 	}
-	if final.messageID != 7 || !strings.Contains(flatNav, "live") || !strings.Contains(flatNav, "~1v|home") {
+	if final.messageID != 7 || !strings.Contains(flatNav, "~1lv") || !strings.Contains(flatNav, "~1v|home") {
 		t.Errorf("final edit must restore Home on msg 7: %+v", final)
 	}
 }
@@ -775,7 +775,7 @@ func TestLiveModeDoesNotAdvanceSamplerState(t *testing.T) {
 		}, nil
 	}
 
-	a.startLive(context.Background(), 42, 7)
+	a.startLive(context.Background(), 42, 7, "")
 	waitFor(t, func() bool {
 		return send.editCount() > 1 && !strings.Contains(send.lastEdit().html, "LIVE")
 	}, "live session to finish")
@@ -1058,6 +1058,7 @@ func TestStartupHelloHasButtons(t *testing.T) {
 func TestSettingsButtons(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
+	unlimitPresses(a)
 	cfgPath := filepath.Join(t.TempDir(), "config.toml")
 	a.src.ConfigPath = cfgPath
 	ctx := context.Background()

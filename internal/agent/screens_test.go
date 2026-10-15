@@ -296,7 +296,8 @@ func checkButtons(t *testing.T, a *Agent, where string, kb telegram.Keyboard, sc
 			}
 			_, ask := a.asks[c.Act]
 			_, act := a.acts[c.Act]
-			if !ask && !act && !a.ui.Known(c.Act) {
+			live := c.Act == actLive || c.Act == actLiveStop
+			if !ask && !act && !live && !a.ui.Known(c.Act) {
 				t.Errorf("%s: act %q of %q is not registered", where, c.Act, b.Text)
 			}
 			if (c.Act == tgui.ActView || c.Act == tgui.ActOpen) && !slices.Contains(screens, c.Args[0]) {
