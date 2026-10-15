@@ -88,19 +88,35 @@ SSH visibility is a first-class feature, not an afterthought:
 
 #### Trusted IPs
 
-If you log in often from a known address, list it in the config to stop the
-per-login alert for it. Entries can be single IPv4/IPv6 addresses or CIDR
-ranges:
+If you log in often from a known address, trust it to stop the per-login
+alert for it. Entries can be single IPv4/IPv6 addresses or CIDR ranges, and
+come from two places that are merged:
 
-```toml
-[ssh]
-trusted_ips = ["203.0.113.7", "198.51.100.0/24", "2001:db8:42::/48"]
-```
+- **The bot** — `/trust <ip-or-cidr>`, `/untrust <ip-or-cidr>` and `/trusted`
+  (list), or the **🤝 Trust this IP** button on a plain `SSH login` alert.
+  The button opens a confirm screen restating the address; only
+  **✅ Yes, trust** acts, and **❌ Cancel** puts the alert's buttons back.
+  Changes apply to the next login, with no restart, and are kept in
+  `/etc/statix-agent/trusted_ips` (`0600`, one entry per line). Up to 64
+  entries; `/untrust` removes only entries added this way.
+- **The config** — a static baseline, changed by editing the file and
+  restarting (`systemctl restart statix-agent`):
 
-The list is empty by default, which keeps the alert-on-every-login behavior.
-Invalid entries stop the agent at startup with an error naming the entry, and
-so do ranges that would trust everything (`0.0.0.0/0`, `::/0`) or IPv4-mapped
-ranges shorter than `/96`.
+  ```toml
+  [ssh]
+  trusted_ips = ["203.0.113.7", "198.51.100.0/24", "2001:db8:42::/48"]
+  ```
+
+  `/trusted` lists these separately, and `/untrust` says to edit the file
+  instead. Re-running the installer keeps the existing `[ssh]` settings.
+
+Both lists are empty by default, which keeps the alert-on-every-login
+behavior. Both use the same rules: invalid entries are rejected (at startup
+for the config, in the reply for `/trust`), and so are ranges that would trust
+everything (`0.0.0.0/0`, `::/0`) and IPv4-mapped ranges shorter than `/96`.
+`/trust` also refuses an address already covered by an existing entry and
+names it. The trust button only appears on plain logins from an IP address
+that is not trusted yet — never on root, new-key or brute-force alerts.
 
 A suppressed login still appears in `/ssh history` and the daily digest; only
 the push is skipped. Some logins from a trusted address still alert:
@@ -116,22 +132,21 @@ the push is skipped. Some logins from a trusted address still alert:
 
 To recognise new keys, the agent remembers the user and SHA256 fingerprint of
 key logins in `/etc/statix-agent/known_keys` (`0600`, one `user fingerprint`
-per line). The file is only used when `trusted_ips` is set. Keys from logins
+per line). The file is only used once some source is trusted (config or bot). Keys from logins
 that alert anyway (untrusted sources, root) are learned straight away; a new
 key from a trusted source is learned only once its alert has been delivered,
 so a snoozed or undelivered alert fires again on the next login. SSH history is
 not kept across restarts, so there is nothing to learn from on the first
-start: after upgrading, the first key login per user and key from a trusted
-address alerts once, and later ones stay quiet. Deleting the file resets this.
+start: after upgrading, or after trusting the first address from the bot, the
+first key login per user and key from a trusted address alerts once, and
+later ones stay quiet. Deleting the file resets this.
 Unreadable lines are skipped with a log message and kept in the file.
 Password and keyboard-interactive logins carry no fingerprint and stay
 suppressed from trusted addresses.
 
 The source must be logged as an IP address: if sshd logs hostnames
-(`UseDNS yes`), the trusted list cannot match and the agent logs why. Edit
-`/etc/statix-agent/config.toml` and restart the service
-(`systemctl restart statix-agent`) to apply changes; re-running the installer
-keeps the existing `[ssh]` settings.
+(`UseDNS yes`), the trusted list cannot match (and no trust button is offered)
+and the agent logs why.
 
 ### Alerts and remediation
 
@@ -152,6 +167,8 @@ confirmation:
 - **`/firewall`** — open or close SSH port 22 via `ufw`, behind a mandatory
   confirmation screen. Hosts without `ufw` get a plain "cannot manage the
   firewall here" and no buttons, never a guess about what is open.
+- **🤝 Trust this IP** on plain SSH login alerts, behind a confirm screen (see
+  [Trusted IPs](#trusted-ips)).
 
 ## What it looks like
 
@@ -180,6 +197,7 @@ inline keyboard so you can navigate by tapping instead of typing.
 | `/ssh` | live sessions with disconnect buttons · `/ssh history` · `/ssh fails` |
 | `/ssl` | certificate expiry · `/ssl add <host>` · `/ssl remove <host>` |
 | `/firewall` | open/close SSH port 22 via `ufw` (says it cannot manage the firewall where `ufw` is absent) |
+| `/trusted` | trusted SSH sources, by origin (config / Telegram) · `/trust <ip-or-cidr>` · `/untrust <ip-or-cidr>` |
 | `/watching` | everything watched, managed with buttons |
 | `/settings` | alert thresholds and digest schedule, tuned with buttons |
 | `/services_scan` `/ports_scan` | discover candidates to watch |
@@ -311,7 +329,8 @@ The decentralized design has deliberate costs:
 - **No aggregated view** — an "all servers" query means asking each bot.
 - **History is in memory** — a restart loses SSH/alert history; there is no
   database, by design. Only the small list of known SSH key fingerprints is
-  kept on disk, and only when `ssh.trusted_ips` is set.
+  kept on disk, along with the bot-managed trusted IPs, and only once some
+  source is trusted.
 
 ## Roadmap
 
