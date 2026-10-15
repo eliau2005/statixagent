@@ -179,11 +179,11 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 }
 
 // TestForgedCallbackRejected: data no button emits never reaches the
-// router, even when it names a real command. The old update_confirm
-// button and a forged clear_chat are refused without acting.
+// router, even when it names a real command. A forged clear_chat is
+// refused without acting.
 func TestForgedCallbackRejected(t *testing.T) {
 	for _, data := range []string{
-		"clear_chat", "update_confirm", "update", "start", "help", "ping", "trust",
+		"clear_chat", "update", "start", "help", "ping", "trust",
 		"untrust", "services_add", "ports_remove", "procs_add", "trusted", "no_such_action",
 	} {
 		t.Run(data, func(t *testing.T) {
@@ -204,6 +204,28 @@ func TestForgedCallbackRejected(t *testing.T) {
 				t.Errorf("answered = %v, want the outdated toast once", send.answered)
 			}
 		})
+	}
+}
+
+// TestLegacyUpdateConfirmReprompts: the Install button of an older
+// version asks again with a fresh Yes and never installs by itself.
+func TestLegacyUpdateConfirmReprompts(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	applied := false
+	a.src.UpdateCheck = func(context.Context) (string, bool, error) { return "v2", true, nil }
+	a.src.UpdateApply = func(context.Context) error { applied = true; return nil }
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: "update_confirm"})
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if applied {
+		t.Fatal("legacy update_confirm installed the update")
+	}
+	if len(send.edits) != 1 || !strings.Contains(send.edits[0].html, "Install the update?") || len(send.edits[0].kb) == 0 || send.edits[0].kb[0][0].Data != cbUpdateYes {
+		t.Fatalf("edits = %v, want the confirm prompt", send.edits)
+	}
+	if !slices.Equal(send.answered, []string{"c1:Please confirm again"}) {
+		t.Errorf("answered = %v, want one re-confirm toast", send.answered)
 	}
 }
 

@@ -303,6 +303,14 @@ func (a *Agent) handleConfirmCallback(ctx context.Context, data string) (string,
 		return "", nil, "", true
 	case cbClearNo:
 		return "Chat left as it is.", nil, "", true
+	case "update_confirm":
+		// The Install button of an older version: ask again rather than
+		// refuse, so an update offer already in the chat still works, but
+		// never install from it directly.
+		if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
+			return "Self-update is not configured in this build.", nil, "", true
+		}
+		return "⬇️ <b>Install the update?</b>\nThe agent will restart.", updateConfirmKeyboard(), "Please confirm again", true
 	}
 	return "", nil, "", false
 }
