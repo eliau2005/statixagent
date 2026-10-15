@@ -3,8 +3,12 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"net/netip"
 	"os/exec"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
@@ -35,49 +39,28 @@ const (
 	fwUnusable                      // present, but the probe failed (not root, blocked, timeout)
 	fwInactive                      // present, `Status: inactive`
 	fwUnparsed                      // exit 0, unrecognised output (wrapper, non-ufw binary)
-	fwOpen                          // explicit ALLOW rule
-	fwClosed                        // explicit DENY rule
-	fwUnmanaged                     // active, but no rule for 22
+	fwOpen                          // the first matching rule allows (ALLOW or LIMIT)
+	fwClosed                        // the first matching rule blocks (DENY or REJECT)
+	fwUnmanaged                     // active, but no rule matches 22 (default policy decides)
 )
 
 // parseUFWStatus reads `ufw status` output. It stays pure — whether ufw
-// exists at all is probeUFW's job — and only says what the text says.
+// exists at all is probeUFW's job — and only says what the text says: the
+// first-match verdict for port 22 from an arbitrary IPv4 host.
 //
 // The status line is not necessarily the first: the runner merges stderr
 // into the output, so an interpreter warning or one of ufw's own WARN
 // lines can precede it. Anchoring on line 0 would read a healthy firewall
 // as unparseable and silently withdraw every action button.
 func parseUFWStatus(out string) sshPortState {
-	lines := strings.Split(out, "\n")
-	head := -1
-	for i, line := range lines {
-		if strings.Contains(strings.ToLower(line), "status:") {
-			head = i
-			break
-		}
-	}
-	if head < 0 {
+	s := parseUFWOutput(out)
+	switch {
+	case !s.found:
 		return fwUnparsed
-	}
-	if !strings.Contains(strings.ToLower(lines[head]), "status: active") {
+	case !s.active:
 		return fwInactive
 	}
-	state := fwUnmanaged
-	for _, line := range lines[head+1:] {
-		f := strings.Fields(line)
-		if len(f) < 2 || (f[0] != "22" && f[0] != "22/tcp") {
-			continue
-		}
-		switch strings.ToUpper(f[1]) {
-		case "ALLOW":
-			if state == fwUnmanaged {
-				state = fwOpen
-			}
-		case "DENY", "REJECT":
-			state = fwClosed // an explicit block wins the summary
-		}
-	}
-	return state
+	return s.verdict(22, false, netip.Addr{}).state
 }
 
 // ufwProbe is the outcome of one `ufw status` attempt. out and err stay
@@ -87,8 +70,14 @@ func parseUFWStatus(out string) sshPortState {
 type ufwProbe struct {
 	bin   string // the binary that answered; empty when none did
 	state sshPortState
-	out   string // ufw's own combined output
-	err   error  // the underlying exec error, if any
+	out   string    // ufw's own combined output
+	err   error     // the underlying exec error, if any
+	fw    ufwStatus // parsed rules; from `status verbose` when it answered
+}
+
+// manageable reports whether ufw is active and its rules were read.
+func (p ufwProbe) manageable() bool {
+	return p.state == fwOpen || p.state == fwClosed || p.state == fwUnmanaged
 }
 
 // detail renders the probe outcome for display.
@@ -104,7 +93,11 @@ func (a *Agent) probeUFW(ctx context.Context) ufwProbe {
 		out, err := a.src.Runner.Run(ctx, bin, "status")
 		switch {
 		case err == nil:
-			return ufwProbe{bin: bin, state: parseUFWStatus(out), out: out}
+			p := ufwProbe{bin: bin, state: parseUFWStatus(out), out: out, fw: parseUFWOutput(out)}
+			if p.manageable() {
+				a.probeUFWVerbose(ctx, &p)
+			}
+			return p
 		case notFound(err):
 			lastErr = err // try the next candidate path
 		default:
@@ -112,6 +105,22 @@ func (a *Agent) probeUFW(ctx context.Context) ufwProbe {
 		}
 	}
 	return ufwProbe{state: fwMissing, err: lastErr}
+}
+
+// probeUFWVerbose refines an active probe with `ufw status verbose`, which
+// adds the default policy and expands app profiles to their ports
+// ("22/tcp (OpenSSH)"). Plain status prints only "OpenSSH", so without
+// this an app-profile ALLOW cannot be matched to port 22. Any failure
+// keeps the plain-status result.
+func (a *Agent) probeUFWVerbose(ctx context.Context, p *ufwProbe) {
+	out, err := a.src.Runner.Run(ctx, p.bin, "status", "verbose")
+	if err != nil {
+		return
+	}
+	if s := parseUFWOutput(out); s.active {
+		p.fw = s
+		p.state = s.verdict(22, false, netip.Addr{}).state
+	}
 }
 
 // notFound reports whether the command could not be located. A PATH lookup
@@ -129,7 +138,13 @@ func (a *Agent) firewallView(ctx context.Context) (string, telegram.Keyboard) {
 	if a.src.Runner == nil {
 		return "🛡 Firewall control unavailable in this build.", telegram.Keyboard{back}
 	}
-	p := a.probeUFW(ctx)
+	return a.renderFirewall(ctx, a.probeUFW(ctx))
+}
+
+// renderFirewall renders an already-taken probe, so a change can be
+// verified and displayed from the same reading.
+func (a *Agent) renderFirewall(ctx context.Context, p ufwProbe) (string, telegram.Keyboard) {
+	back := []telegram.Button{{Text: "⬅️ Status", Data: "status"}, {Text: "🔐 SSH", Data: "ssh"}}
 	switch p.state {
 	case fwMissing:
 		return "🛡 <b>Firewall</b>\n" +
@@ -146,18 +161,109 @@ func (a *Agent) firewallView(ctx context.Context) (string, telegram.Keyboard) {
 			"the firewall state is <b>unknown</b>, so no changes are offered.\n" +
 			preBlock(p.out), telegram.Keyboard{back}
 	case fwOpen:
-		return "🛡 <b>Firewall</b>\nSSH port 22: 🔓 <b>open</b> (ALLOW rule)",
+		return a.firewallState(ctx, p),
 			telegram.Keyboard{{{Text: "🔒 Close port 22", Data: "fw_close_ask"}}, back}
 	case fwClosed:
-		return "🛡 <b>Firewall</b>\nSSH port 22: 🔒 <b>closed</b> (DENY rule)",
+		return a.firewallState(ctx, p),
 			telegram.Keyboard{{{Text: "🔓 Open port 22", Data: "fw_open_ask"}}, back}
 	default: // fwUnmanaged
-		return "🛡 <b>Firewall</b>\nSSH port 22: no explicit rule (ufw default policy applies)",
+		return a.firewallState(ctx, p),
 			telegram.Keyboard{
 				{{Text: "🔓 Open port 22", Data: "fw_open_ask"}, {Text: "🔒 Close port 22", Data: "fw_close_ask"}},
 				back,
 			}
 	}
+}
+
+// firewallState describes an active ufw: the first-match verdict for port
+// 22 (the port the buttons act on), any other port sshd accepts on, and
+// Docker-published ports, which bypass ufw's INPUT rules altogether.
+func (a *Agent) firewallState(ctx context.Context, p ufwProbe) string {
+	var b strings.Builder
+	b.WriteString("🛡 <b>Firewall</b>\n")
+	if p.fw.policy != "" {
+		b.WriteString("Default incoming policy: <b>" + esc(p.fw.policy) + "</b>\n")
+	}
+	v4 := p.fw.verdict(22, false, netip.Addr{})
+	b.WriteString("SSH port 22: " + describeVerdict(v4))
+	if v6 := p.fw.verdict(22, true, netip.Addr{}); p.fw.hasV6() && v6.state != v4.state {
+		b.WriteString("\nIPv6: " + describeVerdict(v6))
+	}
+	ports := a.sshPorts(ctx)
+	if !slices.Contains(ports, 22) {
+		b.WriteString("\n⚠️ sshd does not appear to accept connections on 22; the buttons below still act on port 22.")
+	}
+	for _, port := range ports {
+		if port != 22 {
+			b.WriteString("\nSSH port " + strconv.Itoa(port) + ": " + describeVerdict(p.fw.verdict(port, false, netip.Addr{})))
+		}
+	}
+	if w := a.dockerPortsWarning(ctx); w != "" {
+		b.WriteString("\n" + w)
+	}
+	return b.String()
+}
+
+// describeVerdict renders a port verdict with the rule that decided it, so
+// the user can see *why* a port is open, not just that it is.
+func describeVerdict(v portVerdict) string {
+	var s string
+	switch {
+	case v.state == fwOpen:
+		s = "🔓 <b>open</b> (rule " + ruleRef(*v.rule) + ")"
+	case v.state == fwClosed:
+		s = "🔒 <b>closed</b> (rule " + ruleRef(*v.rule) + ")"
+	case v.policy == "allow":
+		s = "no explicit rule — default incoming policy <b>allow</b> applies (🔓 open)"
+	case v.policy != "":
+		s = "no explicit rule — default incoming policy <b>" + esc(v.policy) + "</b> applies (🔒 blocked)"
+	default:
+		s = "no explicit rule (ufw default policy applies)"
+	}
+	// Narrower allows only matter when the port is otherwise blocked.
+	if v.state != fwOpen && v.policy != "allow" {
+		for i, r := range v.except {
+			if i == 3 {
+				s += "\n  …"
+				break
+			}
+			s += "\n  still allowed by rule " + ruleRef(r)
+		}
+	}
+	for i, r := range v.unsure {
+		if i == 3 {
+			break
+		}
+		s += "\n  ⚠️ rule " + ruleRef(r) + " is an app profile whose ports are unknown; it may match first"
+	}
+	return s
+}
+
+// ruleRef is "N: <row as ufw printed it>", escaped for HTML.
+func ruleRef(r fwRule) string {
+	return strconv.Itoa(r.Num) + ": " + esc(truncate(r.Raw, 80))
+}
+
+// dockerPortsWarning names the ports Docker publishes. They are forwarded
+// before ufw's INPUT chain sees them, so ufw rules — including a DENY shown
+// above — do not apply. Empty when Docker is not monitored or unreachable.
+func (a *Agent) dockerPortsWarning(ctx context.Context) string {
+	if a.src.Docker == nil || !a.cfg.Monitors.Docker {
+		return ""
+	}
+	pp, err := a.src.Docker.PublishedPorts(ctx)
+	if err != nil || len(pp) == 0 {
+		return ""
+	}
+	var names []string
+	for i, p := range pp {
+		if i == 8 {
+			names = append(names, "…")
+			break
+		}
+		names = append(names, esc(fmt.Sprintf("%d/%s (%s)", p.Port, p.Proto, p.Container)))
+	}
+	return "⚠️ Docker publishes " + strings.Join(names, ", ") + " — ufw does not filter these."
 }
 
 // ufwInstallHint names the package-manager command for this host's distro,
@@ -215,7 +321,18 @@ func (a *Agent) handleFirewallCallback(ctx context.Context, data string) (string
 // so the cause stays visible instead of vanishing as a toast.
 func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram.Keyboard, string, bool) {
 	okMsg, fail := a.setSSHPort(ctx, open)
-	text, kb := a.firewallView(ctx)
+	var text string
+	var kb telegram.Keyboard
+	if fail == nil {
+		// ufw exiting 0 does not mean the port changed: an app profile,
+		// LIMIT or bare-port rule listed earlier still matches first. Only
+		// a fresh reading decides what is reported.
+		p := a.probeUFW(ctx)
+		fail = verifySSHPort(p, open)
+		text, kb = a.renderFirewall(ctx, p)
+	} else {
+		text, kb = a.firewallView(ctx)
+	}
 	if fail != nil {
 		banner := "❌ <b>Change failed</b>\n<pre>" + esc(fail.display()) + "</pre>\n"
 		if hint := sandboxHint(fail); hint != "" {
@@ -224,6 +341,40 @@ func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram
 		return banner + text, kb, "failed — see message", true
 	}
 	return text, kb, okMsg, true
+}
+
+// verifySSHPort checks a post-change probe against the intended state of
+// port 22, in both families when ufw holds IPv6 rules. A mismatch is a
+// failure, never a success toast.
+func verifySSHPort(p ufwProbe, open bool) *fwFailure {
+	want, word := fwClosed, "closed"
+	if open {
+		want, word = fwOpen, "open"
+	}
+	if !p.manageable() {
+		return &fwFailure{reason: "ufw accepted the change, but the agent could not read the rules back to confirm port 22 is " + word}
+	}
+	for _, v6 := range []bool{false, true} {
+		if v6 && !p.fw.hasV6() {
+			continue
+		}
+		v := p.fw.verdict(22, v6, netip.Addr{})
+		if v.state == want {
+			continue
+		}
+		family := ""
+		if v6 {
+			family = " for IPv6"
+		}
+		reason := "ufw accepted the change, but port 22 is not " + word + family
+		if v.rule != nil {
+			reason += ": rule " + strconv.Itoa(v.rule.Num) + " (" + v.rule.Raw + ") matches first"
+		} else {
+			reason += ": no rule matches, so the default policy decides"
+		}
+		return &fwFailure{reason: reason}
+	}
+	return nil
 }
 
 // fwFailure describes a failed rule change. ufw's own output is kept apart

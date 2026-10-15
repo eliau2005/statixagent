@@ -156,6 +156,7 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		},
 		Latency:       netcheck.Latency,
 		OSRelease:     readOSRelease,
+		SSHDConfig:    readSSHDConfig,
 		KeyPaths:      findAuthorizedKeys(),
 		ConfigPath:    cfgPath,
 		KnownKeysPath: filepath.Join(filepath.Dir(cfgPath), "known_keys"),
@@ -262,6 +263,20 @@ func readOSRelease() map[string]string {
 		}
 	}
 	return nil
+}
+
+// readSSHDConfig returns sshd_config and its drop-ins, concatenated; the
+// agent reads only the Port lines, as a fallback when sshd -T cannot run.
+func readSSHDConfig() string {
+	paths, _ := filepath.Glob("/etc/ssh/sshd_config.d/*.conf")
+	var b strings.Builder
+	for _, path := range append([]string{"/etc/ssh/sshd_config"}, paths...) {
+		if data, err := os.ReadFile(path); err == nil {
+			b.Write(data)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
 }
 
 // readSessions lists live sessions from utmp when it exists, falling back

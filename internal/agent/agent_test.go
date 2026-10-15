@@ -952,7 +952,7 @@ func TestParseUFWStatus(t *testing.T) {
 		{"warning before inactive", "WARN: uid is 0 but '/etc/ufw' is owned by 1000\nStatus: inactive\n", fwInactive},
 		{"open", "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere\n22/tcp (v6)                ALLOW       Anywhere (v6)\n", fwOpen},
 		{"closed", "Status: active\n\n22/tcp                     DENY        Anywhere\n", fwClosed},
-		{"deny wins over allow", "Status: active\n\n22/tcp  DENY  Anywhere\n22/tcp  ALLOW  Anywhere\n", fwClosed},
+		{"deny listed first wins", "Status: active\n\n22/tcp  DENY  Anywhere\n22/tcp  ALLOW  Anywhere\n", fwClosed},
 		{"unmanaged", "Status: active\n\n443/tcp  ALLOW  Anywhere\n", fwUnmanaged},
 		{"bare port form", "Status: active\n\n22  ALLOW  Anywhere\n", fwOpen},
 	}
@@ -1270,7 +1270,9 @@ func TestFirewallSbinFallback(t *testing.T) {
 	}
 	var changed bool
 	for _, c := range runner.calls {
-		if c[1] == "status" {
+		// The view also probes sshd and ss for the SSH port; only ufw
+		// invocations are under test here.
+		if c[1] == "status" || !strings.HasSuffix(c[0], "ufw") {
 			continue
 		}
 		if c[0] != "/usr/sbin/ufw" {

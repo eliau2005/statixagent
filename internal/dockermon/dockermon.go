@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,54 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 			ct.RestartCount = insp.RestartCount
 		}
 		out = append(out, ct)
+	}
+	return out, nil
+}
+
+// PublishedPort is a host port a running container publishes.
+type PublishedPort struct {
+	Port      int
+	Proto     string // tcp, udp
+	Container string
+}
+
+// PublishedPorts lists the host ports published by running containers on a
+// non-loopback address. Docker forwards these before the host's INPUT
+// rules, so a firewall view needs them to avoid calling a port closed.
+// One list request, no per-container inspect.
+func (c *Client) PublishedPorts(ctx context.Context) ([]PublishedPort, error) {
+	var raw []struct {
+		Names []string `json:"Names"`
+		Ports []struct {
+			IP         string `json:"IP"`
+			PublicPort int    `json:"PublicPort"`
+			Type       string `json:"Type"`
+		} `json:"Ports"`
+	}
+	if err := c.get(ctx, "/containers/json", &raw); err != nil {
+		return nil, err
+	}
+	var out []PublishedPort
+	seen := map[string]bool{}
+	for _, r := range raw {
+		name := ""
+		if len(r.Names) > 0 {
+			name = strings.TrimPrefix(r.Names[0], "/")
+		}
+		for _, p := range r.Ports {
+			if p.PublicPort == 0 {
+				continue // exposed but not published
+			}
+			if ip, err := netip.ParseAddr(p.IP); err == nil && ip.IsLoopback() {
+				continue // reachable from this host only
+			}
+			key := fmt.Sprintf("%d/%s", p.PublicPort, p.Type)
+			if seen[key] {
+				continue // the IPv4 and IPv6 bindings of one mapping
+			}
+			seen[key] = true
+			out = append(out, PublishedPort{Port: p.PublicPort, Proto: p.Type, Container: name})
+		}
 	}
 	return out, nil
 }
