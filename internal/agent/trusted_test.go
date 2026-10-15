@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
+	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
 // trustedAgent returns a test agent with ssh.trusted_ips set. Sources are
@@ -252,5 +254,86 @@ func TestTrustedNewKeyStillSubjectToFailureRule(t *testing.T) {
 	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), now.Add(time.Second))
 	if !send.find("SSH login") || send.find("new key") {
 		t.Errorf("known key after a recent failure must raise the plain login alert: %v", send.all())
+	}
+}
+
+// failingSender fails every push while fail is set.
+type failingSender struct {
+	*fakeSender
+	fail bool
+}
+
+func (f *failingSender) SendMessageKB(ctx context.Context, chatID int64, html string, kb telegram.Keyboard) (int64, error) {
+	if f.fail {
+		return 0, errors.New("telegram down")
+	}
+	return f.fakeSender.SendMessageKB(ctx, chatID, html, kb)
+}
+
+func TestTrustedNewKeysWithinCooldownBothAlert(t *testing.T) {
+	send := &fakeSender{}
+	a := trustedAgent(send, "10.0.0.0/24")
+	now := time.Now()
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), now)
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:bbb"), now.Add(time.Second))
+	for _, fp := range []string{"SHA256:aaa", "SHA256:bbb"} {
+		if !send.find(fp) {
+			t.Errorf("new key %s inside the login cooldown must still alert: %v", fp, send.all())
+		}
+	}
+}
+
+func TestTrustedNewKeyLearnedOnlyAfterDelivery(t *testing.T) {
+	send := &failingSender{fakeSender: &fakeSender{}, fail: true}
+	cfg := testConfig()
+	cfg.SSH.TrustedIPs = config.MustTrustedIPs("10.0.0.0/24")
+	a := New(cfg, send, nil, testAgent(send.fakeSender).src)
+	now := time.Now()
+
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), now)
+	if a.knownKeys.Known("deploy", "SHA256:aaa") {
+		t.Fatal("key must not be learned while its alert could not be sent")
+	}
+
+	send.fail = false
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), now.Add(time.Minute))
+	if !send.find("SSH login with new key") {
+		t.Errorf("undelivered new-key alert must be retried on the next login: %v", send.all())
+	}
+	if !a.knownKeys.Known("deploy", "SHA256:aaa") {
+		t.Error("key must be learned once its alert was delivered")
+	}
+}
+
+func TestNoKnownKeysWithoutTrustedIPs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_keys")
+	send := &fakeSender{}
+	a := trustedAgentWithKeys(send, path) // no trusted_ips
+	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), time.Now())
+	if !send.find("SSH login") || send.find("new key") {
+		t.Errorf("without trusted_ips every login is a plain alert: %v", send.all())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("known_keys must not be written without trusted_ips: %v", err)
+	}
+}
+
+func TestUnmatchableSourceLoggedOncePerSource(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	send := &fakeSender{}
+	a := trustedAgent(send, "10.0.0.0/8")
+	a.geo.BaseURL = "http://127.0.0.1:1"
+	now := time.Now()
+	for i, host := range []string{"a.example.com", "a.example.com", "b.example.com", "a.example.com"} {
+		a.handleAuthLine(context.Background(), "Accepted password for deploy from "+host+" port 22 ssh2", now.Add(time.Duration(i)*time.Minute))
+	}
+	if n := strings.Count(buf.String(), "not an IP literal"); n != 2 {
+		t.Errorf("logged %d times, want once per distinct source:\n%s", n, buf.String())
+	}
+	if n := len(send.all()); n != 4 {
+		t.Errorf("alerts = %d, want every login to alert", n)
 	}
 }

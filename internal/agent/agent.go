@@ -110,7 +110,8 @@ type Agent struct {
 	// only changed by editing the config file and restarting.
 	trusted *sshwatch.TrustedIPs
 	// knownKeys remembers user+key fingerprints from key logins, so a
-	// trusted source logging in with a new key still alerts.
+	// trusted source logging in with a new key still alerts. Nil when
+	// ssh.trusted_ips is empty.
 	knownKeys *sshwatch.KnownKeys
 
 	mu      sync.Mutex
@@ -155,6 +156,10 @@ type Agent struct {
 	// New and overridden only by tests.
 	digest     digestStats
 	digestPoll time.Duration
+
+	// unmatchable holds SSH sources (e.g. hostnames under UseDNS) already
+	// logged as not matchable against ssh.trusted_ips. Guarded by mu.
+	unmatchable map[string]struct{}
 
 	// rebootChecked is set once the first sample with a readable uptime
 	// has been inspected for a fresh host boot. Guarded by mu.
@@ -201,13 +206,15 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		snoozeKeys:   map[string]string{},
 		trusted:      trustedIPs(cfg.SSH.TrustedIPs),
 	}
-	known, err := sshwatch.LoadKnownKeys(src.KnownKeysPath)
-	if err != nil {
-		// Keep what was read: an unreadable store only means a known key
-		// may alert once more as new.
-		log.Printf("agent: %v", err)
+	if !a.trusted.Empty() {
+		known, err := sshwatch.LoadKnownKeys(src.KnownKeysPath)
+		if err != nil {
+			// Keep what was read: bad lines are skipped (and kept on disk),
+			// so at worst a known key alerts once more as new.
+			log.Printf("agent: %v", err)
+		}
+		a.knownKeys = known
 	}
-	a.knownKeys = known
 	a.router = a.buildRouter()
 	return a
 }
@@ -485,8 +492,8 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 		// A login from a trusted source is still in history and the digest
 		// above; only the push (and the geo lookup feeding it) is skipped,
 		// unless it used a key this user has never logged in with.
-		newKey := a.learnKey(e)
 		trusted := a.trustedLogin(e, now)
+		newKey := trusted && e.KeyPrint != "" && !a.knownKeys.Known(e.User, e.KeyPrint)
 		if trusted && !newKey {
 			return
 		}
@@ -495,18 +502,33 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 		if g := geo.String(); g != "" {
 			body += " — " + g
 		}
-		sev, title := alert.Info, "SSH login"
-		if trusted {
-			sev, title = alert.Warning, "SSH login with new key"
-			body += fmt.Sprintf("\nThe source IP is trusted, but %s has never logged in with key %s before.", e.User, e.KeyPrint)
-		}
-		if e.Root {
-			sev, title = alert.Critical, "ROOT SSH login"
-		}
 		// Every login alerts in real time (MVP §3); key by user+ip with a
 		// tiny cooldown so a burst of multiplexed connections sends once.
-		if al := a.engine.Event("ssh-login:"+e.User+"@"+e.IP, title, body, sev, now, 10*time.Second); al != nil {
-			a.pushAlert(ctx, *al)
+		// A new key gets its own key per user+fingerprint, so a second new
+		// key inside that cooldown is not swallowed by the first.
+		key := "ssh-login:" + e.User + "@" + e.IP
+		var sev alert.Severity
+		var title string
+		switch {
+		case e.Root:
+			sev, title = alert.Critical, "ROOT SSH login"
+		case newKey:
+			sev, title = alert.Warning, "SSH login with new key"
+			body += fmt.Sprintf("\nThe source IP is trusted, but %s has never logged in with key %s before.", e.User, e.KeyPrint)
+			key = "ssh-newkey:" + e.User + " " + e.KeyPrint
+		default:
+			sev, title = alert.Info, "SSH login"
+		}
+		pushed := false
+		if al := a.engine.Event(key, title, body, sev, now, 10*time.Second); al != nil {
+			pushed = a.pushAlert(ctx, *al) == nil
+		}
+		// A new key is only known once its alert went out; if the alert was
+		// snoozed or failed to send, the next login with it alerts again.
+		// Keys from logins that alert anyway are learned unconditionally,
+		// so a key first used from elsewhere is quiet from a trusted source.
+		if pushed || !newKey {
+			a.learnKey(e)
 		}
 	case sshwatch.EventFailed, sshwatch.EventInvalidUser:
 		// Failures are counted regardless of ssh.trusted_ips: a burst from
@@ -532,26 +554,44 @@ func (a *Agent) trustedLogin(e sshwatch.Event, now time.Time) bool {
 	}
 	ok, err := a.trusted.Match(e.IP)
 	if err != nil {
-		log.Printf("agent: ssh.trusted_ips not applied to login: %v", err)
+		if a.firstUnmatchable(e.IP) {
+			log.Printf("agent: ssh.trusted_ips not applied to logins from this source: %v", err)
+		}
 		return false
 	}
 	return ok && a.brute.Count(e.IP, now) == 0
 }
 
-// learnKey remembers the user+fingerprint of a key login and reports
-// whether the pair was new. Logins without a fingerprint (password,
-// keyboard-interactive) are never new. Every key login is learned,
-// trusted source or not, so a key first used from elsewhere is already
-// known when it later logs in from a trusted address.
-func (a *Agent) learnKey(e sshwatch.Event) bool {
-	if e.KeyPrint == "" {
+// maxUnmatchable bounds the set of sources already logged as unmatchable;
+// past it the set starts over, so a long-running agent stays flat.
+const maxUnmatchable = 256
+
+// firstUnmatchable reports whether src has not been logged as unmatchable
+// before, so a hostname source is explained once rather than per login.
+func (a *Agent) firstUnmatchable(src string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, seen := a.unmatchable[src]; seen {
 		return false
 	}
-	added, err := a.knownKeys.Learn(e.User, e.KeyPrint)
-	if err != nil {
+	if a.unmatchable == nil || len(a.unmatchable) >= maxUnmatchable {
+		a.unmatchable = map[string]struct{}{}
+	}
+	a.unmatchable[src] = struct{}{}
+	return true
+}
+
+// learnKey remembers the user+fingerprint of a key login. It is a no-op
+// without ssh.trusted_ips (the store only matters for trusted sources, so
+// no file is written for users who never opted in) and for logins without
+// a fingerprint (password, keyboard-interactive).
+func (a *Agent) learnKey(e sshwatch.Event) {
+	if a.knownKeys == nil || e.KeyPrint == "" {
+		return
+	}
+	if _, err := a.knownKeys.Learn(e.User, e.KeyPrint); err != nil {
 		log.Printf("agent: %v", err)
 	}
-	return added
 }
 
 // trustedIPs builds the matcher for ssh.trusted_ips from the prefixes
