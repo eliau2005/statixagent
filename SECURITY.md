@@ -55,6 +55,12 @@ compromised Telegram account, or a compromised release-signing key.
   `Router.Dispatch`).
 - Inline-keyboard callbacks are checked the same way; callbacks from a foreign
   chat are ignored.
+- After the chat check, the sender is checked (`internal/agent`, `authorize`):
+  in a private chat `from.id` must equal `chat_id`; forwarded, via-bot and
+  anonymous (`sender_chat`) messages are ignored. In a group with
+  `telegram.admin_user_ids` set, members outside that list can only use views
+  (read-only commands and navigation buttons). Without it, every member keeps
+  full control and the bot warns once per start.
 - State-changing actions require an explicit, separate confirmation:
   - `/update` only *checks*; installing requires `/update_confirm`.
   - `/firewall` presents a mandatory confirmation screen before changing a rule.

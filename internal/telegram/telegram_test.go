@@ -578,3 +578,54 @@ func TestEditMessageKBFitsText(t *testing.T) {
 		t.Errorf("edit text not balanced: %v", err)
 	}
 }
+
+func TestGetUpdatesParsesSender(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true,"result":[
+			{"update_id":1,"message":{"text":"/status","date":1,"from":{"id":42},"chat":{"id":42,"type":"private"}}},
+			{"update_id":2,"message":{"text":"/update_confirm","date":1,"from":{"id":42},"chat":{"id":42,"type":"private"},
+				"forward_origin":{"type":"user","date":1,"sender_user":{"id":9}},"forward_date":1}},
+			{"update_id":3,"message":{"text":"/x","date":1,"from":{"id":42},"chat":{"id":42,"type":"private"},"forward_date":1}},
+			{"update_id":4,"message":{"text":"/x","date":1,"from":{"id":5},"chat":{"id":-100,"type":"supergroup"},"is_automatic_forward":true}},
+			{"update_id":5,"message":{"text":"/x","date":1,"from":{"id":5},"chat":{"id":42,"type":"private"},"via_bot":{"id":8}}},
+			{"update_id":6,"message":{"text":"/x","date":1,"from":{"id":1087968824},"chat":{"id":-100,"type":"supergroup"},"sender_chat":{"id":-100,"type":"supergroup"}}},
+			{"update_id":7,"message":{"text":"/x","date":1,"chat":{"id":42}}},
+			{"update_id":8,"callback_query":{"id":"a","data":"cpu","from":{"id":5},"message":{"message_id":3,"date":1,"chat":{"id":-100,"type":"group"}}}},
+			{"update_id":9,"callback_query":{"id":"b","data":"cpu","from":{"id":5},"message":{"message_id":3,"date":0,"chat":{"id":-100,"type":"group"}}}},
+			{"update_id":10,"callback_query":{"id":"c","data":"cpu","from":{"id":5},"inline_message_id":"x"}}
+		]}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+	ups, err := c.GetUpdates(context.Background(), 0, time.Second)
+	if err != nil || len(ups) != 10 {
+		t.Fatalf("GetUpdates = %+v, %v", ups, err)
+	}
+	if u := ups[0]; u.FromID != 42 || u.ChatType != "private" || u.Forwarded || u.ViaBot || u.SenderChat {
+		t.Errorf("plain message = %+v", u)
+	}
+	for i := 1; i <= 3; i++ {
+		if !ups[i].Forwarded {
+			t.Errorf("update %d not marked forwarded: %+v", ups[i].ID, ups[i])
+		}
+	}
+	if !ups[4].ViaBot || ups[4].Forwarded {
+		t.Errorf("via_bot = %+v", ups[4])
+	}
+	if !ups[5].SenderChat {
+		t.Errorf("sender_chat = %+v", ups[5])
+	}
+	// A missing chat.type must not read as an update built in code.
+	if ups[6].ChatType != "unknown" || ups[6].FromID != 0 {
+		t.Errorf("typeless chat = %+v", ups[6])
+	}
+	if cb := ups[7].Callback; cb == nil || cb.FromID != 5 || cb.ChatType != "group" || cb.ChatID != -100 || cb.Inaccessible {
+		t.Errorf("callback = %+v", cb)
+	}
+	if cb := ups[8].Callback; cb == nil || !cb.Inaccessible || cb.ChatID != -100 || cb.ID != "b" {
+		t.Errorf("inaccessible callback = %+v", cb)
+	}
+	if cb := ups[9].Callback; cb == nil || !cb.Inaccessible || cb.ChatID != 0 || ups[9].ChatID != 0 || cb.ID != "c" {
+		t.Errorf("message-less callback = %+v", cb)
+	}
+}

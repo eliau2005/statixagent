@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	in.Watch.Ports = []PortCheck{{Port: 443, Label: "https"}}
 	in.Watch.HTTPChecks = []HTTPCheck{{URL: "https://example.com/health", ExpectStatus: 200, Timeout: Duration{5 * time.Second}}}
 	in.SampleInterval = Duration{30 * time.Second}
+	in.Telegram.AdminUserIDs = []int64{111, 222}
 
 	if err := Save(path, in); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -32,7 +34,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if out.Telegram != in.Telegram {
+	if !reflect.DeepEqual(out.Telegram, in.Telegram) {
 		t.Errorf("telegram mismatch: got %+v want %+v", out.Telegram, in.Telegram)
 	}
 	if out.SampleInterval.Duration != 30*time.Second {
@@ -291,5 +293,38 @@ func TestLoadSSH(t *testing.T) {
 	}
 	if _, err := LoadSSH(path); err == nil {
 		t.Error("LoadSSH must reject an invalid trusted_ips entry")
+	}
+}
+
+func TestAdminUserIDs(t *testing.T) {
+	c := validConfig()
+	c.Telegram.AdminUserIDs = []int64{111, 0, -5}
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "admin_user_ids[1]") || !strings.Contains(err.Error(), "admin_user_ids[2]") {
+		t.Errorf("Validate = %v, want both bad admin IDs reported", err)
+	}
+
+	// Unset, the key is not written, so existing files stay as they are.
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := Save(path, validConfig()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "admin_user_ids") {
+		t.Errorf("empty admin_user_ids written:\n%s", data)
+	}
+
+	if err := os.WriteFile(path, []byte("[telegram]\ntoken = \"t\"\nchat_id = -100\nadmin_user_ids = [7, 8]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(got.Telegram.AdminUserIDs, []int64{7, 8}) {
+		t.Errorf("admin_user_ids = %v", got.Telegram.AdminUserIDs)
 	}
 }

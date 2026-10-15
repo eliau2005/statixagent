@@ -235,6 +235,22 @@ Full details are in [SECURITY.md](SECURITY.md).
   with `0600` permissions.
 - Commands are accepted only from the configured chat ID; state-changing
   actions (`/update_confirm`, `/firewall`) require an explicit confirmation.
+  In a private chat the sender must be the chat's own user. Forwarded
+  messages, messages sent via an inline bot and messages sent on behalf of a
+  chat (anonymous group admins, channels) are ignored.
+- If `chat_id` is a group, list who may change state:
+
+  ```toml
+  [telegram]
+  admin_user_ids = [123456789]
+  ```
+
+  Every member can then use views (status, metrics, navigation buttons), but
+  only these users can run other commands or press other buttons. Without it
+  every member can still do everything, and the bot posts a warning once per
+  start; a future release will require it for groups. Private chats ignore
+  it. Re-running the installer rewrites `[telegram]`, so add it again after a
+  re-install.
 - The systemd unit ships hardened: `NoNewPrivileges`, `ProtectSystem=full`,
   `ProtectHome=read-only`, `PrivateTmp`, a narrow `ReadWritePaths`, and
   `MemoryMax=128M`.

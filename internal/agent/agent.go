@@ -203,6 +203,9 @@ type Agent struct {
 	// boot is when the agent started; text commands sent well before it
 	// were queued while it was down (see queued).
 	boot time.Time
+	// groupNoticeSent records that this process already told a group
+	// chat without admin_user_ids about it. Only botLoop touches it.
+	groupNoticeSent bool
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.

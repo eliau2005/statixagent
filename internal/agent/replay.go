@@ -63,14 +63,30 @@ func (a *Agent) handleUpdate(ctx context.Context, u telegram.Update) {
 		a.handleCallback(ctx, u.Callback)
 		return
 	}
-	if u.ChatID == a.cfg.Telegram.ChatID {
-		if cmd, args, ok := bot.Parse(u.Text); ok && !isView(cmd, args) {
-			if a.queued(u) {
-				a.push(ctx, fmt.Sprintf("⏸ <code>/%s</code> was sent while the agent was offline and was not run. Send it again if you still want it.", esc(cmd)))
-				return
-			}
-			a.commitOffset(ctx)
+	cmd, args, ok := bot.Parse(u.Text)
+	if !ok {
+		return // not a command; Dispatch would ignore it too
+	}
+	view := isView(cmd, args)
+	s := sender{
+		chatID:   u.ChatID,
+		fromID:   u.FromID,
+		chatType: u.ChatType,
+		relayed:  u.Forwarded || u.ViaBot || u.SenderChat,
+	}
+	switch a.authorize(ctx, s, view) {
+	case ignored:
+		return
+	case adminOnly:
+		a.push(ctx, fmt.Sprintf("⛔ Only the users in <code>telegram.admin_user_ids</code> can run <code>/%s</code> here.", esc(cmd)))
+		return
+	}
+	if !view {
+		if a.queued(u) {
+			a.push(ctx, fmt.Sprintf("⏸ <code>/%s</code> was sent while the agent was offline and was not run. Send it again if you still want it.", esc(cmd)))
+			return
 		}
+		a.commitOffset(ctx)
 	}
 	if reply, cmd, ok := a.router.Dispatch(ctx, u); ok {
 		a.reply(ctx, cmd, reply)
