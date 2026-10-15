@@ -10,14 +10,16 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
 // Firewall control: open/close the SSH port through ufw. This is the
 // agent's first remediation action, so it follows MVP §7 strictly — every
-// state change goes through an explicit confirmation screen, and closing
-// SSH warns that shell access will be lost (the bot remains the way back).
+// state change goes through a confirm token (confirm.go), and closing SSH
+// is confirmed twice, warning that shell access will be lost (the bot
+// remains the way back).
 //
 // ufw is optional, and absent more often than not: Alpine, Arch, Debian
 // netinst/cloud images and containers ship without it, and the RHEL family
@@ -285,44 +287,34 @@ func preBlock(out string) string {
 	return "<pre>" + esc(truncate(out, 300)) + "</pre>"
 }
 
-// handleFirewallCallback processes 🛡 buttons; same contract as the other
-// callback handlers.
-func (a *Agent) handleFirewallCallback(ctx context.Context, data string) (string, telegram.Keyboard, string, bool) {
-	switch data {
+// firewallCallback handles 🛡 buttons: the view, and the Open and Close
+// buttons, which open a confirm screen. fw_open and fw_close are the Yes
+// buttons of older versions: they carry the action itself, so they only
+// ever ask again, bound to a fresh token.
+func (a *Agent) firewallCallback(ctx context.Context, cb *telegram.Callback, answered bool) {
+	switch cb.Data {
 	case "firewall":
 		text, kb := a.firewallView(ctx)
-		return text, kb, "", true
-
-	case "fw_close_ask":
-		return "⚠️ <b>Close SSH port 22?</b>\n" +
-				"Active sessions stay up, but <b>new SSH connections will be refused</b>.\n" +
-				"This bot keeps working and can reopen the port.",
-			telegram.Keyboard{
-				{{Text: "✅ Yes, close it", Data: "fw_close"}, {Text: "❌ Cancel", Data: "firewall"}},
-			}, "", true
-
+		a.finishCallback(ctx, cb, answered, text, kb, "")
 	case "fw_open_ask":
-		return "<b>Open SSH port 22?</b>\nIncoming SSH connections will be allowed.",
-			telegram.Keyboard{
-				{{Text: "✅ Yes, open it", Data: "fw_open"}, {Text: "❌ Cancel", Data: "firewall"}},
-			}, "", true
-
-	case "fw_close":
-		return a.applyAndRender(ctx, false)
-
+		a.showConfirm(ctx, cb, answered, actFwOpen, sshPort, false, "")
+	case "fw_close_ask":
+		a.showConfirm(ctx, cb, answered, actFwClose, sshPort, false, "")
 	case "fw_open":
-		return a.applyAndRender(ctx, true)
+		a.showConfirm(ctx, cb, answered, actFwOpen, sshPort, false, reconfirmToast)
+	case "fw_close":
+		a.showConfirm(ctx, cb, answered, actFwClose, sshPort, false, reconfirmToast)
+	default:
+		a.refuseCallback(ctx, cb, answered)
 	}
-	return "", nil, "", false
 }
 
 // applyAndRender runs the rule change and re-renders the firewall view. On
 // failure it prepends a persistent error banner (with the raw ufw output)
-// so the cause stays visible instead of vanishing as a toast.
-func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram.Keyboard, string, bool) {
-	okMsg, fail := a.setSSHPort(ctx, open)
-	var text string
-	var kb telegram.Keyboard
+// so the cause stays visible instead of vanishing as a toast. trace is
+// the rule change that decided the outcome, for the audit log.
+func (a *Agent) applyAndRender(ctx context.Context, open bool) (text string, kb telegram.Keyboard, ok bool, trace *cmdTrace) {
+	trace, fail := a.setSSHPort(ctx, open)
 	if fail == nil {
 		// ufw exiting 0 does not mean the port changed: an app profile,
 		// LIMIT or bare-port rule listed earlier still matches first. Only
@@ -338,9 +330,9 @@ func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram
 		if hint := sandboxHint(fail); hint != "" {
 			banner += hint + "\n"
 		}
-		return banner + text, kb, failedToast, true
+		return banner + text, kb, false, trace
 	}
-	return text, kb, okMsg, true
+	return text, kb, true, trace
 }
 
 // verifySSHPort checks a post-change probe against the intended state of
@@ -419,11 +411,12 @@ func sandboxHint(f *fwFailure) string {
 }
 
 // setSSHPort applies the rule change: the opposite rule is removed first so
-// ufw's first-match ordering cannot mask the new rule. Returns a success
-// toast and, on failure, the structured reason for display.
-func (a *Agent) setSSHPort(ctx context.Context, open bool) (okMsg string, fail *fwFailure) {
+// ufw's first-match ordering cannot mask the new rule. It returns the last
+// rule command run, for the audit log, and on failure the structured
+// reason for display.
+func (a *Agent) setSSHPort(ctx context.Context, open bool) (trace *cmdTrace, fail *fwFailure) {
 	if a.src.Runner == nil {
-		return "", &fwFailure{reason: "firewall control unavailable in this build"}
+		return nil, &fwFailure{reason: "firewall control unavailable in this build"}
 	}
 	// A Telegram inline keyboard stays live on older messages, so a change
 	// can arrive long after the view that offered it — after ufw was
@@ -436,13 +429,13 @@ func (a *Agent) setSSHPort(ctx context.Context, open bool) (okMsg string, fail *
 	// port 22 closed while nothing is enforced.
 	switch p.state {
 	case fwMissing:
-		return "", &fwFailure{reason: "ufw is not installed on this host — the agent cannot change firewall rules here"}
+		return nil, &fwFailure{reason: "ufw is not installed on this host — the agent cannot change firewall rules here"}
 	case fwUnusable:
-		return "", &fwFailure{cmd: p.bin + " status", out: p.out, err: p.err}
+		return nil, &fwFailure{cmd: p.bin + " status", out: p.out, err: p.err}
 	case fwInactive:
-		return "", &fwFailure{reason: "ufw is installed but inactive — a rule added now would not be enforced. Enable it on the server first: ufw enable"}
+		return nil, &fwFailure{reason: "ufw is installed but inactive — a rule added now would not be enforced. Enable it on the server first: ufw enable"}
 	case fwUnparsed:
-		return "", &fwFailure{reason: "the agent could not read this host's ufw state, so it will not change rules blindly"}
+		return nil, &fwFailure{reason: "the agent could not read this host's ufw state, so it will not change rules blindly"}
 	}
 	oldRule, newRule := "deny", "allow"
 	if !open {
@@ -450,18 +443,23 @@ func (a *Agent) setSSHPort(ctx context.Context, open bool) (okMsg string, fail *
 	}
 	// Delete may fail when no such rule exists — that is fine.
 	a.src.Runner.Run(ctx, p.bin, "--force", "delete", oldRule, sshPort)
-	if out, err := a.src.Runner.Run(ctx, p.bin, newRule, sshPort); err != nil {
-		return "", &fwFailure{cmd: "ufw " + newRule + " " + sshPort, out: out, err: err}
+	run := func(args ...string) (*cmdTrace, error) {
+		t := &cmdTrace{argv: append([]string{p.bin}, args...)}
+		start := time.Now()
+		t.out, t.err = a.src.Runner.Run(ctx, p.bin, args...)
+		t.dur = time.Since(start)
+		return t, t.err
+	}
+	if trace, err := run(newRule, sshPort); err != nil {
+		return trace, &fwFailure{cmd: "ufw " + newRule + " " + sshPort, out: trace.out, err: err}
 	}
 	// Re-apply the ruleset: rule edits alone do not reliably reach the
 	// live iptables state on all setups (observed in the field).
-	if out, err := a.src.Runner.Run(ctx, p.bin, "reload"); err != nil {
-		return "", &fwFailure{cmd: "ufw reload", out: out, err: err}
+	trace, err := run("reload")
+	if err != nil {
+		return trace, &fwFailure{cmd: "ufw reload", out: trace.out, err: err}
 	}
-	if open {
-		return "🔓 port 22 opened", nil
-	}
-	return "🔒 port 22 closed", nil
+	return trace, nil
 }
 
 // detail combines command output and error for a readable failure message.

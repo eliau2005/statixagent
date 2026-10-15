@@ -14,8 +14,9 @@ import (
 )
 
 // SSH session control: the 👥 view carries one disconnect button per live
-// session. Like the firewall, every kick goes through an explicit
-// confirmation screen (MVP §7); the kill is SIGKILL on the session's tty.
+// session. Like the firewall, every kick goes through a confirm token
+// (confirm.go), and a second one when it is the only session listed; the
+// kill is SIGKILL on the session's tty.
 
 // ttyPattern guards pkill's argv: utmp bytes come from the wire in
 // principle, so a tty must never look like a flag or shell text.
@@ -26,8 +27,9 @@ func validTTY(tty string) bool {
 }
 
 // sshSessionsView renders the 👥 screen. Kick buttons carry the index plus
-// an identity fingerprint, and sk:/skk: re-resolve them against a fresh
-// Sessions() call, so a shifted list can never retarget a kick.
+// an identity fingerprint, re-resolved against a fresh Sessions() call
+// when pressed and again on Yes, so a shifted list can never retarget a
+// kick.
 func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard) {
 	if a.src.Sessions == nil {
 		return "Session listing unavailable.", navKeyboard("ssh")
@@ -56,72 +58,69 @@ func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard)
 	return bot.Sessions(sessions, geo, a.now()), kb
 }
 
-// handleSSHCallback processes 👥 buttons; same contract as the other
-// callback handlers.
-func (a *Agent) handleSSHCallback(ctx context.Context, data string) (string, telegram.Keyboard, string, bool) {
+// sshCallback handles 👥 buttons: the list, and sk: (Kick), which opens
+// the confirm screen for the session it was drawn for. A skk: button of
+// an older version carries the action itself, so it only ever asks
+// again, bound to a fresh token.
+func (a *Agent) sshCallback(ctx context.Context, cb *telegram.Callback, answered bool) {
+	data := cb.Data
+	var s sshwatch.Session
+	var ok bool
+	toast := ""
 	switch {
 	case data == "ssh":
 		text, kb := a.sshSessionsView(ctx)
-		return text, kb, "", true
+		a.finishCallback(ctx, cb, answered, text, kb, "")
+		return
 
 	case strings.HasPrefix(data, "sk:"):
-		n, fp, ok := parseSessionData(strings.TrimPrefix(data, "sk:"))
-		if !ok || fp == "" {
+		n, fp, valid := parseSessionData(strings.TrimPrefix(data, "sk:"))
+		if !valid || fp == "" {
 			// Legacy sk:<n> or garbage: an index alone names no session.
 			text, kb := a.sshSessionsView(ctx)
-			return text, kb, "List refreshed", true
+			a.finishCallback(ctx, cb, answered, text, kb, "List refreshed")
+			return
 		}
-		s, ok := a.sessionByIdentity(n, fp)
-		if !ok {
-			text, kb := a.sshSessionsView(ctx)
-			return text, kb, "Session changed, refreshed", true
-		}
-		text, kb := kickConfirm(n, s)
-		return text, kb, "", true
+		s, ok = a.sessionByIdentity(n, fp)
 
 	case strings.HasPrefix(data, "skk:"):
-		n, fp, ok := parseSessionData(strings.TrimPrefix(data, "skk:"))
-		if ok && fp == "" {
-			// Legacy skk:<n> from an old keyboard: re-prompt for whatever
-			// sits at that index now, bound to its identity. Never execute.
-			if s, found := a.sessionAt(n); found {
-				text, kb := kickConfirm(n, s)
-				return text, kb, "Please confirm again", true
-			}
-			ok = false
-		}
-		var s sshwatch.Session
-		if ok {
+		n, fp, valid := parseSessionData(strings.TrimPrefix(data, "skk:"))
+		switch {
+		case !valid:
+		case fp == "":
+			// skk:<n> predates fingerprints: ask about whatever sits at
+			// that index now.
+			s, ok = a.sessionAt(n)
+		default:
 			s, ok = a.sessionByIdentity(n, fp)
 		}
-		if !ok {
-			text, kb := a.sshSessionsView(ctx)
-			return text, kb, "Session changed, refreshed", true
-		}
-		okMsg, errDetail := a.kickSession(ctx, s)
-		text, kb := a.sshSessionsView(ctx)
-		if errDetail != "" {
-			banner := "❌ <b>Disconnect failed</b>\n<pre>" + esc(errDetail) + "</pre>\n"
-			banner += kickSandboxHint(errDetail) + "\n"
-			return banner + text, kb, failedToast, true
-		}
-		return text, kb, okMsg, true
+		toast = reconfirmToast
 	}
-	return "", nil, "", false
+	if !ok {
+		text, kb := a.sshSessionsView(ctx)
+		a.finishCallback(ctx, cb, answered, text, kb, sessionGoneToast)
+		return
+	}
+	a.showConfirm(ctx, cb, answered, actKick, sessionFingerprint(s), false, toast)
 }
 
-// kickConfirm renders the disconnect confirmation for session s at 1-based
-// index n; the Yes button is bound to s's identity, not just its position.
-func kickConfirm(n int, s sshwatch.Session) (string, telegram.Keyboard) {
+// kickConfirmText asks before disconnecting session s.
+func kickConfirmText(s sshwatch.Session) string {
 	return "⚠️ <b>Disconnect SSH session?</b>\n" +
-			"<b>" + esc(s.User) + "</b> on <code>" + esc(s.TTY) + "</code> from " + esc(s.Host) +
-			" — connected " + bot.Dur(time.Since(s.Since)) + "\n" +
-			"All processes on this terminal get SIGKILL.\n" +
-			"⚠️ If this is <b>your own session</b>, your shell will be cut off. " +
-			"The bot keeps running and you can reconnect (unless port 22 is closed).",
-		telegram.Keyboard{
-			{{Text: "✅ Yes, disconnect", Data: sessionCallbackData("skk:", n, s)}, {Text: "❌ Cancel", Data: "ssh"}},
-		}
+		"<b>" + esc(s.User) + "</b> on <code>" + esc(s.TTY) + "</code> from " + esc(s.Host) +
+		" — connected " + bot.Dur(time.Since(s.Since)) + "\n" +
+		"All processes on this terminal get SIGKILL.\n" +
+		"⚠️ If this is <b>your own session</b>, your shell will be cut off. " +
+		"The bot keeps running and you can reconnect (unless port 22 is closed)."
+}
+
+// kickOnlyText is the second confirm for the only session listed, which
+// is likely the user's own.
+func kickOnlyText(s sshwatch.Session) string {
+	return "⚠️ <b>This is the only SSH session.</b>\n" +
+		"<b>" + esc(s.User) + "</b> on <code>" + esc(s.TTY) + "</code> from " + esc(s.Host) +
+		" is probably <b>you</b>: your shell will be cut off and nobody stays logged in over SSH.\n" +
+		"The bot keeps running and you can reconnect (unless port 22 is closed)."
 }
 
 // sessionFingerprint identifies one login: a later session on the same tty
@@ -169,6 +168,24 @@ func (a *Agent) sessionAt(n int) (sshwatch.Session, bool) {
 	return sessions[n-1], true
 }
 
+// sessionByFingerprint re-reads the live sessions and returns the one
+// with fingerprint fp, wherever it sits now, and how many are listed.
+func (a *Agent) sessionByFingerprint(fp string) (sshwatch.Session, int, bool) {
+	if a.src.Sessions == nil {
+		return sshwatch.Session{}, 0, false
+	}
+	sessions, err := a.src.Sessions()
+	if err != nil {
+		return sshwatch.Session{}, 0, false
+	}
+	for _, s := range sessions {
+		if sessionFingerprint(s) == fp {
+			return s, len(sessions), true
+		}
+	}
+	return sshwatch.Session{}, len(sessions), false
+}
+
 // sessionByIdentity re-reads the live sessions and returns the nth one only
 // if it is still the login the button was drawn for.
 func (a *Agent) sessionByIdentity(n int, fp string) (sshwatch.Session, bool) {
@@ -181,22 +198,26 @@ func (a *Agent) sessionByIdentity(n int, fp string) (sshwatch.Session, bool) {
 
 // kickSession sends SIGKILL to every process on the session's terminal.
 // pkill exits non-zero both when nothing matched and when signaling failed;
-// empty output means the former — the session is already gone.
-func (a *Agent) kickSession(ctx context.Context, s sshwatch.Session) (okMsg, errDetail string) {
+// empty output means the former — the session is already gone. what is
+// the plain-text outcome; trace is the command, for the audit log.
+func (a *Agent) kickSession(ctx context.Context, s sshwatch.Session) (what, errDetail string, trace *cmdTrace) {
 	if a.src.Runner == nil {
-		return "", "session control unavailable in this build"
+		return "", "session control unavailable in this build", nil
 	}
 	if !validTTY(s.TTY) {
-		return "", "refusing to signal suspicious tty " + s.TTY
+		return "", "refusing to signal suspicious tty " + s.TTY, nil
 	}
-	out, err := a.src.Runner.Run(ctx, "pkill", "-KILL", "-t", s.TTY)
+	trace = &cmdTrace{argv: []string{"pkill", "-KILL", "-t", s.TTY}}
+	start := time.Now()
+	out, err := a.src.Runner.Run(ctx, trace.argv[0], trace.argv[1:]...)
+	trace.out, trace.err, trace.dur = out, err, time.Since(start)
 	switch {
 	case err == nil:
-		return "👢 " + s.User + " disconnected", ""
+		return s.User + " disconnected", "", trace
 	case strings.TrimSpace(out) == "":
-		return "session already gone", ""
+		return "Session already gone", "", trace
 	default:
-		return "", fmt.Sprintf("pkill -KILL -t %s\n%s", s.TTY, detail(out, err))
+		return "", fmt.Sprintf("pkill -KILL -t %s\n%s", s.TTY, detail(out, err)), trace
 	}
 }
 

@@ -57,36 +57,21 @@ func navKeyboard(active string) telegram.Keyboard {
 	return kb
 }
 
-// Confirm buttons of the update and clear-chat prompts. Each Yes press is
-// authorized again on its own, like any other button.
+// Yes and Cancel buttons of the update and clear-chat prompts of older
+// versions. Today's prompts carry confirm tokens (confirm.go); these are
+// still decoded, and a Yes among them only ever asks again.
 const (
 	cbUpdateYes = "upd_yes"
 	cbClearYes  = "clr_yes"
 	cbClearNo   = "clr_no"
 )
 
-// updateKeyboard is attached to "new version available" messages: the
-// offer itself is the confirm, so Install runs the update.
+// updateKeyboard is attached to "new version available" messages. Install
+// opens the confirm screen, whose Yes carries a token.
 func updateKeyboard() telegram.Keyboard {
 	return telegram.Keyboard{{
-		{Text: "⬇️ Install now", Data: cbUpdateYes},
+		{Text: "⬇️ Install now", Data: "update_confirm"},
 		{Text: "Later", Data: "dismiss"},
-	}}
-}
-
-// updateConfirmKeyboard answers a typed /update_confirm.
-func updateConfirmKeyboard() telegram.Keyboard {
-	return telegram.Keyboard{{
-		{Text: "✅ Yes, install", Data: cbUpdateYes},
-		{Text: "❌ Cancel", Data: "dismiss"},
-	}}
-}
-
-// clearConfirmKeyboard answers a typed /clear_chat.
-func clearConfirmKeyboard() telegram.Keyboard {
-	return telegram.Keyboard{{
-		{Text: "✅ Yes, clear", Data: cbClearYes},
-		{Text: "❌ Cancel", Data: cbClearNo},
 	}}
 }
 
@@ -158,19 +143,27 @@ func (a *Agent) stashKB(kb telegram.Keyboard) {
 }
 
 func (a *Agent) popKB() telegram.Keyboard {
+	kb, _ := a.popPending()
+	return kb
+}
+
+// popPending takes the stashed keyboard and the nonce of the confirm
+// token it carries, if any.
+func (a *Agent) popPending() (telegram.Keyboard, string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	kb := a.pendingKB
-	a.pendingKB = nil
-	return kb
+	kb, nonce := a.pendingKB, a.pendingNonce
+	a.pendingKB, a.pendingNonce = nil, ""
+	return kb, nonce
 }
 
 // reply sends a command reply, attaching the handler's stashed keyboard,
 // the navigation keyboard for view commands, or the install button for
-// update offers.
+// update offers. A confirm prompt's token is bound to the message it
+// went out in.
 func (a *Agent) reply(ctx context.Context, cmd, html string) {
 	chatID := a.cfg.Telegram.ChatID
-	kb := a.popKB()
+	kb, nonce := a.popPending()
 	switch {
 	case kb != nil:
 	case navViews[cmd]:
@@ -182,8 +175,13 @@ func (a *Agent) reply(ctx context.Context, cmd, html string) {
 		a.push(ctx, html)
 		return
 	}
-	if _, err := a.send.SendMessageKB(ctx, chatID, html, kb); err != nil {
+	id, err := a.send.SendMessageKB(ctx, chatID, html, kb)
+	if err != nil {
 		log.Printf("agent: reply: %v", err)
+		return
+	}
+	if nonce != "" {
+		a.tokens.Rebind(nonce, id)
 	}
 }
 
@@ -202,9 +200,12 @@ const outdatedToast = "This button is outdated. Send /status for a fresh view."
 // buildLegacy is the table of legacy callback data: every button the bot
 // sends today, and those of older versions still sitting in the chat.
 // Rules are tried in order, most specific first; NewLegacyTable panics at
-// startup if one shadows another. Slow rules (ufw, pkill, the Docker API,
-// the updater) are answered with their Ack before the work starts, so
-// the client spinner stops at once. Data no rule claims is outdated.
+// startup if one shadows another. Slow rules (the Docker API) are
+// answered with their Ack before the work starts, so the client spinner
+// stops at once. Host-changing actions are not here: they run only from
+// a confirm token (confirm.go), and their legacy Yes buttons (fw_open,
+// fw_close, skk:, upd_yes, clr_yes) only ever ask again. Data no rule
+// claims is outdated.
 func (a *Agent) buildLegacy() *tgui.LegacyTable {
 	views := slices.DeleteFunc(slices.Sorted(maps.Keys(navViews)), func(v string) bool {
 		return v == "ssh" || v == "docker" // claimed by earlier rules
@@ -229,25 +230,26 @@ func (a *Agent) buildLegacy() *tgui.LegacyTable {
 				a.finishLive(cb.ChatID, cb.MessageID)
 			}
 		}},
-		tgui.LegacyRule{Name: "firewall-apply", Exact: []string{"fw_close", "fw_open"}, Slow: true, Ack: "Working…",
-			Handle: a.viewCallback(a.handleFirewallCallback)},
-		tgui.LegacyRule{Name: "firewall", Exact: []string{"firewall", "fw_close_ask", "fw_open_ask"},
-			Handle: a.viewCallback(a.handleFirewallCallback)},
-		tgui.LegacyRule{Name: "ssh-kick", Prefixes: []string{"skk:"}, Slow: true, Ack: "Working…",
-			Handle: a.viewCallback(a.handleSSHCallback)},
-		tgui.LegacyRule{Name: "ssh", Exact: []string{"ssh"}, Prefixes: []string{"sk:"},
-			Handle: a.viewCallback(a.handleSSHCallback)},
+		tgui.LegacyRule{Name: "firewall-apply", Exact: []string{"fw_close", "fw_open"}, Handle: a.firewallCallback},
+		tgui.LegacyRule{Name: "firewall", Exact: []string{"firewall", "fw_close_ask", "fw_open_ask"}, Handle: a.firewallCallback},
+		tgui.LegacyRule{Name: "ssh-kick", Prefixes: []string{"skk:"}, Handle: a.sshCallback},
+		tgui.LegacyRule{Name: "ssh", Exact: []string{"ssh"}, Prefixes: []string{"sk:"}, Handle: a.sshCallback},
 		tgui.LegacyRule{Name: "settings", Exact: []string{"settings", "noop", "dg:toggle"}, Prefixes: []string{"dg:hour:", "th:"},
 			Handle: a.viewCallback(a.handleSettingsCallback)},
 		tgui.LegacyRule{Name: "watch", Exact: []string{"watching", "scan_svc", "scan_port"},
 			Prefixes: []string{"sa:", "pa:", "sr:", "xr:", "cr:", "hr:", "pr:"},
 			Handle:   a.viewCallback(a.handleWatchCallback)},
-		tgui.LegacyRule{Name: "update-yes", Exact: []string{cbUpdateYes}, Slow: true, Ack: "Updating…",
-			Handle: a.viewCallback(a.handleConfirmCallback)},
-		tgui.LegacyRule{Name: "clear-yes", Exact: []string{cbClearYes}, Slow: true, Ack: "Clearing…",
-			Handle: a.viewCallback(a.handleConfirmCallback)},
+		// update_confirm is the Install button of an update offer.
+		tgui.LegacyRule{Name: "update-yes", Exact: []string{cbUpdateYes}, Handle: a.askAgain(actUpdate, "agent")},
+		tgui.LegacyRule{Name: "clear-yes", Exact: []string{cbClearYes}, Handle: a.askAgain(actClear, "chat")},
 		tgui.LegacyRule{Name: "confirm", Exact: []string{cbClearNo, "update_confirm"},
-			Handle: a.viewCallback(a.handleConfirmCallback)},
+			Handle: func(ctx context.Context, cb *telegram.Callback, answered bool) {
+				if cb.Data == cbClearNo {
+					a.finishCallback(ctx, cb, answered, "Chat left as it is.", nil, "")
+					return
+				}
+				a.showConfirm(ctx, cb, answered, actUpdate, "agent", false, "")
+			}},
 		// The Docker API can take seconds: stop the spinner first.
 		tgui.LegacyRule{Name: "docker", Exact: []string{"docker"}, Slow: true, Handle: a.navCallback},
 		// Only the views a button emits reach the router; anything else,
@@ -333,29 +335,12 @@ func (a *Agent) navCallback(ctx context.Context, cb *telegram.Callback, answered
 	a.finishCallback(ctx, cb, answered, reply, navKeyboard(cb.Data), "")
 }
 
-// handleConfirmCallback runs the Yes and Cancel buttons of the update and
-// clear-chat prompts.
-func (a *Agent) handleConfirmCallback(ctx context.Context, data string) (string, telegram.Keyboard, string, bool) {
-	switch data {
-	case cbUpdateYes:
-		return a.applyUpdate(ctx), nil, "", true
-	case cbClearYes:
-		// The sweep deletes the prompt too, so the outcome is a new
-		// message rather than an edit.
-		a.push(ctx, a.clearChat(ctx))
-		return "", nil, "", true
-	case cbClearNo:
-		return "Chat left as it is.", nil, "", true
-	case "update_confirm":
-		// The Install button of an older version: ask again rather than
-		// refuse, so an update offer already in the chat still works, but
-		// never install from it directly.
-		if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
-			return "Self-update is not configured in this build.", nil, "", true
-		}
-		return "⬇️ <b>Install the update?</b>\nThe agent will restart.", updateConfirmKeyboard(), "Please confirm again", true
+// askAgain is the rule of a legacy Yes button: it carries the action
+// itself, so it never runs it, only opens a fresh confirm screen.
+func (a *Agent) askAgain(id, target string) tgui.LegacyHandler {
+	return func(ctx context.Context, cb *telegram.Callback, answered bool) {
+		a.showConfirm(ctx, cb, answered, id, target, false, reconfirmToast)
 	}
-	return "", nil, "", false
 }
 
 // finishCallback is the one edit path for button presses. It renders text
@@ -364,8 +349,10 @@ func (a *Agent) handleConfirmCallback(ctx context.Context, data string) (string,
 // view is answered after the edit so a failed edit can say so; slow work
 // was answered before it ran, so its outcome toast becomes a line above
 // the view instead. A failed edit falls back to a new message: the press
-// is never silently lost.
-func (a *Agent) finishCallback(ctx context.Context, cb *telegram.Callback, answered bool, text string, kb telegram.Keyboard, toast string) {
+// is never silently lost. It returns the message the view is in now: the
+// pressed one, the fallback, or 0 when none.
+func (a *Agent) finishCallback(ctx context.Context, cb *telegram.Callback, answered bool, text string, kb telegram.Keyboard, toast string) int64 {
+	id := cb.MessageID
 	if text != "" {
 		if answered && toast != "" && toast != failedToast {
 			text = esc(toast) + "\n" + text
@@ -373,8 +360,10 @@ func (a *Agent) finishCallback(ctx context.Context, cb *telegram.Callback, answe
 		// "Message is not modified" is already success in the client.
 		if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
 			log.Printf("agent: edit failed, sending as new message: %v", err)
-			if _, err := a.send.SendMessageKB(ctx, cb.ChatID, text, kb); err != nil {
-				log.Printf("agent: edit fallback: %v", err)
+			var sendErr error
+			if id, sendErr = a.send.SendMessageKB(ctx, cb.ChatID, text, kb); sendErr != nil {
+				log.Printf("agent: edit fallback: %v", sendErr)
+				id = 0
 			}
 			if toast == "" {
 				toast = editFailedToast
@@ -384,6 +373,7 @@ func (a *Agent) finishCallback(ctx context.Context, cb *telegram.Callback, answe
 	if !answered {
 		a.answer(ctx, cb, toast)
 	}
+	return id
 }
 
 // answer acknowledges a button press, stopping the client spinner; a

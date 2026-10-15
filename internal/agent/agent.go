@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"net/netip"
@@ -89,6 +90,9 @@ type Sources struct {
 	// state-changing update runs, so a restart does not replay it (see
 	// replay.go); empty means Telegram is asked to confirm it instead.
 	OffsetPath string
+	// AuditPath is the JSON-lines log of host-changing actions (see
+	// audit.go); empty means no audit file, only log lines.
+	AuditPath string
 	// ListListeners returns the local TCP ports in LISTEN state.
 	ListListeners func() ([]int, error)
 
@@ -124,6 +128,12 @@ type Agent struct {
 	ui *tgui.Registry
 	// legacy routes all other callback data (see handleCallback).
 	legacy *tgui.LegacyTable
+	// tokens holds the pending confirm tokens of this process, and
+	// confirms the actions they can run (confirm.go).
+	tokens   *tgui.Tokens
+	confirms map[string]confirmAction
+	// audit records every step of those actions; nil writes nothing.
+	audit *auditLog
 
 	// trusted is the merged matcher for ssh.trusted_ips (configTrusted,
 	// static) and the bot-managed trustStore; non-root logins from these
@@ -166,6 +176,9 @@ type Agent struct {
 	// reply and consumed by reply(). Safe because updates are processed
 	// sequentially. Guarded by mu.
 	pendingKB telegram.Keyboard
+	// pendingNonce is the confirm token pendingKB carries, bound to the
+	// reply's message once it is sent. Guarded by mu.
+	pendingNonce string
 
 	// snoozeKeys maps truncated SHA-256 digest → alert key for snz:h:<digest> callbacks.
 	// Guarded by mu.
@@ -261,6 +274,10 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	a.router = a.buildRouter()
 	a.ui = a.buildScreens()
 	a.legacy = a.buildLegacy()
+	// The clock is read through a.now, which tests override.
+	a.tokens = tgui.NewTokens(func() time.Time { return a.now() }, rand.Reader)
+	a.confirms = a.buildConfirms()
+	a.audit = newAuditLog(src.AuditPath)
 	return a
 }
 
@@ -873,7 +890,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			return "Self-update is not configured in this build."
 		}
 		if len(args) > 0 && strings.EqualFold(args[0], "confirm") {
-			return a.updatePrompt() // legacy "/update confirm" form
+			return a.typedConfirm(ctx, actUpdate, "agent") // legacy "/update confirm" form
 		}
 		ver, available, err := a.src.UpdateCheck(ctx)
 		if err != nil {
@@ -885,55 +902,32 @@ func (a *Agent) buildRouter() *bot.Router {
 		return "New version available: <b>" + esc(ver) + "</b>\nTap /update_confirm to install."
 	})
 	// Typed /update_confirm and /clear_chat only ask: the action runs from
-	// the Yes button, which goes through authorize again when pressed.
+	// the Yes button's confirm token, which goes through authorize again
+	// when pressed and only for the user who typed the command.
 	r.Handle("update_confirm", func(ctx context.Context, _ []string) string {
-		return a.updatePrompt()
+		return a.typedConfirm(ctx, actUpdate, "agent")
 	})
 	r.Handle("clear_chat", func(ctx context.Context, _ []string) string {
-		a.stashKB(clearConfirmKeyboard())
-		return "🧹 <b>Delete recent messages?</b>\nThe last 300 messages in this chat are deleted (Telegram only allows it for messages under 48 hours old)."
+		return a.typedConfirm(ctx, actClear, "chat")
 	})
 	a.registerWatchHandlers(r)
 	a.registerTrustHandlers(r)
 	return r
 }
 
-// updatePrompt asks before installing an update; the Yes button runs it.
-func (a *Agent) updatePrompt() string {
-	if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
-		return "Self-update is not configured in this build."
-	}
-	a.stashKB(updateConfirmKeyboard())
-	return "⬇️ <b>Install the update?</b>\nThe agent will restart."
-}
-
-// applyUpdate installs the update; the agent restarts on success.
-func (a *Agent) applyUpdate(ctx context.Context) string {
-	if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
-		return "Self-update is not configured in this build."
-	}
-	if err := a.src.UpdateApply(ctx); err != nil {
-		return "Update failed: " + esc(err.Error())
-	}
-	return "Updating — the agent will restart."
-}
-
 // clearChat deletes the last 300 messages of the chat: it sends an anchor
 // to learn the newest message ID and sweeps back from it.
-func (a *Agent) clearChat(ctx context.Context) string {
+func (a *Agent) clearChat(ctx context.Context) error {
 	chatID := a.cfg.Telegram.ChatID
 	anchor, err := a.send.SendMessageID(ctx, chatID, "🧹")
 	if err != nil {
-		return "Could not clear: " + esc(err.Error())
+		return err
 	}
 	ids := make([]int64, 0, 301)
 	for id := anchor; id > anchor-301 && id > 0; id-- {
 		ids = append(ids, id)
 	}
-	if err := a.send.DeleteMessages(ctx, chatID, ids); err != nil {
-		return "Could not clear: " + esc(err.Error())
-	}
-	return "🧹 cleared"
+	return a.send.DeleteMessages(ctx, chatID, ids)
 }
 
 // fmtLatency renders a dial time at a precision that matches its size.

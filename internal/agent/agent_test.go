@@ -19,6 +19,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 type edit struct {
@@ -286,10 +287,11 @@ func TestUpdateCommandFlow(t *testing.T) {
 	if applied || !strings.Contains(reply, "Install the update?") {
 		t.Fatalf("/update confirm: applied=%v reply=%q", applied, reply)
 	}
-	if yes := lastKeyboard(send)[0][0].Data; yes != cbUpdateYes {
-		t.Fatalf("/update confirm Yes = %q", yes)
+	yes := tokenData(lastKeyboard(send), tgui.ActYes)
+	if yes == "" {
+		t.Fatalf("/update confirm keyboard = %+v", lastKeyboard(send))
 	}
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 9, Data: cbUpdateYes})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: lastSentID(send), Data: yes})
 	if !applied || !strings.Contains(send.lastEdit().html, "restart") {
 		t.Errorf("Yes: applied=%v edit=%q", applied, send.lastEdit().html)
 	}
@@ -473,7 +475,7 @@ func TestWatchWithoutConfigPath(t *testing.T) {
 }
 
 // TestUpdateConfirmCommand: typed /update_confirm only asks; the update
-// runs from the Yes button, and Cancel leaves it alone.
+// runs from the Yes button, and Cancel spends the token.
 func TestUpdateConfirmCommand(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
@@ -491,15 +493,24 @@ func TestUpdateConfirmCommand(t *testing.T) {
 	if applied != 0 || !send.find("Install the update?") {
 		t.Fatalf("/update_confirm: applied=%d sent=%v", applied, send.all())
 	}
-	kb := lastKeyboard(send)
-	if len(kb) != 1 || len(kb[0]) != 2 || kb[0][0].Data != cbUpdateYes || kb[0][1].Data != "dismiss" {
+	kb, msg := lastKeyboard(send), lastSentID(send)
+	if len(kb) != 1 || len(kb[0]) != 2 || tokenData(kb, tgui.ActYes) != kb[0][0].Data || tokenData(kb, tgui.ActNo) != kb[0][1].Data {
 		t.Fatalf("confirm keyboard = %+v", kb)
 	}
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, ChatType: "private", FromID: 42, MessageID: 9, Data: "dismiss"})
+	press := func(id, data string) {
+		a.handleCallback(ctx, &telegram.Callback{ID: id, ChatID: 42, ChatType: "private", FromID: 42, MessageID: msg, Data: data})
+	}
+	press("c1", kb[0][1].Data)
 	if applied != 0 || !strings.Contains(send.lastEdit().html, "postponed") {
 		t.Fatalf("Cancel: applied=%d edit=%q", applied, send.lastEdit().html)
 	}
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, ChatType: "private", FromID: 42, MessageID: 9, Data: cbUpdateYes})
+	press("c2", kb[0][0].Data)
+	if applied != 0 || !strings.Contains(send.lastEdit().html, staleText) {
+		t.Fatalf("Yes after Cancel: applied=%d edit=%q", applied, send.lastEdit().html)
+	}
+	a.handleUpdate(ctx, telegram.Update{ChatID: 42, ChatType: "private", FromID: 42, Text: "/update_confirm"})
+	kb, msg = lastKeyboard(send), lastSentID(send)
+	press("c3", kb[0][0].Data)
 	if applied != 1 || !strings.Contains(send.lastEdit().html, "restart") {
 		t.Errorf("Yes: applied=%d edit=%q", applied, send.lastEdit().html)
 	}
@@ -520,28 +531,30 @@ func TestClearChat(t *testing.T) {
 		t.Fatalf("/clear_chat: deleted=%d sent=%v", deleted, send.all())
 	}
 	kb := lastKeyboard(send)
-	if len(kb) != 1 || len(kb[0]) != 2 || kb[0][0].Data != cbClearYes || kb[0][1].Data != cbClearNo {
+	if len(kb) != 1 || len(kb[0]) != 2 || tokenData(kb, tgui.ActYes) != kb[0][0].Data || tokenData(kb, tgui.ActNo) != kb[0][1].Data {
 		t.Fatalf("confirm keyboard = %+v", kb)
 	}
 
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 1001, Data: cbClearNo})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, ChatType: "private", FromID: 42, MessageID: lastSentID(send), Data: kb[0][1].Data})
 	if !strings.Contains(send.lastEdit().html, "left as it is") {
 		t.Errorf("Cancel edit = %q", send.lastEdit().html)
 	}
 
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 1001, Data: cbClearYes})
+	a.handleUpdate(ctx, telegram.Update{ChatID: 42, ChatType: "private", FromID: 42, Text: "/clear_chat"})
+	prompt := lastSentID(send)
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, ChatType: "private", FromID: 42, MessageID: prompt, Data: tokenData(lastKeyboard(send), tgui.ActYes)})
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	if len(send.deleted) != 301 {
 		t.Fatalf("deleted %d ids, want 301", len(send.deleted))
 	}
-	if send.deleted[0] != 1002 { // anchor message id from the fake
+	if send.deleted[0] != prompt+1 { // anchor message id from the fake
 		t.Errorf("sweep must start at the anchor id, got %d", send.deleted[0])
 	}
-	if last := send.sent[len(send.sent)-1]; last != "🧹 cleared" {
-		t.Errorf("outcome = %q, want a new 🧹 cleared message", last)
+	if last := send.sent[len(send.sent)-1]; !strings.HasPrefix(last, "🧾 Chat cleared · last 300 messages · by 42 · ") || !strings.HasSuffix(last, "\n🧹 cleared") {
+		t.Errorf("outcome = %q, want a new message with the receipt", last)
 	}
-	if got := send.answered[len(send.answered)-1]; got != "c2:Clearing…" {
+	if got := send.answered[len(send.answered)-1]; got != "c2:Working…" {
 		t.Errorf("Yes answered %q", got)
 	}
 }
@@ -640,14 +653,18 @@ func TestUpdateOfferKeyboardAndInstallButton(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != cbUpdateYes {
+	if kb == nil || kb[0][0].Data != "update_confirm" {
 		t.Fatalf("update offer keyboard = %+v", kb)
 	}
 
-	// Pressing Install runs the update; pressing Later dismisses.
-	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: cbUpdateYes})
+	// Pressing Install asks; its Yes runs the update; Later dismisses.
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: "update_confirm"})
+	if applied {
+		t.Fatal("install button must ask before applying")
+	}
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb2y", ChatID: 42, MessageID: 9, Data: tokenData(lastEditKB(send), tgui.ActYes)})
 	if !applied {
-		t.Error("install button must apply the update")
+		t.Error("Yes must apply the update")
 	}
 	a.handleCallback(ctx, &telegram.Callback{ID: "cb3", ChatID: 42, MessageID: 9, Data: "dismiss"})
 	send.mu.Lock()
@@ -1140,12 +1157,18 @@ func TestFirewallFlow(t *testing.T) {
 		t.Fatal("confirmation screen must not run ufw commands")
 	}
 	last := send.lastEdit()
-	if !strings.Contains(last.html, "new SSH connections will be refused") || last.kb[0][0].Data != "fw_close" {
+	if !strings.Contains(last.html, "new SSH connections will be refused") || tokenData(last.kb, tgui.ActYes) == "" {
 		t.Fatalf("ask view = %q kb=%+v", last.html, last.kb)
 	}
 
-	// Confirming closes: delete allow, then deny, then re-render as closed.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 8, Data: "fw_close"})
+	// Closing SSH is confirmed twice; the first Yes changes nothing.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 8, Data: tokenData(last.kb, tgui.ActYes)})
+	last = send.lastEdit()
+	if len(ufw.calls) != rulesBefore || !strings.Contains(last.html, "Last check") {
+		t.Fatalf("first Yes: calls=%v view=%q", ufw.calls, last.html)
+	}
+	// Confirming again closes: delete allow, then deny, then re-render as closed.
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2b", ChatID: 42, MessageID: 8, Data: tokenData(last.kb, tgui.ActYes)})
 	if ufw.state != "closed" {
 		t.Fatalf("ufw state = %s", ufw.state)
 	}
@@ -1162,9 +1185,8 @@ func TestFirewallFlow(t *testing.T) {
 		t.Errorf("after close view = %q", last.html)
 	}
 
-	// Reopen via the same two-step flow.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c3", ChatID: 42, MessageID: 8, Data: "fw_open_ask"})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 8, Data: "fw_open"})
+	// Reopening takes one confirm.
+	confirmThrough(t, a, send, "fw_open_ask", 8)
 	if ufw.state != "open" {
 		t.Fatalf("ufw state after reopen = %s", ufw.state)
 	}
@@ -1185,9 +1207,8 @@ func TestFirewallChangeFailureIsVisible(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	a.src.Runner = failingUFW{}
-	ctx := context.Background()
 
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+	id := confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "Change failed") || !strings.Contains(last.html, "read-only file system") {
@@ -1199,7 +1220,7 @@ func TestFirewallChangeFailureIsVisible(t *testing.T) {
 	}
 	// The press was acknowledged before ufw ran; the banner alone carries
 	// the failure, with no redundant toast line above it.
-	if out := slowOutcome(t, send, "c1"); strings.Contains(out, failedToast) {
+	if out := slowOutcome(t, send, id); strings.Contains(out, failedToast) {
 		t.Errorf("failure toast echoed into the message: %q", out)
 	}
 }
@@ -1289,10 +1310,10 @@ func TestFirewallMissingUFWBlocksChange(t *testing.T) {
 	a := testAgent(send)
 	runner := &missingUFW{}
 	a.src.Runner = runner
-	// Telegram keeps inline keyboards live on old messages, so fw_close can
-	// arrive long after the view that offered it — or after ufw was removed.
-	// The action path must refuse on its own.
-	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+	// Telegram keeps inline keyboards live on old messages, so a confirm
+	// can be pressed after ufw was removed. The action path must refuse
+	// on its own.
+	confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "ufw is not installed") {
@@ -1325,7 +1346,7 @@ func TestFirewallBlockedBinaryGetsNoSandboxHint(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	a.src.Runner = blockedUFW{}
-	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+	confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "permission denied") {
@@ -1346,13 +1367,13 @@ func TestFirewallInactiveBlocksChange(t *testing.T) {
 	// The view was rendered while ufw was active, then someone ran
 	// `ufw disable`. Writing the rule anyway would report "port 22 closed"
 	// while nothing is enforced.
-	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+	confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "would not be enforced") {
 		t.Errorf("inactive ufw must refuse the change: %q", last.html)
 	}
-	if strings.Contains(last.html, "🔒 port 22 closed") {
+	if strings.Contains(last.html, "Port 22 closed") {
 		t.Errorf("must not claim a change that is not enforced: %q", last.html)
 	}
 }
@@ -1508,7 +1529,6 @@ func TestSSHKickFlow(t *testing.T) {
 	send.mu.Unlock()
 	sessions := sshTestSessions()
 	wantSK1 := sessionCallbackData("sk:", 1, sessions[0])
-	wantSKK1 := sessionCallbackData("skk:", 1, sessions[0])
 	if kb == nil || kb[0][0].Data != wantSK1 || kb[1][0].Data != sessionCallbackData("sk:", 2, sessions[1]) {
 		t.Fatalf("ssh keyboard = %+v", kb)
 	}
@@ -1525,12 +1545,12 @@ func TestSSHKickFlow(t *testing.T) {
 	if !strings.Contains(last.html, "Disconnect SSH session?") || !strings.Contains(last.html, "alice") {
 		t.Fatalf("ask view = %q", last.html)
 	}
-	if last.kb[0][0].Data != wantSKK1 || last.kb[0][1].Data != "ssh" {
+	if last.kb[0][0].Data != tokenData(last.kb, tgui.ActYes) || last.kb[0][1].Data != tokenData(last.kb, tgui.ActNo) {
 		t.Fatalf("ask keyboard = %+v", last.kb)
 	}
 
 	// Confirming kicks the chosen tty and re-renders the list.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: wantSKK1})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: last.kb[0][0].Data})
 	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != "pkill -KILL -t pts/0" {
 		t.Fatalf("runner calls = %v", runner.calls)
 	}
@@ -1568,47 +1588,58 @@ func TestSSHKickStaleIndex(t *testing.T) {
 }
 
 // TestSSHKickIdentity checks that a kick button only ever reaches the login
-// it was drawn for, whatever happens to the list between the two taps.
+// it was drawn for, whatever happens to the list between the taps.
 func TestSSHKickIdentity(t *testing.T) {
 	alice, bob := sshTestSessions()[0], sshTestSessions()[1]
 	aliceAgain := alice
 	aliceAgain.Since = alice.Since.Add(30 * time.Second) // re-login on pts/0
+	both := []sshwatch.Session{alice, bob}
 	cases := []struct {
 		name      string
-		data      string
-		after     []sshwatch.Session // live sessions at tap time
+		data      string             // the Kick button pressed
+		before    []sshwatch.Session // live sessions at Kick time
+		after     []sshwatch.Session // at Yes time; nil = no Yes is offered
 		wantKill  string             // tty signalled, "" = none
-		wantToast string
-		wantYes   string // re-prompt's Yes button, "" = no prompt
+		wantToast string             // ask's answer, or the outcome on Yes
 	}{
-		{"confirm same login", sessionCallbackData("skk:", 1, alice),
-			[]sshwatch.Session{alice, bob}, "pts/0", "disconnected", ""},
-		{"list shifted under index", sessionCallbackData("skk:", 1, alice),
-			[]sshwatch.Session{bob}, "", "Session changed, refreshed", ""},
-		{"same tty new login", sessionCallbackData("skk:", 1, alice),
-			[]sshwatch.Session{aliceAgain, bob}, "", "Session changed, refreshed", ""},
+		{"confirm same login", sessionCallbackData("sk:", 1, alice),
+			both, both, "pts/0", "disconnected"},
+		{"list shifted under index", sessionCallbackData("sk:", 1, alice),
+			both, []sshwatch.Session{bob, alice}, "pts/0", "disconnected"},
+		{"login gone", sessionCallbackData("sk:", 1, alice),
+			both, []sshwatch.Session{bob}, "", sessionGoneToast},
+		{"same tty new login", sessionCallbackData("sk:", 1, alice),
+			both, []sshwatch.Session{aliceAgain, bob}, "", sessionGoneToast},
 		{"ask after shift", sessionCallbackData("sk:", 2, bob),
-			[]sshwatch.Session{bob}, "", "Session changed, refreshed", ""},
+			[]sshwatch.Session{bob}, nil, "", sessionGoneToast},
 		{"bad fingerprint", "skk:1:zzzzzzzzzzzzzzzz",
-			[]sshwatch.Session{alice}, "", "Session changed, refreshed", ""},
+			[]sshwatch.Session{alice}, nil, "", sessionGoneToast},
 		{"legacy sk refreshes", "sk:1",
-			[]sshwatch.Session{alice}, "", "List refreshed", ""},
-		{"legacy skk re-prompts", "skk:1",
-			[]sshwatch.Session{bob}, "", "Please confirm again", sessionCallbackData("skk:", 1, bob)},
+			[]sshwatch.Session{alice}, nil, "", "List refreshed"},
 		{"legacy skk out of range", "skk:3",
-			[]sshwatch.Session{alice}, "", "Session changed, refreshed", ""},
+			[]sshwatch.Session{alice}, nil, "", sessionGoneToast},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			send := &fakeSender{}
-			a := testAgent(send)
-			runner := &kickRunner{}
-			a.src.Runner = runner
-			live := tc.after
-			a.src.Sessions = sessionsFrom(&live)
+			live := tc.before
+			a, send, runner := kickAgent(t, &live)
 			ctx := context.Background()
 
 			a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: tc.data})
+			yes := tokenData(lastEditKB(send), tgui.ActYes)
+			var feedback string
+			if tc.after == nil {
+				send.mu.Lock()
+				feedback = send.answered[len(send.answered)-1]
+				send.mu.Unlock()
+				if yes != "" {
+					t.Fatalf("%q offered a Yes", tc.data)
+				}
+			} else {
+				live = tc.after
+				a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: yes})
+				feedback = slowOutcome(t, send, "c2")
+			}
 			var killed string
 			if len(runner.calls) == 1 {
 				killed = runner.calls[0][len(runner.calls[0])-1]
@@ -1618,48 +1649,23 @@ func TestSSHKickIdentity(t *testing.T) {
 			if killed != tc.wantKill {
 				t.Errorf("killed %q, want %q", killed, tc.wantKill)
 			}
-			// A Yes press (skk:) is slow: answered first, outcome in the edit.
-			var feedback string
-			if strings.HasPrefix(tc.data, "skk:") {
-				feedback = slowOutcome(t, send, "c1")
-			} else {
-				send.mu.Lock()
-				feedback = send.answered[len(send.answered)-1]
-				send.mu.Unlock()
-			}
 			if !strings.Contains(feedback, tc.wantToast) {
 				t.Errorf("feedback = %q, want %q", feedback, tc.wantToast)
-			}
-			last := send.lastEdit()
-			if tc.wantYes != "" {
-				if !strings.Contains(last.html, "Disconnect SSH session?") || last.kb[0][0].Data != tc.wantYes {
-					t.Errorf("re-prompt = %q %+v", last.html, last.kb)
-				}
-			}
-			for _, row := range last.kb {
-				for _, b := range row {
-					if len(b.Data) > 64 {
-						t.Errorf("callback_data %q exceeds 64 bytes", b.Data)
-					}
-				}
 			}
 		})
 	}
 }
 
-// TestSSHKickDoubleTap: the second Yes finds the session gone and must not
-// signal the tty again (it may already belong to someone else).
+// TestSSHKickDoubleTap: the second Yes never signals the tty again (it
+// may already belong to someone else).
 func TestSSHKickDoubleTap(t *testing.T) {
-	send := &fakeSender{}
-	a := testAgent(send)
 	alice, bob := sshTestSessions()[0], sshTestSessions()[1]
 	live := []sshwatch.Session{alice, bob}
-	a.src.Sessions = sessionsFrom(&live)
-	runner := &kickRunner{}
-	a.src.Runner = runner
+	a, send, runner := kickAgent(t, &live)
 	ctx := context.Background()
-	yes := sessionCallbackData("skk:", 1, alice)
 
+	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 7, Data: sessionCallbackData("sk:", 1, alice)})
+	yes := tokenData(lastEditKB(send), tgui.ActYes)
 	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 7, Data: yes})
 	live = []sshwatch.Session{bob} // alice is gone; bob moves to index 1
 	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 7, Data: yes})
@@ -1667,8 +1673,10 @@ func TestSSHKickDoubleTap(t *testing.T) {
 	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != "pkill -KILL -t pts/0" {
 		t.Fatalf("runner calls = %v", runner.calls)
 	}
-	if out := slowOutcome(t, send, "c2"); !strings.Contains(out, "Session changed, refreshed") {
-		t.Errorf("second tap outcome = %q", out)
+	send.mu.Lock()
+	defer send.mu.Unlock()
+	if got := send.answered[len(send.answered)-1]; got != "c2:"+doneToast {
+		t.Errorf("second tap answered %q", got)
 	}
 }
 
@@ -1711,7 +1719,7 @@ func TestSSHKickFailureIsVisible(t *testing.T) {
 	ctx := context.Background()
 
 	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 4, Data: "ssh"})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: sessionCallbackData("skk:", 1, sshTestSessions()[0])})
+	id := confirmThrough(t, a, send, sessionCallbackData("sk:", 1, sshTestSessions()[0]), 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "Disconnect failed") || !strings.Contains(last.html, "Operation not permitted") {
@@ -1720,8 +1728,8 @@ func TestSSHKickFailureIsVisible(t *testing.T) {
 	if !strings.Contains(last.html, "lacks permission") {
 		t.Errorf("permission failure must include the hint, got: %q", last.html)
 	}
-	if out := slowOutcome(t, send, "c1"); strings.Contains(out, failedToast) {
-		t.Errorf("failure toast echoed into the message: %q", out)
+	if out := slowOutcome(t, send, id); strings.Contains(out, failedToast) || !strings.Contains(out, " · failed\n") {
+		t.Errorf("failure toast echoed, or no failed receipt: %q", out)
 	}
 }
 
@@ -1740,12 +1748,12 @@ func TestSSHKickAlreadyGone(t *testing.T) {
 	ctx := context.Background()
 
 	a.handleCallback(ctx, &telegram.Callback{ID: "c0", ChatID: 42, MessageID: 4, Data: "ssh"})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: sessionCallbackData("skk:", 1, sshTestSessions()[0])})
+	id := confirmThrough(t, a, send, sessionCallbackData("sk:", 1, sshTestSessions()[0]), 4)
 
 	if last := send.lastEdit(); strings.Contains(last.html, "Disconnect failed") {
 		t.Errorf("vanished session is not a failure: %q", last.html)
 	}
-	if out := slowOutcome(t, send, "c1"); !strings.Contains(out, "already gone") {
+	if out := slowOutcome(t, send, id); !strings.Contains(out, "already gone") {
 		t.Errorf("kick outcome = %q", out)
 	}
 }

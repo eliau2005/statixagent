@@ -16,6 +16,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // Characterization goldens: today's keyboards and texts, pinned before
@@ -148,10 +149,19 @@ func TestGoldenFirewall(t *testing.T) {
 		text, kb := a.firewallView(context.Background())
 		checkGolden(t, "firewall__"+tc.name, text, kb)
 	}
-	a := testAgent(&fakeSender{})
 	for _, data := range []string{"fw_close_ask", "fw_open_ask"} {
-		text, kb, _, _ := a.handleFirewallCallback(context.Background(), data)
-		checkGolden(t, "firewall__"+data, text, kb)
+		send := &fakeSender{}
+		a := testAgent(send)
+		// Fixed randomness: the screen's tokens are part of the golden.
+		a.tokens = tgui.NewTokens(a.now, strings.NewReader(strings.Repeat("statix-golden-", 8)))
+		a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: data})
+		checkGolden(t, "firewall__"+data, send.lastEdit().html, send.lastEdit().kb)
+		if data == "fw_close_ask" {
+			// Closing SSH is confirmed twice, the second time in other words.
+			yes := tokenData(send.lastEdit().kb, tgui.ActYes)
+			a.handleCallback(context.Background(), &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 5, Data: yes})
+			checkGolden(t, "firewall__fw_close_final", send.lastEdit().html, send.lastEdit().kb)
+		}
 	}
 }
 

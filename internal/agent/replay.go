@@ -88,7 +88,8 @@ func (a *Agent) handleUpdate(ctx context.Context, u telegram.Update) {
 		}
 		a.commitOffset(ctx)
 	}
-	if reply, cmd, ok := a.router.Dispatch(ctx, u); ok {
+	// A confirm the command asks for is bound to its sender.
+	if reply, cmd, ok := a.router.Dispatch(withActor(ctx, u.FromID), u); ok {
 		a.reply(ctx, cmd, reply)
 	}
 }

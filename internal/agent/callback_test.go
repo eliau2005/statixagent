@@ -13,6 +13,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // slowOutcome checks that slow press id was answered exactly once, with
@@ -99,16 +100,18 @@ func TestCallbackEditFailureKeepsHandlerToast(t *testing.T) {
 	}
 }
 
+// TestSlowCallbacksAnswerBeforeWork: a confirmed action is answered
+// before its command runs, exactly once.
 func TestSlowCallbacksAnswerBeforeWork(t *testing.T) {
 	cases := []struct {
 		name  string
-		data  string
+		data  string // the button that opens the confirm screen
 		setup func(a *Agent, send *fakeSender)
 	}{
-		{"firewall apply", "fw_close", func(a *Agent, send *fakeSender) {
+		{"firewall apply", "fw_close_ask", func(a *Agent, send *fakeSender) {
 			a.src.Runner = eventRunner{send, failingUFW{}}
 		}},
-		{"ssh kick", sessionCallbackData("skk:", 1, sshTestSessions()[0]), func(a *Agent, send *fakeSender) {
+		{"ssh kick", sessionCallbackData("sk:", 1, sshTestSessions()[0]), func(a *Agent, send *fakeSender) {
 			a.src.Runner = eventRunner{send, &kickRunner{}}
 			a.src.Sessions = func() ([]sshwatch.Session, error) { return sshTestSessions()[:1], nil }
 		}},
@@ -118,7 +121,18 @@ func TestSlowCallbacksAnswerBeforeWork(t *testing.T) {
 			send := &fakeSender{}
 			a := testAgent(send)
 			tc.setup(a, send)
-			a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: tc.data})
+			ctx := context.Background()
+			a.handleCallback(ctx, &telegram.Callback{ID: "ask", ChatID: 42, MessageID: 5, Data: tc.data})
+			// Both cases are double confirmed; the first Yes runs nothing.
+			a.handleCallback(ctx, &telegram.Callback{ID: "yes1", ChatID: 42, MessageID: 5, Data: tokenData(lastEditKB(send), tgui.ActYes)})
+			if slices.Contains(send.eventLog(), "run") {
+				t.Fatalf("a confirm screen ran a command: %v", send.eventLog())
+			}
+			yes := tokenData(lastEditKB(send), tgui.ActYes)
+			send.mu.Lock()
+			send.events = nil
+			send.mu.Unlock()
+			a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: yes})
 
 			events := send.eventLog()
 			run := slices.Index(events, "run")
@@ -164,13 +178,12 @@ func TestSlowOutcomeBecomesBanner(t *testing.T) {
 	a := testAgent(send)
 	s := sshTestSessions()[0]
 	s.User = "<evil>"
-	a.src.Sessions = func() ([]sshwatch.Session, error) { return []sshwatch.Session{s}, nil }
+	a.src.Sessions = func() ([]sshwatch.Session, error) { return []sshwatch.Session{s, sshTestSessions()[1]}, nil }
 	a.src.Runner = &kickRunner{}
-	a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5,
-		Data: sessionCallbackData("skk:", 1, s)})
-	out := slowOutcome(t, send, "c1")
-	if !strings.HasPrefix(out, "👢 &lt;evil&gt; disconnected\n") {
-		t.Errorf("outcome banner = %q", out)
+	id := confirmThrough(t, a, send, sessionCallbackData("sk:", 1, s), 5)
+	out := slowOutcome(t, send, id)
+	if !strings.HasPrefix(out, "🧾 &lt;evil&gt; disconnected · &lt;evil&gt; pts/0 from 10.0.0.5 · ") {
+		t.Errorf("outcome receipt = %q", out)
 	}
 }
 
@@ -180,7 +193,8 @@ func TestEveryCallbackAnsweredOnce(t *testing.T) {
 	datas := []string{
 		"cpu", "status", "ssh", "sk:1", "skk:1:zzzzzzzzzzzzzzzz", "firewall", "fw_close_ask",
 		"fw_close", "settings", "watching", "dismiss", "live_stop", "snz:d:cpu", "snz:h:",
-		"docker", "no_such_action", "noop",
+		"docker", "no_such_action", "noop", "update_confirm", cbUpdateYes, cbClearYes, cbClearNo,
+		"~1y|AAAAAAAAAAAAAAAA", "~1y|short", "~1y", "~1n|AAAAAAAAAAAA", "~1n",
 	}
 	for _, editErr := range []error{nil, errors.New("Bad Request: message to edit not found")} {
 		for _, data := range datas {

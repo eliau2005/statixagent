@@ -162,6 +162,7 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 		KnownKeysPath: filepath.Join(filepath.Dir(cfgPath), "known_keys"),
 		TrustPath:     filepath.Join(filepath.Dir(cfgPath), "trusted_ips"),
 		OffsetPath:    filepath.Join(filepath.Dir(cfgPath), "tg-offset"),
+		AuditPath:     filepath.Join(filepath.Dir(cfgPath), "audit", "actions.jsonl"),
 		ListListeners: listListeners,
 	}
 	if cfg.Monitors.SSH {
