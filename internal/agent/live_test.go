@@ -55,9 +55,11 @@ func TestLiveModeBacksOffOn429(t *testing.T) {
 	a.send = send
 	a.liveInterval = 5 * time.Millisecond
 	a.liveDuration = time.Hour
-	a.startLive(context.Background(), 42, 7)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a.startLive(ctx, 42, 7)
 	waitFor(t, func() bool { return len(send.callTimes()) >= 2 }, "a frame after the 429")
-	a.stopLive()
+	cancel()
 
 	calls := send.callTimes()
 	if gap := calls[1].Sub(calls[0]); gap < retryAfter {
