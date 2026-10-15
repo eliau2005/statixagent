@@ -1,0 +1,11 @@
+🧩 <b>postgresql.service</b>
+<pre>State    failed (exit-code)
+Since    14:03 · 2m ago
+Boot     enabled
+Restarts 3
+Memory   —</pre>
+Not watched
+--- keyboard ---
+[📄 Logs] → ~1v|ul|9b6164c99187eff9^un  [▶️ Start] → ~1ua|start|9b6164c99187eff9  [🔁 Restart] → ~1ua|restart|9b6164c99187eff9
+[⏹ Stop] → ~1ua|stop|9b6164c99187eff9
+[⬅️ Back] → ~1v|un  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|ud|9b6164c99187eff9^un

@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"log"
+	"maps"
 	"net/netip"
 	"runtime/debug"
 	"strings"
@@ -62,10 +63,13 @@ type Sources struct {
 	// AuthLines streams sshd log lines (journalctl -f / tail -F auth.log).
 	AuthLines <-chan string
 
-	Docker   *dockermon.Client
-	Runner   services.Runner
-	ProcFS   func(names []string) ([]services.Result, error) // process presence checks
-	KeyPaths []string
+	Docker *dockermon.Client
+	// SelfContainer is the full ID of the container the agent runs in,
+	// "" on the host; service actions always refuse it.
+	SelfContainer string
+	Runner        services.Runner
+	ProcFS        func(names []string) ([]services.Result, error) // process presence checks
+	KeyPaths      []string
 
 	// TopProcs samples per-process CPU/memory over a short window (~1s);
 	// nil disables /top.
@@ -147,6 +151,8 @@ type Agent struct {
 	acts map[string]configAct
 	// audit records every step of those actions; nil writes nothing.
 	audit *auditLog
+	// locks lets one action at a time run on each unit or container.
+	locks targetLocks
 
 	// trusted is the merged matcher for ssh.trusted_ips (configTrusted,
 	// static) and the bot-managed trustStore; non-root logins from these
@@ -293,7 +299,9 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	// The clock is read through a.now, which tests override.
 	a.tokens = tgui.NewTokens(func() time.Time { return a.now() }, rand.Reader)
 	a.confirms = a.buildConfirms()
+	maps.Copy(a.confirms, a.serviceConfirms())
 	a.asks = a.buildAsks()
+	maps.Copy(a.asks, a.serviceAsks())
 	a.acts = a.buildActs()
 	a.audit = newAuditLog(src.AuditPath)
 	return a

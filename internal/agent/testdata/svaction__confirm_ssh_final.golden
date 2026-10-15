@@ -1,0 +1,5 @@
+⚠️ <b>Last check: stop ssh.service?</b>
+New SSH logins fail until it is back. If it does not come back, only this bot can start it again.
+Expires in 2 min.
+--- keyboard ---
+[✅ Yes, stop it anyway] → ~1y|<token> (danger)  [❌ Cancel] → ~1n|<token>

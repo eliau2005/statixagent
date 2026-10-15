@@ -1,0 +1,11 @@
+🐳 <b>web</b> · 3f2a9b7c1d0e
+<pre>Image    ghcr.io/acme/a-long-reg
+         istry-path/web:1.4
+State    exited (1) · 5m
+Restarts 7
+CPU      —
+Memory   —</pre>
+--- keyboard ---
+[📄 Logs] → ~1v|cl|3f2a9b7c1d0e^dk  [▶️ Start] → ~1ca|start|3f2a9b7c1d0e  [🔁 Restart] → ~1ca|restart|3f2a9b7c1d0e
+[⏹ Stop] → ~1ca|stop|3f2a9b7c1d0e  [📋 Copy ID] ⧉ 3f2a9b7c1d0eaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+[⬅️ Back] → ~1v|dk  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|cd|3f2a9b7c1d0e^dk

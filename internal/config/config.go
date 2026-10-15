@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -30,6 +31,7 @@ type Config struct {
 	Digest     Digest     `toml:"digest"`
 	SSH        SSH        `toml:"ssh"`
 	Firewall   Firewall   `toml:"firewall"`
+	Actions    Actions    `toml:"actions"`
 
 	// SampleInterval is the metrics sampling period.
 	SampleInterval Duration `toml:"sample_interval"`
@@ -133,6 +135,19 @@ const (
 	MinTrialSeconds = 60
 	MaxTrialSeconds = 600
 )
+
+// Actions opts in to service actions from the bot: start, stop and
+// restart of systemd units and Docker containers, and their logs. They
+// are off by default (docs/telegram-ux-redesign.md, Decision 5), and
+// units are never enabled or disabled (Decision 6).
+type Actions struct {
+	Enabled bool `toml:"enabled"`
+	// Allow names the units ("nginx" is nginx.service) and containers
+	// the bot may act on. Empty means the watched units, and no
+	// container. A few units and the agent's own container are always
+	// refused, whatever this says.
+	Allow []string `toml:"allow,omitempty"`
+}
 
 // TrustedIP is one ssh.trusted_ips entry, parsed once when the config is
 // decoded so the agent never re-parses (and never has to drop) an entry.
@@ -294,6 +309,10 @@ func LoadSSH(path string) (SSH, error) {
 	return partial.SSH, nil
 }
 
+// allowNameRE is the shape of an actions.allow entry: a unit name, with
+// or without its type, or a container name. Neither starts with "-".
+var allowNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:_.@-]{0,250}$`)
+
 // Validate checks invariants that would make the agent misbehave at runtime.
 func (c Config) Validate() error {
 	var errs []error
@@ -335,6 +354,11 @@ func (c Config) Validate() error {
 	}
 	if t := c.Firewall.TrialSeconds; t != 0 && (t < MinTrialSeconds || t > MaxTrialSeconds) {
 		errs = append(errs, fmt.Errorf("firewall.trial_seconds %d out of range %d-%d", t, MinTrialSeconds, MaxTrialSeconds))
+	}
+	for i, name := range c.Actions.Allow {
+		if !allowNameRE.MatchString(name) {
+			errs = append(errs, fmt.Errorf("actions.allow[%d] %q is not a unit or container name", i, name))
+		}
 	}
 	if c.Update.Auto && c.Update.CheckInterval.Duration < time.Minute {
 		errs = append(errs, fmt.Errorf("update.check_interval %s is below 1m", c.Update.CheckInterval))

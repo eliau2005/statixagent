@@ -181,6 +181,23 @@ confirmation:
   ```
 - **🤝 Trust this IP** on plain SSH login alerts, behind a confirm screen (see
   [Trusted IPs](#trusted-ips)).
+- **Service actions**, off by default: start, stop and restart a systemd unit
+  or a Docker container, and read its recent logs, from its screen under
+  `/services`. Turn them on in the config:
+
+  ```toml
+  [actions]
+  enabled = true
+  allow = ["nginx", "postgresql", "web"]  # units and container names
+  ```
+
+  With no `allow` list, only the watched units can be acted on, and no
+  container. Units are never enabled or disabled. `statix-agent.service`,
+  `dbus*`, `systemd-*`, `*.target` and the agent's own container are always
+  refused, and stopping or restarting `ssh`, `docker`, `containerd` or a
+  network manager asks twice. Logs are redacted of the bot token, but they are
+  copied into the chat's history. Re-running the installer drops `[actions]`,
+  which turns them off again.
 
 ## What it looks like
 
@@ -246,8 +263,8 @@ Full details are in [SECURITY.md](SECURITY.md).
 - The bot token lives in `/etc/statix-agent/config.toml`, written atomically
   with `0600` permissions.
 - Commands are accepted only from the configured chat ID; state-changing
-  actions (`/update_confirm`, `/clear_chat`, `/firewall`) require an explicit
-  confirmation. The command menu is shown in that chat only. Buttons can only
+  actions (`/update_confirm`, `/clear_chat`, `/firewall`, service actions)
+  require an explicit confirmation. The command menu is shown in that chat only. Buttons can only
   run what the bot's own keyboards emit; any other callback data is refused.
   In a private chat the sender must be the chat's own user. Forwarded
   messages, messages sent via an inline bot and messages sent on behalf of a

@@ -20,8 +20,8 @@ import (
 
 // The services hub (docs/telegram-ux-redesign.md §3.3-§3.7): a count per
 // kind, one filtered list per kind with failing items first, and detail
-// screens for units and containers. It only reads: nothing here starts,
-// stops or restarts anything.
+// screens for units and containers. It only reads: the action buttons a
+// detail screen may carry open confirm screens (svaction.go).
 //
 // An item button names its item by a stable ID, never a list index and
 // never a name (unit names run to 256 characters): a unit by the digest
@@ -428,9 +428,10 @@ func (a *Agent) unitScreen(ctx context.Context, c tgui.Call) tgui.View {
 		// An escaped name (\x2d) never goes back to systemctl.
 		return tgui.View{Text: text + pre(bot.KV("State", it.status)) + "\n" + note + " · no details for this name"}
 	}
+	acts := a.actionRows(unitActs, svTarget{it: it}, c)
 	d, err := services.ShowUnit(ctx, a.src.Runner, it.name)
 	if err != nil {
-		return tgui.View{Text: text + pre(bot.KV("State", it.status)) + "\n" + note + "\nCould not read details: " + esc(clipErr(err))}
+		return tgui.View{Text: text + pre(bot.KV("State", it.status)) + "\n" + note + "\nCould not read details: " + esc(clipErr(err)), Rows: acts}
 	}
 	state := d.Active
 	if why := d.Sub; why != "" {
@@ -452,7 +453,7 @@ func (a *Agent) unitScreen(ctx context.Context, c tgui.Call) tgui.View {
 		mem = bot.BytesShort(d.Memory)
 	}
 	rows = append(rows, bot.KV("Memory", mem)...)
-	return tgui.View{Text: text + pre(rows) + "\n" + note}
+	return tgui.View{Text: text + pre(rows) + "\n" + note, Rows: acts}
 }
 
 // since is when something changed and how long ago: "12:41 · 2m ago", or
@@ -542,11 +543,15 @@ func (a *Agent) containerScreen(ctx context.Context, c tgui.Call) tgui.View {
 	}
 	ct := cts[i]
 	text := fmt.Sprintf("🐳 <b>%s</b> · %s\n", esc(ct.Name), items[i].id)
-	copyID := [][]tgui.Button{{{Label: "📋 Copy ID", Copy: ct.ID}}}
+	copyID := tgui.Button{Label: "📋 Copy ID", Copy: ct.ID}
+	btns := [][]tgui.Button{{copyID}}
+	if acts := a.actionRows(containerActs, svTarget{it: items[i], full: ct.ID}, c, copyID); acts != nil {
+		btns = acts
+	}
 	in, err := a.src.Docker.Inspect(ctx, ct.ID)
 	if err != nil {
 		rows := append(bot.KV("Image", ct.Image), bot.KV("State", ct.Status)...)
-		return tgui.View{Text: text + pre(rows) + "\nCould not inspect: " + esc(clipErr(err)), Rows: copyID}
+		return tgui.View{Text: text + pre(rows) + "\nCould not inspect: " + esc(clipErr(err)), Rows: btns}
 	}
 	state := in.State
 	switch {
@@ -575,7 +580,7 @@ func (a *Agent) containerScreen(ctx context.Context, c tgui.Call) tgui.View {
 	}
 	rows = append(rows, bot.KV("CPU", cpu)...)
 	rows = append(rows, bot.KV("Memory", mem)...)
-	return tgui.View{Text: text + pre(rows), Rows: copyID}
+	return tgui.View{Text: text + pre(rows), Rows: btns}
 }
 
 // ---- checks ----

@@ -14,12 +14,13 @@ import (
 	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
-// Host-changing buttons (kick, firewall, update, clear chat) go through
-// a confirm token (tgui.Tokens): the Yes button carries a single-use
-// token bound to the action, its target, the user who asked and the
-// message, never the action itself. On Yes the target is resolved again
-// from fresh state before anything runs, and the message becomes a
-// receipt. Every step is audited (audit.go).
+// Host-changing buttons (kick, firewall, update, clear chat, and the
+// service actions of svaction.go) go through a confirm token
+// (tgui.Tokens): the Yes button carries a single-use token bound to the
+// action, its target, the user who asked and the message, never the
+// action itself. On Yes the target is resolved again from fresh state
+// before anything runs, and the message becomes a receipt. Every step is
+// audited (audit.go).
 
 // Confirm action IDs, as the audit log records them.
 const (
@@ -62,6 +63,12 @@ type confirmAction struct {
 	run func(ctx context.Context, target string) actionResult
 	// cancel renders the view Cancel returns to.
 	cancel func(ctx context.Context) (string, telegram.Keyboard)
+	// view, when set, renders the target's own screen, which Cancel and
+	// a busy lock return to instead of cancel's.
+	view func(ctx context.Context, target string) (string, telegram.Keyboard)
+	// lock, when set, names the resource run holds: one action at a time
+	// runs on it, and a Yes that finds it held gets "Already running".
+	lock func(target string) string
 }
 
 // confirmPrompt is a confirm screen. With no yes label it is a plain view
@@ -71,6 +78,9 @@ type confirmPrompt struct {
 	yes   string // the Yes button's label
 	kb    telegram.Keyboard
 	toast string
+	// denied: the view is a refusal (a target the bot never acts on, or
+	// one not allowed), audited as such.
+	denied bool
 }
 
 // actionResult is what a confirmed action did.
@@ -148,11 +158,15 @@ func (a *Agent) mintConfirm(in tgui.Intent, yesLabel string) (telegram.Keyboard,
 // as a legacy Yes being asked again.
 func (a *Agent) showConfirm(ctx context.Context, cb *telegram.Callback, answered bool, id, target string, final bool, toast string) {
 	p := a.confirms[id].prompt(ctx, target, final)
+	in := tgui.Intent{Action: id, Target: target, ActorID: cb.FromID, ChatID: cb.ChatID, MessageID: cb.MessageID, Final: final}
 	if p.yes == "" {
+		if p.denied {
+			a.writeAudit(auditRecord{Phase: phaseDenied, Action: id, Target: target,
+				ActorID: cb.FromID, ChatID: cb.ChatID, MessageID: cb.MessageID})
+		}
 		a.finishCallback(ctx, cb, answered, p.text, p.kb, p.toast)
 		return
 	}
-	in := tgui.Intent{Action: id, Target: target, ActorID: cb.FromID, ChatID: cb.ChatID, MessageID: cb.MessageID, Final: final}
 	kb, nonce, err := a.mintConfirm(in, p.yes)
 	if err != nil {
 		log.Printf("agent: %v", err)
@@ -236,6 +250,18 @@ func (a *Agent) confirmPress(ctx context.Context, cb *telegram.Callback, c tgui.
 		a.showConfirm(ctx, cb, false, in.Action, in.Target, true, secondStepToast)
 		return
 	}
+	if act.lock != nil {
+		key := act.lock(in.Target)
+		if !a.locks.tryLock(key) {
+			a.tokens.Finish(nonce)
+			rec.Phase = phaseDenied
+			a.writeAudit(rec)
+			text, kb := a.cancelView(ctx, in)
+			a.finishCallback(ctx, cb, false, text, kb, runningToast)
+			return
+		}
+		defer a.locks.unlock(key)
+	}
 	// Answer before the work, and take the buttons away while it runs.
 	a.answer(ctx, cb, "Working…")
 	if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, runningText, nil); err != nil {
@@ -305,7 +331,7 @@ func (a *Agent) cancelPress(ctx context.Context, cb *telegram.Callback, nonce st
 	case tgui.Confirmed:
 		rec.Phase = phaseCancelled
 		a.writeAudit(rec)
-		text, kb := a.confirms[in.Action].cancel(ctx)
+		text, kb := a.cancelView(ctx, in)
 		a.finishCallback(ctx, cb, false, text, kb, "Cancelled")
 	case tgui.WrongActor, tgui.Running, tgui.Done:
 		a.refuseConfirm(ctx, cb, in, check, rec)
@@ -313,6 +339,15 @@ func (a *Agent) cancelPress(ctx context.Context, cb *telegram.Callback, nonce st
 		// Nothing is pending any more, so there is nothing to undo.
 		a.finishCallback(ctx, cb, false, cancelledText, a.confirmBack(in), "")
 	}
+}
+
+// cancelView is the view a confirm returns to without running.
+func (a *Agent) cancelView(ctx context.Context, in tgui.Intent) (string, telegram.Keyboard) {
+	act := a.confirms[in.Action]
+	if act.view != nil {
+		return act.view(ctx, in.Target)
+	}
+	return act.cancel(ctx)
 }
 
 // confirmBack is the keyboard of a confirm that ended without running:

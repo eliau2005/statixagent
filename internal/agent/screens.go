@@ -57,6 +57,9 @@ const (
 	scrContainer    = "cd"
 	scrPorts        = "prt"
 	scrProcs        = "prc"
+	// Logs of a unit or container (svaction.go).
+	scrUnitLogs      = "ul"
+	scrContainerLogs = "cl"
 )
 
 // commandScreens are the typed commands (bare, or /start's deep-link
@@ -127,6 +130,8 @@ func (a *Agent) buildScreens() *tgui.Registry {
 	view(scrSSL, scrServices, true, a.kindScreen(kindCerts))
 	view(scrPorts, scrServices, true, a.kindScreen(kindPorts))
 	view(scrProcs, scrServices, false, a.kindScreen(kindProcs))
+	// Logs of a unit or container, when service actions allow them.
+	a.addLogScreens(r)
 
 	view(scrSecurity, scrHome, false, a.securityView)
 	view(scrSessions, scrSecurity, false, a.sessionsView)
