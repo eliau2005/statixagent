@@ -50,6 +50,53 @@ type Client struct {
 	// BaseURL includes the token: https://api.telegram.org/bot<token>
 	// Errors returned by Client have the token redacted.
 	BaseURL string
+
+	// limiter paces messages and edits per chat; nil disables pacing.
+	limiter *chatLimiter
+	// clock times 429 retry waits; the zero value uses the real clock.
+	clock clock
+}
+
+// maxRetryWait caps how long a 429 retry may wait. A longer retry_after
+// is a flood ban rather than a burst, so the error goes to the caller.
+const maxRetryWait = 30 * time.Second
+
+// APIError is a Bot API "ok": false reply.
+type APIError struct {
+	Code        int    // error_code, e.g. 400, 403, 429
+	Description string // human-readable reason, token redacted
+	// RetryAfter is parameters.retry_after on a 429, zero otherwise.
+	RetryAfter time.Duration
+}
+
+func (e *APIError) Error() string { return e.Description }
+
+// RetryAfter reports the wait Telegram asked for when err is a 429.
+func RetryAfter(err error) (time.Duration, bool) {
+	var ae *APIError
+	if errors.As(err, &ae) && ae.Code == http.StatusTooManyRequests {
+		return ae.RetryAfter, true
+	}
+	return 0, false
+}
+
+// IsMessageNotFound reports an edit of a message that no longer exists,
+// e.g. one removed by /clear_chat or by the user.
+func IsMessageNotFound(err error) bool {
+	var ae *APIError
+	if !errors.As(err, &ae) || ae.Code != http.StatusBadRequest {
+		return false
+	}
+	d := ae.Description
+	return strings.Contains(d, "message to edit not found") ||
+		strings.Contains(d, "message not found") ||
+		strings.Contains(d, "MESSAGE_ID_INVALID")
+}
+
+// isNotModified reports an edit that would change nothing.
+func isNotModified(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && strings.Contains(ae.Description, "message is not modified")
 }
 
 // tokenPattern matches the bot token segment of a Bot API URL.
@@ -95,43 +142,96 @@ func New(token string) *Client {
 		// Long-poll timeout is 50s server-side; the client must outlive it.
 		HTTP:    &http.Client{Timeout: 70 * time.Second},
 		BaseURL: "https://api.telegram.org/bot" + token,
+		limiter: newChatLimiter(time.Second, 3, realClock),
 	}
 }
 
 // apiResponse is the Bot API envelope.
 type apiResponse struct {
-	OK          bool            `json:"ok"`
-	Description string          `json:"description"`
-	Result      json.RawMessage `json:"result"`
+	OK          bool   `json:"ok"`
+	ErrorCode   int    `json:"error_code"`
+	Description string `json:"description"`
+	Parameters  struct {
+		RetryAfter int `json:"retry_after"`
+	} `json:"parameters"`
+	Result json.RawMessage `json:"result"`
 }
 
+// call performs one Bot API request.
 func (c *Client) call(ctx context.Context, method string, payload, result any) error {
+	if err := c.do(ctx, method, payload, result); err != nil {
+		return wrapErr(method, err)
+	}
+	return nil
+}
+
+// wrapErr is the single exit for every error the client returns: it adds
+// the method name and redacts the token, keeping the chain for errors.As.
+func wrapErr(method string, err error) error {
+	return fmt.Errorf("telegram: %s: %w", method, sanitizeErr(err))
+}
+
+func (c *Client) do(ctx context.Context, method string, payload, result any) error {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/"+method, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("telegram: %s: %w", method, sanitizeErr(err))
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram: %s: %w", method, sanitizeErr(err))
+		return err
 	}
 	defer resp.Body.Close()
 	var env apiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
-		return fmt.Errorf("telegram: %s: %w", method, err)
+		return fmt.Errorf("HTTP %d: %w", resp.StatusCode, err)
 	}
 	if !env.OK {
-		return fmt.Errorf("telegram: %s: %s", method, env.Description)
+		code := env.ErrorCode
+		if code == 0 {
+			code = resp.StatusCode
+		}
+		return &APIError{
+			Code:        code,
+			Description: redact(env.Description),
+			RetryAfter:  time.Duration(env.Parameters.RetryAfter) * time.Second,
+		}
 	}
 	if result != nil {
 		return json.Unmarshal(env.Result, result)
 	}
 	return nil
 }
+
+// callChat is call for a message, edit or answer: it waits for the chat's
+// send budget (chatID 0 skips pacing) and retries once after a 429 whose
+// retry_after is within maxRetryWait. Only these idempotent-enough calls
+// retry; any bot action has already run before the reply is sent.
+func (c *Client) callChat(ctx context.Context, chatID int64, method string, payload, result any) error {
+	for attempt := 0; ; attempt++ {
+		if c.limiter != nil && chatID != 0 {
+			if err := c.limiter.wait(ctx, chatID); err != nil {
+				return wrapErr(method, err)
+			}
+		}
+		err := c.call(ctx, method, payload, result)
+		wait, is429 := RetryAfter(err)
+		if !is429 || attempt > 0 || wait > maxRetryWait {
+			return err
+		}
+		if err := c.clock.orReal().sleep(ctx, wait); err != nil {
+			return wrapErr(method, err)
+		}
+	}
+}
+
+// noPreview disables link previews (link_preview_options replaces the
+// deprecated disable_web_page_preview flag).
+var noPreview = map[string]any{"is_disabled": true}
 
 // SendMessage sends an HTML-formatted message to a chat. Messages longer
 // than Telegram's 4096-char limit are split on line boundaries.
@@ -153,10 +253,10 @@ func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, k
 	var lastID int64
 	for i, chunk := range chunks {
 		payload := map[string]any{
-			"chat_id":                  chatID,
-			"text":                     chunk,
-			"parse_mode":               "HTML",
-			"disable_web_page_preview": true,
+			"chat_id":              chatID,
+			"text":                 chunk,
+			"parse_mode":           "HTML",
+			"link_preview_options": noPreview,
 		}
 		if kb != nil && i == len(chunks)-1 {
 			payload["reply_markup"] = map[string]any{"inline_keyboard": clampKeyboard(kb)}
@@ -164,7 +264,7 @@ func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, k
 		var sent struct {
 			MessageID int64 `json:"message_id"`
 		}
-		if err := c.call(ctx, "sendMessage", payload, &sent); err != nil {
+		if err := c.callChat(ctx, chatID, "sendMessage", payload, &sent); err != nil {
 			return 0, err
 		}
 		lastID = sent.MessageID
@@ -177,17 +277,17 @@ func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, k
 // edits that change nothing; that case is reported as success.
 func (c *Client) EditMessageKB(ctx context.Context, chatID, messageID int64, html string, kb Keyboard) error {
 	payload := map[string]any{
-		"chat_id":                  chatID,
-		"message_id":               messageID,
-		"text":                     html,
-		"parse_mode":               "HTML",
-		"disable_web_page_preview": true,
+		"chat_id":              chatID,
+		"message_id":           messageID,
+		"text":                 html,
+		"parse_mode":           "HTML",
+		"link_preview_options": noPreview,
 	}
 	if kb != nil {
 		payload["reply_markup"] = map[string]any{"inline_keyboard": clampKeyboard(kb)}
 	}
-	err := c.call(ctx, "editMessageText", payload, nil)
-	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+	err := c.callChat(ctx, chatID, "editMessageText", payload, nil)
+	if isNotModified(err) {
 		return nil
 	}
 	return err
@@ -206,8 +306,8 @@ func (c *Client) EditMessageMarkup(ctx context.Context, chatID, messageID int64,
 		"message_id":   messageID,
 		"reply_markup": map[string]any{"inline_keyboard": clampKeyboard(kb)},
 	}
-	err := c.call(ctx, "editMessageReplyMarkup", payload, nil)
-	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+	err := c.callChat(ctx, chatID, "editMessageReplyMarkup", payload, nil)
+	if isNotModified(err) {
 		return nil
 	}
 	return err
@@ -220,7 +320,8 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) er
 	if text != "" {
 		payload["text"] = text
 	}
-	return c.call(ctx, "answerCallbackQuery", payload, nil)
+	// Answers are not chat messages: no pacing, so the spinner stops fast.
+	return c.callChat(ctx, 0, "answerCallbackQuery", payload, nil)
 }
 
 // DeleteMessages deletes up to 48h-old messages by ID; IDs that cannot be

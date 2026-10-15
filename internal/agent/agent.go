@@ -214,7 +214,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		hist:         sshwatch.NewHistory(500),
 		keys:         sshwatch.NewKeysWatcher(src.KeyPaths),
 		geo:          sshwatch.NewGeoResolver(),
-		liveInterval: 3 * time.Second,
+		liveInterval: 5 * time.Second,
 		liveDuration: time.Hour,
 		digest:       digestStats{since: time.Now()},
 		digestPoll:   30 * time.Second,
