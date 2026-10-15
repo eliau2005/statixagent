@@ -58,6 +58,20 @@ compromised Telegram account, or a compromised release-signing key.
 - State-changing actions require an explicit, separate confirmation:
   - `/update` only *checks*; installing requires `/update_confirm`.
   - `/firewall` presents a mandatory confirmation screen before changing a rule.
+  - SSH session disconnect buttons open a confirmation screen before the kick.
+  - The **🤝 Trust this IP** button on a plain SSH login alert opens a
+    confirmation screen restating the address; only **✅ Yes, trust** adds it
+    to the trusted list. Its callback data carries the address itself and is
+    re-parsed on every press: anything but a single address in canonical form
+    (a range, `0.0.0.0/0`, a hostname, a reformatted address) is rejected.
+    Typed `/trust` applies directly, like the other typed commands that edit
+    the watch lists; every change is logged.
+- Trusting a source only silences plain login alerts from it. Root logins,
+  logins with a key that user has never used, logins right after failed
+  attempts, and brute-force bursts still alert, and ranges that would trust
+  everything are refused. Someone holding the owner's chat could trust their
+  own address, but that leaves all of these signals in place and shows up in
+  `/trusted`; `/untrust` reverses it.
 
 ### Secret / token handling
 
@@ -119,8 +133,9 @@ service). Its outward actions are deliberately narrow:
   `/firewall` states that it cannot manage this host's firewall rather than
   acting through a different backend.
 - **Writes** only its config file, its binary (on update), its start-count
-  state file, and — only when `ssh.trusted_ips` is set — its list of known
-  SSH key fingerprints (`known_keys`, next to the config, `0600`).
+  state file, and — only once some SSH source is trusted — its list of known
+  SSH key fingerprints (`known_keys`) and the SSH sources trusted from the bot
+  (`trusted_ips`), both next to the config, `0600`, written atomically.
 - **Network:** talks to the Telegram Bot API, to GitHub (release checks), and to
   the geo-IP lookup service for SSH source IPs; performs outbound TCP connects
   for `/ping`, port checks, and TLS certificate expiry checks.

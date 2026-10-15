@@ -7,7 +7,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,16 +163,14 @@ func (k *KnownKeys) Len() int {
 	return len(k.keys)
 }
 
-// save rewrites the file atomically with owner-only permissions, syncing
-// the data before the rename and the directory after it so a power loss
-// leaves either the old file or the new one, never an empty one. Callers
-// hold k.mu.
+// save rewrites the file (see writeStateFile), keeping unparseable lines.
+// Callers hold k.mu.
 func (k *KnownKeys) save() error {
 	if k.path == "" {
 		return nil
 	}
 	if k.readOnly {
-		return errors.New("known keys: not saved, the existing file could not be read")
+		return errNotSaved("known keys")
 	}
 	lines := make([]string, 0, len(k.keys))
 	for key := range k.keys {
@@ -186,37 +183,8 @@ func (k *KnownKeys) save() error {
 	for _, l := range k.bad {
 		b.WriteString(l + "\n")
 	}
-
-	dir := filepath.Dir(k.path)
-	tmp, err := os.CreateTemp(dir, ".known_keys-*")
-	if err != nil {
+	if err := writeStateFile(k.path, []byte(b.String())); err != nil {
 		return fmt.Errorf("known keys: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op after successful rename
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return fmt.Errorf("known keys: %w", err)
-	}
-	if _, err := io.WriteString(tmp, b.String()); err != nil {
-		tmp.Close()
-		return fmt.Errorf("known keys: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("known keys: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("known keys: %w", err)
-	}
-	if err := os.Rename(tmpName, k.path); err != nil {
-		return fmt.Errorf("known keys: %w", err)
-	}
-	// Best effort: make the rename itself durable. Not every platform
-	// supports syncing a directory, and the data is already safe.
-	if d, err := os.Open(dir); err == nil {
-		d.Sync()
-		d.Close()
 	}
 	return nil
 }

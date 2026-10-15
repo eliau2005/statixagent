@@ -35,6 +35,13 @@ type fakeSender struct {
 	deleted   []int64
 	cmds      []telegram.BotCommand
 	nextID    int64
+	markups   []markupEdit
+}
+
+// markupEdit is one keyboard-only edit (EditMessageMarkup).
+type markupEdit struct {
+	id int64
+	kb telegram.Keyboard
 }
 
 func (f *fakeSender) SendMessage(ctx context.Context, chatID int64, html string) error {
@@ -59,6 +66,13 @@ func (f *fakeSender) EditMessageKB(_ context.Context, _ int64, messageID int64, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.edits = append(f.edits, edit{messageID, html, kb})
+	return nil
+}
+
+func (f *fakeSender) EditMessageMarkup(_ context.Context, _ int64, messageID int64, kb telegram.Keyboard) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.markups = append(f.markups, markupEdit{id: messageID, kb: kb})
 	return nil
 }
 
