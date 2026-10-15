@@ -35,6 +35,7 @@ type Sender interface {
 	SendMessage(ctx context.Context, chatID int64, html string) error
 	SendMessageID(ctx context.Context, chatID int64, html string) (int64, error)
 	SendMessageKB(ctx context.Context, chatID int64, html string, kb telegram.Keyboard) (int64, error)
+	SendReplyKB(ctx context.Context, chatID, replyTo int64, html string, kb telegram.Keyboard) (int64, error)
 	EditMessageKB(ctx context.Context, chatID, messageID int64, html string, kb telegram.Keyboard) error
 	EditMessageMarkup(ctx context.Context, chatID, messageID int64, kb telegram.Keyboard) error
 	AnswerCallback(ctx context.Context, callbackID, text string) error
@@ -132,6 +133,8 @@ type Agent struct {
 	// confirms the actions they can run (confirm.go).
 	tokens   *tgui.Tokens
 	confirms map[string]confirmAction
+	// asks are the "~1" acts that open a confirm screen (screens.go).
+	asks map[string]askAction
 	// audit records every step of those actions; nil writes nothing.
 	audit *auditLog
 
@@ -277,6 +280,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	// The clock is read through a.now, which tests override.
 	a.tokens = tgui.NewTokens(func() time.Time { return a.now() }, rand.Reader)
 	a.confirms = a.buildConfirms()
+	a.asks = a.buildAsks()
 	a.audit = newAuditLog(src.AuditPath)
 	return a
 }
@@ -314,9 +318,9 @@ func (a *Agent) Run(ctx context.Context) error {
 		loop("docker", a.dockerLoop)
 	}
 	a.registerCommands(ctx)
-	hello := fmt.Sprintf("✅ <b>statix-agent started</b> on %s", a.src.Hostname)
+	hello := fmt.Sprintf("✅ <b>statix-agent started</b> on %s", esc(a.src.Hostname))
 	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, hello, telegram.Keyboard{{
-		{Text: "📊 Status", Data: "status"},
+		{Text: "🏠 Home", Data: callData(tgui.Open(scrHome))},
 		{Text: "👁 Watching", Data: "watching"},
 	}}); err != nil {
 		log.Printf("agent: hello: %v", err)
@@ -722,11 +726,23 @@ func (a *Agent) botLoop(ctx context.Context) {
 
 func (a *Agent) buildRouter() *bot.Router {
 	r := bot.NewRouter(a.cfg.Telegram.ChatID)
+	// Bare view commands reply with their screen and its keyboard.
+	for cmd, id := range commandScreens {
+		switch cmd {
+		case "start", "ssh", "ssl", "http", "update":
+			continue // they take arguments; below
+		}
+		r.Handle(cmd, func(ctx context.Context, _ []string) string { return a.screenReply(ctx, id) })
+	}
 	// /start is a new user's first message ever — it must explain what the
 	// bot does on its own and hand over the entry points, not point at docs.
-	r.Handle("start", func(ctx context.Context, _ []string) string {
+	// A deep link, /start <view>, opens that view instead.
+	r.Handle("start", func(ctx context.Context, args []string) string {
+		if len(args) > 0 {
+			return a.screenReply(ctx, a.deepLink(args[0]))
+		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "👋 <b>%s</b> is under watch. This all happens automatically:\n\n", a.src.Hostname)
+		fmt.Fprintf(&b, "👋 <b>%s</b> is under watch. This all happens automatically:\n\n", esc(a.src.Hostname))
 		b.WriteString("• 🚨 alert when CPU, RAM or disk cross a threshold\n")
 		if a.cfg.Monitors.SSH {
 			b.WriteString("• 🔐 report every SSH login, brute-force bursts, key changes\n")
@@ -739,107 +755,9 @@ func (a *Agent) buildRouter() *bot.Router {
 			fmt.Fprintf(&b, "• 📰 send a daily digest at %02d:00\n", hour)
 		}
 		b.WriteString("\nAlerts carry buttons for the next step. Start here:")
-		a.stashKB(telegram.Keyboard{
-			{{Text: "📊 Status", Data: "status"}, {Text: "👁 Watching", Data: "watching"}},
-			{{Text: "🔝 Top", Data: "top"}, {Text: "⚙️ Settings", Data: "settings"}},
-		})
+		_, kb := a.screen(ctx, tgui.Open(scrHome))
+		a.stashKB(kb)
 		return b.String()
-	})
-	r.Handle("help", func(ctx context.Context, _ []string) string {
-		return "🖥 <b>Metrics</b>\n" +
-			"/status — full dashboard\n" +
-			"/cpu /mem /disk /net — one metric\n" +
-			"/top — heaviest processes\n" +
-			"/digest — daily summary (auto-sent each morning)\n" +
-			"/temp /battery — hardware\n\n" +
-			"🧩 <b>Workloads</b>\n" +
-			"/services — units, processes, ports\n" +
-			"/http — endpoint checks (/http add url)\n" +
-			"/ping host — TCP latency from this server\n" +
-			"/docker — containers\n\n" +
-			"🔐 <b>Security</b>\n" +
-			"/ssh — live sessions (disconnect buttons)\n" +
-			"/ssh history — recent logins\n" +
-			"/ssh fails — failed attempts\n" +
-			"/firewall — open/close SSH port 22\n" +
-			"/trusted — trusted SSH sources (/trust ip · /untrust ip)\n" +
-			"/ssl — certificate expiry (/ssl add host)\n\n" +
-			"👁 <b>Watching</b>\n" +
-			"/watching — manage everything with buttons\n" +
-			"/services_scan /ports_scan — find candidates\n" +
-			"(/services_add, /ports_add, /procs_add … still work typed)\n\n" +
-			"⚙️ <b>Maintenance</b>\n" +
-			"/settings — tune thresholds &amp; digest\n" +
-			"/update — check · /update_confirm — install\n" +
-			"/clear_chat — wipe recent messages"
-	})
-	r.Handle("status", func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return bot.Status(a.src.Hostname, a.snap, a.thermal, a.power)
-	})
-	r.Handle("cpu", func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return bot.CPU(a.snap, bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.cpu }), 100))
-	})
-	r.Handle("mem", func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return bot.Mem(a.snap, bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.mem }), 100))
-	})
-	r.Handle("top", func(ctx context.Context, _ []string) string {
-		if a.src.TopProcs == nil {
-			return "Process inspection is not available in this build."
-		}
-		procs, err := a.src.TopProcs(ctx)
-		if err != nil {
-			return "Could not read processes: " + esc(err.Error())
-		}
-		a.mu.Lock()
-		memTotal := a.snap.Mem.Total
-		a.mu.Unlock()
-		return bot.Top(procs, memTotal)
-	})
-	r.Handle("digest", func(ctx context.Context, _ []string) string {
-		return a.digestView(false)
-	})
-	r.Handle("disk", a.snapHandler(bot.Disk))
-	r.Handle("net", func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		// Autoscaled to each series' own peak: traffic has no natural 100%.
-		rx := bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.rx }), 0)
-		tx := bot.Spark(a.trendVals(func(p trendPoint) float64 { return p.tx }), 0)
-		return bot.Net(a.snap, rx, tx)
-	})
-	r.Handle("temp", func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return bot.Temp(a.thermal)
-	})
-	r.Handle("battery", func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return bot.Battery(a.power)
-	})
-	r.Handle("services", func(ctx context.Context, _ []string) string {
-		return a.servicesReply(ctx)
-	})
-	r.Handle("docker", func(ctx context.Context, _ []string) string {
-		if a.src.Docker == nil || !a.cfg.Monitors.Docker {
-			return "Docker monitoring is not enabled."
-		}
-		cts, err := a.src.Docker.ListContainers(ctx)
-		if err != nil {
-			return "Docker unreachable: " + esc(err.Error())
-		}
-		for i := range cts {
-			if cts[i].State == "running" {
-				a.src.Docker.Stats(ctx, &cts[i])
-			}
-		}
-		return bot.Docker(cts)
 	})
 	r.Handle("ssh", func(ctx context.Context, args []string) string {
 		sub := ""
@@ -848,21 +766,22 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		switch sub {
 		case "history":
-			a.stashKB(navKeyboard("ssh_history"))
-			return a.sshHistoryView()
+			return a.screenReply(ctx, scrHistory)
 		case "fails":
-			a.stashKB(navKeyboard("ssh_fails"))
-			return a.sshFailsView()
-		default:
-			text, kb := a.sshSessionsView(ctx)
-			a.stashKB(kb)
-			return text
+			return a.screenReply(ctx, scrFailed)
 		}
+		return a.screenReply(ctx, scrSessions)
 	})
 	r.Handle("ssl", func(ctx context.Context, args []string) string {
+		if len(args) == 0 {
+			return a.screenReply(ctx, scrSSL)
+		}
 		return a.sslView(ctx, args)
 	})
 	r.Handle("http", func(ctx context.Context, args []string) string {
+		if len(args) == 0 {
+			return a.screenReply(ctx, scrHTTP)
+		}
 		return a.httpView(ctx, args)
 	})
 	// /ping answers "can this server reach X, and how fast?" — the vantage
@@ -882,24 +801,11 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		return fmt.Sprintf("🏓 %s — <b>%s</b>", esc(addr), fmtLatency(d))
 	})
-	// Direct aliases for alert action buttons (callback data is one token).
-	r.Handle("ssh_history", func(ctx context.Context, _ []string) string { return a.sshHistoryView() })
-	r.Handle("ssh_fails", func(ctx context.Context, _ []string) string { return a.sshFailsView() })
 	r.Handle("update", func(ctx context.Context, args []string) string {
-		if a.src.UpdateCheck == nil {
-			return "Self-update is not configured in this build."
-		}
 		if len(args) > 0 && strings.EqualFold(args[0], "confirm") {
 			return a.typedConfirm(ctx, actUpdate, "agent") // legacy "/update confirm" form
 		}
-		ver, available, err := a.src.UpdateCheck(ctx)
-		if err != nil {
-			return "Update check failed: " + esc(err.Error())
-		}
-		if !available {
-			return "Already up to date (" + esc(ver) + ")."
-		}
-		return "New version available: <b>" + esc(ver) + "</b>\nTap /update_confirm to install."
+		return a.screenReply(ctx, scrUpdate)
 	})
 	// Typed /update_confirm and /clear_chat only ask: the action runs from
 	// the Yes button's confirm token, which goes through authorize again
@@ -959,7 +865,9 @@ func (a *Agent) registerCommands(ctx context.Context) {
 // tappable commands. It leaves out /update_confirm: installing starts from
 // /update, and a menu tap should never be one step from an action.
 var commandMenu = []telegram.BotCommand{
-	{Command: "status", Description: "full dashboard"},
+	{Command: "status", Description: "home dashboard"},
+	{Command: "metrics", Description: "CPU, memory, disk and network at a glance"},
+	{Command: "security", Description: "sessions, failed logins, firewall, trusted IPs"},
 	{Command: "cpu", Description: "CPU usage per core"},
 	{Command: "mem", Description: "memory usage"},
 	{Command: "disk", Description: "disk space and I/O"},
@@ -987,61 +895,16 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "help", Description: "all commands"},
 }
 
-func (a *Agent) sshHistoryView() string {
-	return bot.SSHEvents("SSH history", a.hist.Recent(20, nil))
-}
-
-func (a *Agent) sshFailsView() string {
-	return bot.SSHEvents("Failed attempts", a.hist.Recent(20, func(e sshwatch.Event) bool {
-		return e.Kind == sshwatch.EventFailed || e.Kind == sshwatch.EventInvalidUser
-	}))
-}
-
-// trendVals extracts one series from the ring; callers hold a.mu. Series
-// shorter than 2 points render no sparkline.
+// trendVals extracts the last sparkPoints of one series from the ring;
+// callers hold a.mu. Series shorter than 2 points render no sparkline.
 func (a *Agent) trendVals(f func(trendPoint) float64) []float64 {
 	if len(a.trend) < 2 {
 		return nil
 	}
-	out := make([]float64, len(a.trend))
-	for i, p := range a.trend {
+	trend := a.trend[max(0, len(a.trend)-sparkPoints):]
+	out := make([]float64, len(trend))
+	for i, p := range trend {
 		out[i] = f(p)
 	}
 	return out
-}
-
-func (a *Agent) snapHandler(f func(collect.Snapshot) string) bot.Handler {
-	return func(ctx context.Context, _ []string) string {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		return f(a.snap)
-	}
-}
-
-func (a *Agent) servicesReply(ctx context.Context) string {
-	watch := a.watchCopy()
-	var results []services.Result
-	if a.src.Runner != nil && len(watch.Services) > 0 {
-		results = append(results, services.CheckSystemdUnits(ctx, a.src.Runner, watch.Services)...)
-	}
-	if a.src.ProcFS != nil && len(watch.Processes) > 0 {
-		if procResults, err := a.src.ProcFS(watch.Processes); err == nil {
-			results = append(results, procResults...)
-		}
-	}
-	if len(watch.Ports) > 0 {
-		specs := make([]services.PortSpec, len(watch.Ports))
-		for i, p := range watch.Ports {
-			specs[i] = services.PortSpec{Port: p.Port, Label: p.Label}
-		}
-		results = append(results, services.CheckPorts(ctx, defaultDialer(), specs)...)
-	}
-	if len(watch.HTTPChecks) > 0 {
-		specs := make([]services.HTTPSpec, len(watch.HTTPChecks))
-		for i, h := range watch.HTTPChecks {
-			specs[i] = services.HTTPSpec{URL: h.URL, ExpectStatus: h.ExpectStatus, Timeout: h.Timeout.Duration}
-		}
-		results = append(results, services.CheckHTTP(ctx, httpClient, specs)...)
-	}
-	return bot.ServiceResults(results)
 }

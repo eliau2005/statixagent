@@ -118,8 +118,8 @@ func TestStatusFormat(t *testing.T) {
 		"<b>myvps</b>", "⏱ 3d 1h", "<pre>",
 		"CPU   ▰▰▰▰▱▱▱▱▱▱", "RAM   ▰▰▰▰▰▱▱▱▱▱", "4.0G/8.0G",
 		"DISK", "75%", "/boot",
-		"🌐 eth0", "🌡 61°C ⚠️", "🔋 73% ⚡4h 0m",
-		"142 procs · 2080 fds · load 0.52",
+		"📶 eth0", "🌡 61°C ⚠️", "🔋 73% ⚡4h 0m",
+		"142 procs · 2080 fds", "load 0.52",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Status missing %q in:\n%s", want, out)
@@ -236,7 +236,7 @@ func TestBatteryFormat(t *testing.T) {
 	pw := sysfs.Power{HasAC: true, ACOnline: true, HasBattery: true,
 		Batteries: []sysfs.Battery{{Name: "BAT0", Percent: 79, Status: "Not charging", HealthPercent: 67}}}
 	out := Battery(pw)
-	for _, want := range []string{"<b>BAT0</b>", "Not charging", "charge", "79%", "health", "67% of design", "🔌 plugged in"} {
+	for _, want := range []string{"<b>BAT0</b>", "Not charging", "charge", "79%", "health", "67%", "of design capacity", "🔌 plugged in"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("Battery missing %q:\n%s", want, out)
 		}
@@ -265,17 +265,6 @@ func TestServiceAndSSHFormats(t *testing.T) {
 		if !strings.Contains(sess, want) {
 			t.Errorf("sessions missing %q:\n%s", want, sess)
 		}
-	}
-
-	ev := SSHEvents("Failed attempts", []sshwatch.Event{
-		{Kind: sshwatch.EventFailed, User: "root", IP: "192.0.2.4", Method: "password", At: now},
-		{Kind: sshwatch.EventInvalidUser, User: "admin<script>", IP: "192.0.2.4", InvalidUser: true, At: now},
-	})
-	if !strings.Contains(ev, "❌") || !strings.Contains(ev, "invalid user") {
-		t.Errorf("events:\n%s", ev)
-	}
-	if strings.Contains(ev, "<script>") {
-		t.Error("usernames must be HTML-escaped")
 	}
 }
 

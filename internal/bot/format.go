@@ -21,6 +21,77 @@ import (
 
 const divider = "────────────────────────────"
 
+// PreCols is the widest a <pre> row may be: wider rows wrap on a phone.
+const PreCols = 32
+
+// Width is the number of monospace columns s takes on a phone: emoji
+// count as two, variation selectors and joiners as none.
+func Width(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeWidth(r)
+	}
+	return n
+}
+
+func runeWidth(r rune) int {
+	switch {
+	case r == 0xFE0F || r == 0x200D || (r >= 0x0300 && r <= 0x036F):
+		return 0
+	case r >= 0x1F000,
+		r >= 0x2600 && r <= 0x27BF, // ✅ ❌ ⚠ ⚡ …
+		r >= 0x2B00 && r <= 0x2BFF, // ⬅ ⬇ ⭐
+		r == 0x231A || r == 0x231B, // ⌚ ⌛
+		r >= 0x23E9 && r <= 0x23FA: // ⏩ … ⏺
+		return 2
+	}
+	return 1
+}
+
+// Clip cuts s to at most cols columns, marking a cut with "…".
+func Clip(s string, cols int) string {
+	if Width(s) <= cols {
+		return s
+	}
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		if w+runeWidth(r) > cols-1 {
+			break
+		}
+		b.WriteRune(r)
+		w += runeWidth(r)
+	}
+	return b.String() + "…"
+}
+
+// Wrap breaks a <pre> row wider than PreCols into rows that fit, at a
+// space when one is near the edge; continuation rows are indented.
+// Nothing is dropped: a long address or path stays whole across rows.
+func Wrap(line string) []string {
+	const indent = "    "
+	var out []string
+	for Width(line) > PreCols {
+		cut, w, lastSpace := 0, 0, -1
+		for i, r := range line {
+			if w+runeWidth(r) > PreCols {
+				break
+			}
+			if r == ' ' && w > PreCols/2 {
+				lastSpace = i
+			}
+			w += runeWidth(r)
+			cut = i + len(string(r))
+		}
+		if lastSpace > 0 {
+			cut = lastSpace
+		}
+		out = append(out, strings.TrimRight(line[:cut], " "))
+		line = indent + strings.TrimLeft(line[cut:], " ")
+	}
+	return append(out, line)
+}
+
 // Bytes renders a byte count with binary units ("7.7 GiB").
 func Bytes(n uint64) string {
 	const unit = 1024
@@ -127,9 +198,29 @@ func pad(s string, n int) string {
 	return s + fill
 }
 
-// card assembles header + <pre> body lines.
+// PreRows returns the rows of every <pre> block in html, unescaped, so
+// tests can measure them.
+func PreRows(html string) []string {
+	unesc := strings.NewReplacer("&lt;", "<", "&gt;", ">", "&amp;", "&", "&#34;", `"`, "&#39;", "'", "&quot;", `"`)
+	var rows []string
+	for {
+		_, rest, ok := strings.Cut(html, "<pre>")
+		if !ok {
+			return rows
+		}
+		body, after, _ := strings.Cut(rest, "</pre>")
+		rows = append(rows, strings.Split(unesc.Replace(body), "\n")...)
+		html = after
+	}
+}
+
+// card assembles header + <pre> body lines, wrapped to PreCols.
 func card(header string, lines []string) string {
-	body := esc(strings.Join(lines, "\n"))
+	var rows []string
+	for _, l := range lines {
+		rows = append(rows, Wrap(l)...)
+	}
+	body := esc(strings.Join(rows, "\n"))
 	return header + "\n<pre>" + body + "</pre>"
 }
 
@@ -150,12 +241,12 @@ func Status(hostname string, s collect.Snapshot, th sysfs.Thermal, pw sysfs.Powe
 	var L []string
 	L = append(L, divider)
 	L = append(L, fmt.Sprintf(" %s %s %s", pad("CPU", 5), bar(s.CPUTotal.Percent), pad(fmt.Sprintf("%.0f%%", s.CPUTotal.Percent), -4)))
-	L = append(L, fmt.Sprintf(" %s %s %s  %s/%s", pad("RAM", 5), bar(s.Mem.UsedPercent()),
+	L = append(L, fmt.Sprintf(" %s %s %s %s/%s", pad("RAM", 5), bar(s.Mem.UsedPercent()),
 		pad(fmt.Sprintf("%.0f%%", s.Mem.UsedPercent()), -4),
 		BytesShort(s.Mem.Total-s.Mem.Available), BytesShort(s.Mem.Total)))
 	if used := s.Mem.SwapTotal - s.Mem.SwapFree; s.Mem.SwapTotal > 0 && used > s.Mem.SwapTotal/100 {
 		pct := 100 * float64(used) / float64(s.Mem.SwapTotal)
-		L = append(L, fmt.Sprintf(" %s %s %s  %s/%s", pad("SWAP", 5), bar(pct),
+		L = append(L, fmt.Sprintf(" %s %s %s %s/%s", pad("SWAP", 5), bar(pct),
 			pad(fmt.Sprintf("%.0f%%", pct), -4), BytesShort(used), BytesShort(s.Mem.SwapTotal)))
 	}
 	label := "DISK"
@@ -166,7 +257,7 @@ func Status(hostname string, s collect.Snapshot, th sysfs.Thermal, pw sysfs.Powe
 	}
 	L = append(L, divider)
 	for _, n := range activeNet(s.Net) {
-		L = append(L, fmt.Sprintf(" 🌐 %s ↓%s ↑%s", pad(n.Name, 10), pad(Rate(n.RxBytesPerSec), -8), pad(Rate(n.TxBytesPerSec), -8)))
+		L = append(L, fmt.Sprintf(" 📶 %s ↓%s ↑%s", pad(n.Name, 8), pad(Rate(n.RxBytesPerSec), -8), pad(Rate(n.TxBytesPerSec), -8)))
 	}
 	hw := ""
 	if len(th.Sensors) > 0 {
@@ -186,7 +277,8 @@ func Status(hostname string, s collect.Snapshot, th sysfs.Thermal, pw sysfs.Powe
 		L = append(L, hw)
 	}
 	L = append(L, divider)
-	L = append(L, fmt.Sprintf(" %d procs · %d fds · load %.2f", s.NumProc, s.FileNR.Allocated, s.Load.Load1))
+	L = append(L, fmt.Sprintf(" %d procs · %d fds", s.NumProc, s.FileNR.Allocated),
+		fmt.Sprintf(" load %.2f %.2f %.2f", s.Load.Load1, s.Load.Load5, s.Load.Load15))
 	return card(header, L)
 }
 
@@ -250,8 +342,8 @@ func Disk(s collect.Snapshot) string {
 				L = append(L, divider)
 				busy = true
 			}
-			L = append(L, fmt.Sprintf(" %s r %s w %s %.0f iops",
-				pad(d.Name, 8), pad(Rate(d.ReadBytesPerSec), -7), pad(Rate(d.WriteBytesPerSec), -7), d.IOPS))
+			L = append(L, fmt.Sprintf(" %s r%s w%s", pad(d.Name, 8), pad(Rate(d.ReadBytesPerSec), -9), pad(Rate(d.WriteBytesPerSec), -9)),
+				fmt.Sprintf(" %s %.0f iops", pad("", 8), d.IOPS))
 		}
 	}
 	if len(L) == 0 {
@@ -282,7 +374,7 @@ func Net(s collect.Snapshot, rxTrend, txTrend string) string {
 	if len(L) == 0 {
 		L = append(L, " no interfaces found")
 	}
-	return card("🌐 <b>Network</b>", L)
+	return card("📶 <b>Network</b>", L)
 }
 
 // NetTrendVals converts per-interface rates into the aggregate point the
@@ -356,7 +448,8 @@ func Battery(pw sysfs.Power) string {
 			fmt.Sprintf(" %s %s %.0f%%", pad("charge", 7), bar(b.Percent), b.Percent),
 		}
 		if b.HealthPercent > 0 {
-			L = append(L, fmt.Sprintf(" %s %s %.0f%% of design", pad("health", 7), bar(b.HealthPercent), b.HealthPercent))
+			L = append(L, fmt.Sprintf(" %s %s %.0f%%", pad("health", 7), bar(b.HealthPercent), b.HealthPercent),
+				fmt.Sprintf(" %s of design capacity", pad("", 7)))
 		}
 		if b.Watts > 0 {
 			L = append(L, fmt.Sprintf(" %s %.1f W", pad("draw", 7), b.Watts))
@@ -460,7 +553,7 @@ func Top(procs []collect.Proc, memTotal uint64) string {
 	var L []string
 	L = append(L, " by CPU")
 	for _, p := range byCPU[:min(n, len(byCPU))] {
-		L = append(L, fmt.Sprintf(" %s %s pid %d", pad(p.Comm, 15),
+		L = append(L, fmt.Sprintf(" %s %s pid %d", pad(p.Comm, 14),
 			pad(fmt.Sprintf("%.1f%%", p.CPUPercent), -6), p.PID))
 	}
 	L = append(L, divider, " by memory")
@@ -469,7 +562,7 @@ func Top(procs []collect.Proc, memTotal uint64) string {
 		if memTotal > 0 {
 			share = fmt.Sprintf(" %.0f%%", 100*float64(p.RSSBytes)/float64(memTotal))
 		}
-		L = append(L, fmt.Sprintf(" %s %s%s", pad(p.Comm, 15),
+		L = append(L, fmt.Sprintf(" %s %s%s", pad(p.Comm, 14),
 			pad(BytesShort(p.RSSBytes), -6), share))
 	}
 	header := fmt.Sprintf("🔝 <b>Top processes</b> — %d running", len(procs))
@@ -492,30 +585,6 @@ func Sessions(sessions []sshwatch.Session, geo map[string]sshwatch.GeoInfo, now 
 		if g, ok := geo[s.Host]; ok && g.String() != "" {
 			L = append(L, "   📍 "+g.String())
 		}
-	}
-	return card(header, L)
-}
-
-// SSHEvents renders /ssh history and /ssh fails as an aligned table.
-func SSHEvents(title string, events []sshwatch.Event) string {
-	if len(events) == 0 {
-		return "🔐 Nothing recorded yet."
-	}
-	header := "🔐 <b>" + esc(title) + "</b>"
-	var L []string
-	for _, e := range events {
-		icon := map[sshwatch.EventKind]string{
-			sshwatch.EventLogin:       "✅",
-			sshwatch.EventFailed:      "❌",
-			sshwatch.EventInvalidUser: "🚫",
-			sshwatch.EventDisconnect:  "👋",
-		}[e.Kind]
-		detail := e.Method
-		if e.InvalidUser {
-			detail = "invalid user"
-		}
-		L = append(L, fmt.Sprintf(" %s %s %s %s", icon, e.At.Format("Jan02 15:04"), pad(e.User, 9), detail))
-		L = append(L, "    "+e.IP)
 	}
 	return card(header, L)
 }

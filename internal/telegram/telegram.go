@@ -53,10 +53,32 @@ type Callback struct {
 	Inaccessible bool
 }
 
-// Button is one inline-keyboard button; Data is sent back on press.
+// Button is one inline-keyboard button; Data is sent back on press. A
+// button with Copy set instead copies that text to the clipboard
+// (copy_text, at most 256 characters) without a round trip.
 type Button struct {
 	Text string `json:"text"`
-	Data string `json:"callback_data"`
+	Data string `json:"callback_data,omitempty"`
+	Copy string `json:"-"`
+	// Style colours the button: "danger", "success" or "primary" (Bot
+	// API 9.4). It is decoration only; the label carries the meaning.
+	Style string `json:"style,omitempty"`
+}
+
+// MarshalJSON renders Copy as the copy_text object the Bot API expects.
+func (b Button) MarshalJSON() ([]byte, error) {
+	type plain Button
+	if b.Copy == "" {
+		return json.Marshal(plain(b))
+	}
+	return json.Marshal(struct {
+		plain
+		CopyText struct {
+			Text string `json:"text"`
+		} `json:"copy_text"`
+	}{plain: plain(b), CopyText: struct {
+		Text string `json:"text"`
+	}{b.Copy}})
 }
 
 // Keyboard is rows of buttons.
@@ -275,6 +297,12 @@ func (c *Client) SendMessageID(ctx context.Context, chatID int64, html string) (
 // SendMessageKB sends a message with an optional inline keyboard attached
 // to the last chunk, returning its message_id.
 func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, kb Keyboard) (int64, error) {
+	return c.SendReplyKB(ctx, chatID, 0, html, kb)
+}
+
+// SendReplyKB is SendMessageKB as a reply to message replyTo (0: none).
+// The first chunk quotes it; when it is gone the message is sent anyway.
+func (c *Client) SendReplyKB(ctx context.Context, chatID, replyTo int64, html string, kb Keyboard) (int64, error) {
 	chunks := splitMessage(html, maxMessageLen)
 	var lastID int64
 	for i, chunk := range chunks {
@@ -286,6 +314,9 @@ func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, k
 		}
 		if kb != nil && i == len(chunks)-1 {
 			payload["reply_markup"] = map[string]any{"inline_keyboard": clampKeyboard(kb)}
+		}
+		if replyTo != 0 && i == 0 {
+			payload["reply_parameters"] = map[string]any{"message_id": replyTo, "allow_sending_without_reply": true}
 		}
 		var sent struct {
 			MessageID int64 `json:"message_id"`
@@ -509,6 +540,9 @@ func chatType(t string) string {
 // maxCallbackData is Telegram's hard limit on inline-button callback_data.
 const maxCallbackData = 64
 
+// maxCopyText is Telegram's limit on a copy_text button's text.
+const maxCopyText = 256
+
 // clampKeyboard drops any button whose callback_data exceeds maxCallbackData
 // so a single oversized button cannot make Telegram reject the entire keyboard.
 // Callers should keep data short by construction (hashed snooze keys, indexed
@@ -523,6 +557,10 @@ func clampKeyboard(kb Keyboard) Keyboard {
 		for _, btn := range row {
 			if len(btn.Data) > maxCallbackData {
 				log.Printf("telegram: dropping button %q: callback_data %d bytes > %d", btn.Text, len(btn.Data), maxCallbackData)
+				continue
+			}
+			if n := utf8.RuneCountInString(btn.Copy); n > maxCopyText {
+				log.Printf("telegram: dropping button %q: copy_text %d characters > %d", btn.Text, n, maxCopyText)
 				continue
 			}
 			nr = append(nr, btn)

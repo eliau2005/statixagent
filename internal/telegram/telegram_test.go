@@ -460,6 +460,70 @@ func TestClampKeyboard(t *testing.T) {
 	}
 }
 
+func TestClampKeyboardDropsLongCopy(t *testing.T) {
+	kb := Keyboard{{{Text: "x", Copy: strings.Repeat("é", 257)}, {Text: "y", Copy: strings.Repeat("é", 256)}}}
+	got := clampKeyboard(kb)
+	if len(got) != 1 || len(got[0]) != 1 || got[0][0].Text != "y" {
+		t.Errorf("copy_text over 256 characters should be dropped, got %+v", got)
+	}
+}
+
+// Buttons marshal to exactly one button type: callback_data, or
+// copy_text with no callback_data; style only when set.
+func TestButtonJSON(t *testing.T) {
+	for _, tc := range []struct {
+		b    Button
+		want string
+	}{
+		{Button{Text: "a", Data: "x"}, `{"text":"a","callback_data":"x"}`},
+		{Button{Text: "a", Data: "x", Style: "danger"}, `{"text":"a","callback_data":"x","style":"danger"}`},
+		{Button{Text: "📋 Copy IP", Copy: "2001:db8::1"}, `{"text":"📋 Copy IP","copy_text":{"text":"2001:db8::1"}}`},
+	} {
+		got, err := json.Marshal(tc.b)
+		if err != nil || string(got) != tc.want {
+			t.Errorf("Marshal(%+v) = %s, %v; want %s", tc.b, got, err, tc.want)
+		}
+	}
+}
+
+func TestSendReplyKB(t *testing.T) {
+	var got []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var p map[string]any
+		json.NewDecoder(r.Body).Decode(&p)
+		got = append(got, p)
+		fmt.Fprint(w, `{"ok":true,"result":{"message_id":9}}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+
+	// Only the first chunk of a split message quotes the original.
+	long := strings.Repeat("line\n", 1000)
+	if _, err := c.SendReplyKB(context.Background(), 42, 7, long, Keyboard{{{Text: "x", Data: "y"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("want a split message, got %d sends", len(got))
+	}
+	rp, ok := got[0]["reply_parameters"].(map[string]any)
+	if !ok || rp["message_id"].(float64) != 7 || rp["allow_sending_without_reply"] != true {
+		t.Errorf("first chunk reply_parameters = %+v", got[0]["reply_parameters"])
+	}
+	for _, p := range got[1:] {
+		if _, ok := p["reply_parameters"]; ok {
+			t.Errorf("later chunk quotes the original: %+v", p)
+		}
+	}
+
+	got = nil
+	if _, err := c.SendMessageKB(context.Background(), 42, "hi", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got[0]["reply_parameters"]; ok {
+		t.Errorf("a plain send must not reply: %+v", got[0])
+	}
+}
+
 func TestClampKeyboardKeepsShort(t *testing.T) {
 	kb := Keyboard{{{Text: "x", Data: "cr:0:abcd1234"}}}
 	got := clampKeyboard(kb)

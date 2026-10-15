@@ -10,7 +10,7 @@ import (
 // SSLCerts renders /ssl: failed checks first, then soonest expiry.
 func SSLCerts(sts []netcheck.CertStatus) string {
 	if len(sts) == 0 {
-		return "🔒 No SSL hosts watched."
+		return "📜 No SSL hosts watched."
 	}
 	sorted := append([]netcheck.CertStatus(nil), sts...)
 	sort.SliceStable(sorted, func(i, j int) bool {
@@ -38,8 +38,7 @@ func SSLCerts(sts []netcheck.CertStatus) string {
 		if s.DaysLeft < 0 {
 			left = "expired"
 		}
-		L = append(L, fmt.Sprintf(" %s %s %s %s", icon, pad(s.Host, 18),
-			pad(left, -7), s.NotAfter.Format("Jan 02 2006")))
+		L = append(L, " "+icon+" "+s.Host, "    "+left+" · "+s.NotAfter.Format("Jan 02 2006"))
 	}
-	return card("🔒 <b>Certificates</b>", L)
+	return card("📜 <b>Certificates</b>", L)
 }

@@ -1,0 +1,11 @@
+📈 <b>Metrics</b>
+<pre>CPU   23%   Load 0.41
+Mem   62%   Temp 54°C
+Disk  72%   (fullest mount)
+Batt  80%
+Net   ↓1.1M/s ↑293.0K/s</pre>
+--- keyboard ---
+[🖥 CPU] → ~1v|cpu  [🧠 Memory] → ~1v|mem  [💾 Disk] → ~1v|dsk
+[📶 Network] → ~1v|net  [🌡 Temp] → ~1v|tmp  [🔋 Battery] → ~1v|bat
+[🔝 Top] → ~1v|top  [📰 Digest] → ~1v|dig
+[⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|met

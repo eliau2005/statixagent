@@ -1,0 +1,10 @@
+🔝 <b>Top processes</b> — 2 running
+<pre> by CPU
+ postgres        31.0% pid 412
+ &lt;evil&gt;&amp;          4.0% pid 9
+────────────────────────────
+ by memory
+ postgres       412.0M 10%
+ &lt;evil&gt;&amp;         96.0M 2%</pre>
+--- keyboard ---
+[⬅️ Back] → ~1v|met  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|top

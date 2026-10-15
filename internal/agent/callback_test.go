@@ -79,7 +79,7 @@ func TestCallbackEditFailureFallsBackToSend(t *testing.T) {
 	if len(send.sent) != 1 || !strings.Contains(send.sent[0], "<b>CPU</b>") {
 		t.Fatalf("fallback must send the same view: %v", send.sent)
 	}
-	if kb := send.keyboards[0]; kb == nil || kb[0][0].Data != "status" {
+	if kb := send.keyboards[0]; kb == nil || kb[len(kb)-1][2].Data != "~1v|cpu" {
 		t.Errorf("fallback must keep the view's keyboard: %+v", kb)
 	}
 	if want := []string{"c1:" + editFailedToast}; !slices.Equal(send.answered, want) {

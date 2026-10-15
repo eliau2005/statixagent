@@ -291,8 +291,8 @@ func TestFirewallViewOpenSSHProfile(t *testing.T) {
 	if !strings.Contains(text, "Default incoming policy: <b>deny</b>") {
 		t.Errorf("default policy missing: %q", text)
 	}
-	// Buttons and callbacks are unchanged: an open port offers Close.
-	if kb[0][0].Data != "fw_close_ask" {
+	// An open port offers Close.
+	if kb[0][0].Data != "~1fc" {
 		t.Errorf("keyboard = %+v", kb)
 	}
 }
@@ -310,7 +310,7 @@ func TestFirewallViewFallsBackToPlainStatus(t *testing.T) {
 	if strings.Contains(text, "Default incoming policy") {
 		t.Errorf("plain status has no policy line: %q", text)
 	}
-	if kb[0][0].Data != "fw_open_ask" {
+	if kb[0][0].Data != "~1fo" {
 		t.Errorf("keyboard = %+v", kb)
 	}
 }

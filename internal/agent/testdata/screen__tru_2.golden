@@ -1,0 +1,15 @@
+🤝 <b>Trusted IPs</b> · 11
+Plain SSH logins from these do not alert.
+
+<b>Telegram</b> (9/64, 🗑 or /untrust to remove):
+  <code>2001:db8:1::1</code>
+  <code>100.64.0.1</code>
+  <code>100.64.0.2</code>
+
+Root logins, logins with a new key and logins right after failed attempts always alert.
+/trust ip-or-cidr to add.
+--- keyboard ---
+[🗑 2001:db8:1::1] → ~1ut|2001:db8:1::1  [🗑 100.64.0.1] → ~1ut|100.64.0.1
+[🗑 100.64.0.2] → ~1ut|100.64.0.2
+[◀️ Prev] → ~1v|tru|1  [2/2] → ~1v|tru|2
+[⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|tru|2

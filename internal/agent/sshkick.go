@@ -11,10 +11,11 @@ import (
 	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
-// SSH session control: the 👥 view carries one disconnect button per live
-// session. Like the firewall, every kick goes through a confirm token
+// SSH session control: the 👥 screen carries one disconnect button per
+// live session. Like the firewall, every kick goes through a confirm token
 // (confirm.go), and a second one when it is the only session listed; the
 // kill is SIGKILL on the session's tty.
 
@@ -26,36 +27,10 @@ func validTTY(tty string) bool {
 	return ttyPattern.MatchString(tty)
 }
 
-// sshSessionsView renders the 👥 screen. Kick buttons carry the index plus
-// an identity fingerprint, re-resolved against a fresh Sessions() call
-// when pressed and again on Yes, so a shifted list can never retarget a
-// kick.
+// sshSessionsView renders the 👥 Sessions screen (sessionsView) as a
+// message.
 func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard) {
-	if a.src.Sessions == nil {
-		return "Session listing unavailable.", navKeyboard("ssh")
-	}
-	sessions, err := a.src.Sessions()
-	if err != nil {
-		return "Could not read sessions: " + esc(err.Error()), navKeyboard("ssh")
-	}
-	geo := map[string]sshwatch.GeoInfo{}
-	for _, s := range sessions {
-		geo[s.Host] = a.geo.Lookup(ctx, s.Host)
-	}
-	var kb telegram.Keyboard
-	if a.src.Runner != nil {
-		for i, s := range sessions {
-			if !validTTY(s.TTY) {
-				continue // no terminal to signal (or suspicious bytes)
-			}
-			kb = append(kb, []telegram.Button{{
-				Text: "🚫 Kick " + truncate(s.User+" "+s.TTY, 24),
-				Data: sessionCallbackData("sk:", i+1, s),
-			}})
-		}
-	}
-	kb = append(kb, navKeyboard("ssh")...)
-	return bot.Sessions(sessions, geo, a.now()), kb
+	return a.screen(ctx, tgui.Open(scrSessions))
 }
 
 // sshCallback handles 👥 buttons: the list, and sk: (Kick), which opens

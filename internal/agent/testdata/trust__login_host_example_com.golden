@@ -1,3 +1,4 @@
 host.example.com
 --- keyboard ---
-[👥 Sessions] → ssh  [🚫 Fails] → ssh_fails  [🛡 Firewall] → firewall  [🔕 1h] → snz:d:ssh-login:alice@host.example.com
+[👥 Sessions] → ~1o|ses  [🚫 Failed] → ~1o|fai  [🛡 Firewall] → ~1o|fw  [🔕 1h] → snz:d:ssh-login:alice@host.example.com
+[📋 Copy IP] ⧉ host.example.com

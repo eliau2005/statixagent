@@ -15,8 +15,5 @@
    from 10.0.0.8
    📍 local network</pre>
 --- keyboard ---
-[📊 Status] → status  [🖥 CPU] → cpu  [🧠 Mem] → mem
-[💾 Disk] → disk  [🌐 Net] → net  [🌡 Temp] → temp
-[🔋 Power] → battery  [🧩 Svc] → services  [🐳 Dock] → docker
-[• 🔐 SSH] → ssh  [▶️ Live] → live  [🔄 Refresh] → ssh
-[🔝 Top] → top  [👁 Watching] → watching  [⚙️ Settings] → settings
+[🕘 History] → ~1v|his^ses  [🚫 Failed] → ~1v|fai^ses
+[⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|ses

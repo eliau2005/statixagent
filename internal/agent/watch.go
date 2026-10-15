@@ -13,6 +13,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // watchCopy returns a snapshot of the watch lists under the lock.
@@ -55,16 +56,6 @@ func (a *Agent) persist(cfg config.Config) string {
 func (a *Agent) registerWatchHandlers(r *bot.Router) {
 	r.Handle("watching", func(ctx context.Context, _ []string) string {
 		text, kb := a.watchingView()
-		a.stashKB(kb)
-		return text
-	})
-	r.Handle("settings", func(ctx context.Context, _ []string) string {
-		text, kb := a.settingsView()
-		a.stashKB(kb)
-		return text
-	})
-	r.Handle("firewall", func(ctx context.Context, _ []string) string {
-		text, kb := a.firewallView(ctx)
 		a.stashKB(kb)
 		return text
 	})
@@ -526,7 +517,10 @@ func (a *Agent) watchingView() (string, telegram.Keyboard) {
 		}
 		b.WriteString("</pre>")
 	}
-	kb = append(kb, watchFooterRow())
+	kb = append(kb, watchFooterRow(), []telegram.Button{
+		{Text: "⬅️ Back", Data: callData(tgui.Open(scrSettings))},
+		{Text: "🏠 Home", Data: callData(tgui.Open(scrHome))},
+	})
 	return b.String(), kb
 }
 

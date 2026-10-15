@@ -1,0 +1,13 @@
+🤝 <b>Trusted IPs</b> · 0
+Plain SSH logins from these do not alert.
+
+<b>config.toml</b> (edit ssh.trusted_ips and restart to change):
+  (none)
+
+<b>Telegram</b> (0/64, 🗑 or /untrust to remove):
+  (none)
+
+Root logins, logins with a new key and logins right after failed attempts always alert.
+/trust ip-or-cidr to add.
+--- keyboard ---
+[⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|tru

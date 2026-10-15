@@ -1,0 +1,12 @@
+🏠 <b>web-01&lt;evil&gt;&amp;</b> · up 12d 3h · 14:05
+<pre>CPU   23%  load 0.41
+Mem   62%  2.5G / 4.0G
+Disk  72%  /
+      41%  /var/lib/docker/over…
+Net   ↓1.1M/s ↑293.0K/s</pre>
+❌ 1 failing · 👥 3 SSH sessions
+--- keyboard ---
+[❌ 1 failing] → ~1v|svc
+[📈 Metrics] → ~1v|met  [🧩 Services] → ~1v|svc
+[🔐 Security] → ~1v|sec  [⚙️ Settings] → ~1v|set
+[▶️ Live] → live  [🔄 Refresh] → ~1v|home

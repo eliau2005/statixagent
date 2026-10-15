@@ -1,4 +1,4 @@
 203.0.113.9
 --- keyboard ---
-[👥 Sessions] → ssh  [🚫 Fails] → ssh_fails  [🛡 Firewall] → firewall  [🔕 1h] → snz:d:ssh-login:alice@203.0.113.9
-[🤝 Trust this IP] → tip:203.0.113.9
+[👥 Sessions] → ~1o|ses  [🚫 Failed] → ~1o|fai  [🛡 Firewall] → ~1o|fw  [🔕 1h] → snz:d:ssh-login:alice@203.0.113.9
+[🤝 Trust this IP] → tip:203.0.113.9  [📋 Copy IP] ⧉ 203.0.113.9

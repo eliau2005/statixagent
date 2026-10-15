@@ -370,9 +370,14 @@ func TestTrustButtonConfirmFlow(t *testing.T) {
 
 	// Tap 1 again, then confirm.
 	press("tip:10.0.0.7")
+	// Yes restores the alert's keyboard, snooze included, minus Trust,
+	// with the outcome as a label below it.
 	m = press("tipk:10.0.0.7")
-	if got := labels(m.kb); got != "✅ Trusted 10.0.0.7" {
+	if got := labels(m.kb[len(m.kb)-1:]); got != "✅ Trusted 10.0.0.7" {
 		t.Errorf("result line = %q", got)
+	}
+	if hasData(m.kb, "tip:") || !hasData(m.kb, "snz:") || !hasData(m.kb, "~1o|ses") || !strings.Contains(labels(m.kb), "📋 Copy IP") {
+		t.Errorf("restored keyboard = %s", labels(m.kb))
 	}
 	if n := loginAlerts(a, send, plainLogin("10.0.0.7"), now.Add(time.Minute)); n != 0 {
 		t.Error("confirmed IP must be trusted immediately")
@@ -396,7 +401,7 @@ func TestTrustCancelAfterRestart(t *testing.T) {
 	a := trustAgent(send, "")
 	a.handleCallback(context.Background(), &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 999, Data: "tipc:10.0.0.7"})
 	kb := send.lastMarkup().kb
-	if !hasData(kb, "ssh") || !hasData(kb, "tip:10.0.0.7") || hasData(kb, "snz:") {
+	if !hasData(kb, "~1o|ses") || !hasData(kb, "tip:10.0.0.7") || hasData(kb, "snz:") {
 		t.Errorf("restored keyboard without a remembered alert = %s", labels(kb))
 	}
 }
@@ -419,7 +424,8 @@ func TestTrustCallbackRejectsForgedData(t *testing.T) {
 			send := &fakeSender{}
 			a := trustAgent(send, "")
 			a.handleCallback(context.Background(), &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 1, Data: data})
-			if got := labels(send.lastMarkup().kb); got != "⚠️ Not trusted: invalid button" {
+			kb := send.lastMarkup().kb
+			if got := labels(kb[len(kb)-1:]); got != "⚠️ Not trusted: invalid button" || hasData(kb, "tip") {
 				t.Errorf("result = %q", got)
 			}
 			if a.trustStore.Len() != 0 {

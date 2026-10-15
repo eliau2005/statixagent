@@ -1,3 +1,5 @@
 tipk:203.0.113.9
 --- keyboard ---
+[👥 Sessions] → ~1o|ses  [🚫 Failed] → ~1o|fai  [🛡 Firewall] → ~1o|fw  [🔕 1h] → snz:d:ssh-login:alice@203.0.113.9
+[📋 Copy IP] ⧉ 203.0.113.9
 [✅ Trusted 203.0.113.9] → noop

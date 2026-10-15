@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/netip"
+	"slices"
 	"time"
 
+	"github.com/eliau2005/statixagent/internal/config"
+	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/telegram"
 	"github.com/eliau2005/statixagent/internal/tgui"
 )
@@ -24,6 +28,7 @@ const (
 	actFwClose = "fw_close"
 	actUpdate  = "update"
 	actClear   = "clear_chat"
+	actUntrust = "untrust"
 )
 
 // Answers to a confirm press that cannot run.
@@ -39,12 +44,14 @@ const (
 	runningText      = "⏳ Running…"
 	cancelledText    = "❌ Cancelled."
 	sessionGoneToast = "Session changed, refreshed"
+	trustGoneToast   = "No longer trusted from the bot, refreshed"
 )
 
 // confirmAction is one host-changing action behind a confirm token.
 type confirmAction struct {
-	// back is the way back from a stale or cancelled confirm.
-	back telegram.Button
+	// back is the screen a stale or cancelled confirm leads back to, and
+	// backLabel its button's label.
+	back, backLabel string
 	// prompt renders the confirm screen for target from fresh state;
 	// final selects the second screen of a double confirm.
 	prompt func(ctx context.Context, target string, final bool) confirmPrompt
@@ -91,12 +98,14 @@ func (a *Agent) buildConfirms() map[string]confirmAction {
 		actFwClose: a.firewallAction(false),
 		actUpdate:  a.updateAction(),
 		actClear:   a.clearAction(),
+		actUntrust: a.untrustAction(),
 	}
 }
 
-// confirmKeyboard is the Yes/Cancel row of a confirm screen.
+// confirmKeyboard is the Yes/Cancel row of a confirm screen. Yes is red,
+// as decoration: its label already says what it does.
 func confirmKeyboard(yesLabel, yes, no string) telegram.Keyboard {
-	return telegram.Keyboard{{{Text: yesLabel, Data: yes}, {Text: "❌ Cancel", Data: no}}}
+	return telegram.Keyboard{{{Text: yesLabel, Data: yes, Style: "danger"}, {Text: "❌ Cancel", Data: no}}}
 }
 
 // mintConfirm stores a token for in and returns its keyboard and nonce.
@@ -275,11 +284,11 @@ func (a *Agent) cancelPress(ctx context.Context, cb *telegram.Callback, nonce st
 }
 
 // confirmBack is the keyboard of a confirm that ended without running:
-// the action's own view, when known, and Status.
+// the action's own screen, when known, and Home.
 func (a *Agent) confirmBack(in tgui.Intent) telegram.Keyboard {
-	row := []telegram.Button{{Text: "📊 Status", Data: "status"}}
-	if act, ok := a.confirms[in.Action]; ok && act.back.Data != "status" {
-		row = append([]telegram.Button{act.back}, row...)
+	row := []telegram.Button{{Text: "🏠 Home", Data: callData(tgui.Open(scrHome))}}
+	if act, ok := a.confirms[in.Action]; ok && act.back != scrHome {
+		row = append([]telegram.Button{{Text: act.backLabel, Data: callData(tgui.Open(act.back))}}, row...)
 	}
 	return telegram.Keyboard{row}
 }
@@ -305,7 +314,7 @@ func (a *Agent) kickAction() confirmAction {
 		return confirmPrompt{text: text, kb: kb, toast: sessionGoneToast}
 	}
 	return confirmAction{
-		back: telegram.Button{Text: "👥 Sessions", Data: "ssh"},
+		back: scrSessions, backLabel: "👥 Sessions",
 		prompt: func(ctx context.Context, fp string, final bool) confirmPrompt {
 			s, _, ok := a.sessionByFingerprint(fp)
 			switch {
@@ -345,7 +354,7 @@ func (a *Agent) kickAction() confirmAction {
 // confirmed: it can lock the user out of SSH.
 func (a *Agent) firewallAction(open bool) confirmAction {
 	act := confirmAction{
-		back: telegram.Button{Text: "🛡 Firewall", Data: "firewall"},
+		back: scrFirewall, backLabel: "🛡 Firewall",
 		prompt: func(_ context.Context, _ string, final bool) confirmPrompt {
 			switch {
 			case open:
@@ -386,7 +395,7 @@ func (a *Agent) firewallAction(open bool) confirmAction {
 func (a *Agent) updateAction() confirmAction {
 	configured := func() bool { return a.src.UpdateCheck != nil && a.src.UpdateApply != nil }
 	return confirmAction{
-		back: telegram.Button{Text: "📊 Status", Data: "status"},
+		back: scrUpdate, backLabel: "⬇️ Update",
 		prompt: func(context.Context, string, bool) confirmPrompt {
 			if !configured() {
 				return confirmPrompt{text: "Self-update is not configured in this build."}
@@ -408,7 +417,7 @@ func (a *Agent) updateAction() confirmAction {
 			return res
 		},
 		cancel: func(context.Context) (string, telegram.Keyboard) {
-			return "Update postponed — /update any time.", nil
+			return "Update postponed — /update any time.", homeKeyboard()
 		},
 	}
 }
@@ -417,7 +426,7 @@ func (a *Agent) updateAction() confirmAction {
 // so its outcome arrives as a new message.
 func (a *Agent) clearAction() confirmAction {
 	return confirmAction{
-		back: telegram.Button{Text: "📊 Status", Data: "status"},
+		back: scrSettings, backLabel: "⚙️ Settings",
 		prompt: func(context.Context, string, bool) confirmPrompt {
 			return confirmPrompt{text: "🧹 <b>Delete recent messages?</b>\n" +
 				"The last 300 messages in this chat are deleted (Telegram only allows it for messages under 48 hours old).",
@@ -432,6 +441,44 @@ func (a *Agent) clearAction() confirmAction {
 			}
 			return res
 		},
-		cancel: func(context.Context) (string, telegram.Keyboard) { return "Chat left as it is.", nil },
+		cancel: func(context.Context) (string, telegram.Keyboard) { return "Chat left as it is.", homeKeyboard() },
+	}
+}
+
+// untrustAction removes a bot-managed trusted source. It changes only the
+// bot's own settings, but logins from that source alert again, so it is
+// confirmed like a host change; the target is the canonical prefix.
+func (a *Agent) untrustAction() confirmAction {
+	trusted := func(ctx context.Context) (string, telegram.Keyboard) { return a.screen(ctx, tgui.Open(scrTrusted)) }
+	// stored re-reads the bot-managed list: config entries, and entries
+	// already removed, cannot be untrusted from here.
+	stored := func(target string) (netip.Prefix, bool) {
+		p, err := config.ParseTrustedIP(target)
+		if err != nil || sshwatch.FormatPrefix(p) != target {
+			return netip.Prefix{}, false
+		}
+		return p, slices.Contains(a.trustStore.Entries(), p)
+	}
+	return confirmAction{
+		back: scrTrusted, backLabel: "🤝 Trusted IPs",
+		prompt: func(ctx context.Context, target string, _ bool) confirmPrompt {
+			if _, ok := stored(target); !ok {
+				text, kb := trusted(ctx)
+				return confirmPrompt{text: text, kb: kb, toast: trustGoneToast}
+			}
+			return confirmPrompt{text: "🤝 <b>Untrust <code>" + esc(target) + "</code>?</b>\n" +
+				"Plain SSH logins from it will alert again.", yes: "✅ Yes, untrust"}
+		},
+		run: func(ctx context.Context, target string) actionResult {
+			p, ok := stored(target)
+			if !ok {
+				text, kb := trusted(ctx)
+				return actionResult{drift: true, driftToast: trustGoneToast, text: text, kb: kb}
+			}
+			msg := a.trustRemove(p)
+			text, kb := trusted(ctx)
+			return actionResult{ok: true, what: "Source untrusted", target: target, text: msg + "\n\n" + text, kb: kb}
+		},
+		cancel: trusted,
 	}
 }

@@ -1,3 +1,3 @@
 power-restored
 --- keyboard ---
-[🔋 Power] → battery  [📊 Status] → status  [🔕 1h] → snz:d:power-restored
+[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:power-restored

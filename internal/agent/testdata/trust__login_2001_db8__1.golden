@@ -1,4 +1,4 @@
 2001:db8::1
 --- keyboard ---
-[👥 Sessions] → ssh  [🚫 Fails] → ssh_fails  [🛡 Firewall] → firewall  [🔕 1h] → snz:d:ssh-login:alice@2001:db8::1
-[🤝 Trust this IP] → tip:2001:db8::1
+[👥 Sessions] → ~1o|ses  [🚫 Failed] → ~1o|fai  [🛡 Firewall] → ~1o|fw  [🔕 1h] → snz:d:ssh-login:alice@2001:db8::1
+[🤝 Trust this IP] → tip:2001:db8::1  [📋 Copy IP] ⧉ 2001:db8::1

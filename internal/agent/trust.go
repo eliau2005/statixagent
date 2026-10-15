@@ -12,6 +12,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // Trusted SSH sources managed from the bot. config.toml's ssh.trusted_ips
@@ -195,29 +196,67 @@ func parseTrustArg(cmd string, args []string) (netip.Prefix, string) {
 	return p, ""
 }
 
-// trustedView renders /trusted: both sources, and what trust never hides.
-func (a *Agent) trustedView() string {
+// trustedScreen is the 🤝 Trusted IPs screen: both sources, paged, with
+// a 🗑 button per bot-managed entry that opens the untrust confirm.
+// Config entries can only be removed by editing the file.
+func (a *Agent) trustedScreen(_ context.Context, c tgui.Call) tgui.View {
+	type entry struct {
+		p   netip.Prefix
+		bot bool
+	}
+	var all []entry
+	for _, p := range a.configTrusted {
+		all = append(all, entry{p, false})
+	}
+	stored := a.trustStore.Entries()
+	for _, p := range stored {
+		all = append(all, entry{p, true})
+	}
+	page, pages := pageOf(c, len(all))
+	shown := pageSlice(all, page)
 	var b strings.Builder
-	b.WriteString("🤝 <b>Trusted SSH sources</b>\nPlain logins from these do not alert.\n\n")
-	list := func(title string, entries []netip.Prefix) {
-		b.WriteString(title + "\n")
-		if len(entries) == 0 {
-			b.WriteString("  (none)\n")
+	fmt.Fprintf(&b, "🤝 <b>Trusted IPs</b> · %d\nPlain SSH logins from these do not alert.\n", len(all))
+	// group lists the entries of one source on this page under its
+	// heading; an empty source says so, a source on other pages is left
+	// out.
+	group := func(bot bool, heading string, total int) {
+		var lines []string
+		for _, e := range shown {
+			if e.bot == bot {
+				lines = append(lines, "  <code>"+esc(sshwatch.FormatPrefix(e.p))+"</code>\n")
+			}
 		}
-		for _, p := range entries {
-			fmt.Fprintf(&b, "  <code>%s</code>\n", esc(sshwatch.FormatPrefix(p)))
+		switch {
+		case total == 0:
+			lines = []string{"  (none)\n"}
+		case len(lines) == 0:
+			return
+		}
+		b.WriteString("\n" + heading + "\n" + strings.Join(lines, ""))
+	}
+	group(false, "<b>"+srcConfig+"</b> (edit ssh.trusted_ips and restart to change):", len(a.configTrusted))
+	group(true, fmt.Sprintf("<b>%s</b> (%d/%d, 🗑 or /untrust to remove):", srcTelegram, len(stored), maxTelegramTrusted), len(stored))
+	b.WriteString("\nRoot logins, logins with a new key and logins right after failed attempts always alert.\n" +
+		"/trust ip-or-cidr to add.")
+
+	var rows [][]tgui.Button
+	var row []tgui.Button
+	for _, e := range shown {
+		if !e.bot {
+			continue
+		}
+		p := sshwatch.FormatPrefix(e.p)
+		row = append(row, tgui.Button{Label: "🗑 " + truncate(p, 24), Call: tgui.Call{Act: askUntrust, Args: []string{p}}})
+		if len(row) == 2 {
+			rows, row = append(rows, row), nil
 		}
 	}
-	list("<b>config.toml</b> (edit the file and restart to change):", a.configTrusted)
-	b.WriteString("\n")
-	entries := a.trustStore.Entries()
-	list(fmt.Sprintf("<b>Telegram</b> (%d/%d, /untrust to remove):", len(entries), maxTelegramTrusted), entries)
-	b.WriteString("\nRoot logins, logins with a new key and logins right after failed attempts always alert.\n" +
-		"/trust &lt;ip-or-cidr&gt; to add.")
-	return b.String()
+	rows = append(rows, row, pageRow(scrTrusted, c, page, pages))
+	return tgui.View{Text: b.String(), Rows: rows}
 }
 
-// registerTrustHandlers adds /trust, /untrust and /trusted.
+// registerTrustHandlers adds /trust and /untrust; /trusted opens the
+// Trusted IPs screen.
 func (a *Agent) registerTrustHandlers(r *bot.Router) {
 	r.Handle("trust", func(ctx context.Context, args []string) string {
 		p, errMsg := parseTrustArg("trust", args)
@@ -232,9 +271,6 @@ func (a *Agent) registerTrustHandlers(r *bot.Router) {
 			return errMsg
 		}
 		return a.trustRemove(p)
-	})
-	r.Handle("trusted", func(ctx context.Context, _ []string) string {
-		return a.trustedView()
 	})
 }
 
@@ -254,13 +290,49 @@ func (a *Agent) trustButton(ip string) []telegram.Button {
 }
 
 // loginKeyboard is the keyboard of a plain login alert: the usual SSH
-// actions plus the trust row when one applies.
+// actions plus the source row.
 func (a *Agent) loginKeyboard(key, ip string) telegram.Keyboard {
 	kb := a.alertKeyboard(key)
-	if row := a.trustButton(ip); row != nil {
+	if row := a.sourceRow(ip); row != nil {
 		kb = append(kb, row)
 	}
 	return kb
+}
+
+// sourceRow is a login alert's row for its source: Trust this IP when
+// that applies, and Copy IP, which needs no round trip.
+func (a *Agent) sourceRow(ip string) []telegram.Button {
+	row := a.trustButton(ip)
+	if ip != "" {
+		row = append(row, telegram.Button{Text: "📋 Copy IP", Copy: ip})
+	}
+	return row
+}
+
+// restoreLoginKeyboard rebuilds the keyboard a login alert in message id
+// was sent with, so a trust press leaves it as it was (minus Trust once
+// trusted), and extra rows below it. An alert sent before a restart gets
+// the same buttons minus the snooze, which needs the original alert key.
+func (a *Agent) restoreLoginKeyboard(id int64, ip string, extra ...[]telegram.Button) telegram.Keyboard {
+	a.mu.Lock()
+	key, known := a.trustAlerts[id]
+	a.mu.Unlock()
+	var kb telegram.Keyboard
+	if known {
+		// The key is "ssh-login:user@ip": it names the source even when
+		// the pressed button no longer does.
+		if at := strings.LastIndex(key, "@"); at >= 0 {
+			ip = key[at+1:]
+		}
+		kb = a.loginKeyboard(key, ip)
+	} else {
+		kb = a.alertKeyboard("ssh-login")
+		kb[0] = slices.DeleteFunc(kb[0], func(b telegram.Button) bool { return strings.HasPrefix(b.Data, "snz:") })
+		if row := a.sourceRow(ip); row != nil {
+			kb = append(kb, row)
+		}
+	}
+	return append(kb, extra...)
 }
 
 // rememberTrustAlert records which alert key a sent login alert carries,
@@ -298,21 +370,21 @@ func (a *Agent) handleTrustCallback(ctx context.Context, cb *telegram.Callback) 
 	if prefix == "" {
 		return false
 	}
-	resultKB := func(line string) telegram.Keyboard {
-		return telegram.Keyboard{{{Text: line, Data: "noop"}}}
+	label := func(line string) []telegram.Button {
+		return []telegram.Button{{Text: line, Data: "noop"}}
 	}
 	p, ok := parseTrustCallback(strings.TrimPrefix(cb.Data, prefix))
 	var kb telegram.Keyboard
 	toast := ""
 	switch {
 	case !ok:
-		kb, toast = resultKB("⚠️ Not trusted: invalid button"), "rejected"
+		kb, toast = a.restoreLoginKeyboard(cb.MessageID, "", label("⚠️ Not trusted: invalid button")), "rejected"
 
 	case prefix == cbTrust:
 		shown := sshwatch.FormatPrefix(p)
 		if m, found := a.findTrust(p); found {
 			// Stale button: trusted since the alert went out.
-			kb = resultKB("☑️ Already trusted via " + sshwatch.FormatPrefix(m.entry))
+			kb = a.restoreLoginKeyboard(cb.MessageID, shown, label("☑️ Already trusted via "+sshwatch.FormatPrefix(m.entry)))
 			break
 		}
 		kb = telegram.Keyboard{
@@ -321,24 +393,12 @@ func (a *Agent) handleTrustCallback(ctx context.Context, cb *telegram.Callback) 
 		}
 
 	case prefix == cbTrustConfirm:
+		// The alert keeps its buttons; Trust is gone once it took.
 		r := a.trustAdd(p)
-		kb, toast = resultKB(r.line), r.line
+		kb, toast = a.restoreLoginKeyboard(cb.MessageID, sshwatch.FormatPrefix(p), label(r.line)), r.line
 
 	case prefix == cbTrustCancel:
-		a.mu.Lock()
-		key, known := a.trustAlerts[cb.MessageID]
-		a.mu.Unlock()
-		if known {
-			kb = a.loginKeyboard(key, sshwatch.FormatPrefix(p))
-		} else {
-			// Sent before a restart: same buttons, minus the snooze that
-			// needs the original alert key.
-			kb = a.alertKeyboard("ssh-login")
-			kb[0] = slices.DeleteFunc(kb[0], func(b telegram.Button) bool { return strings.HasPrefix(b.Data, "snz:") })
-			if row := a.trustButton(sshwatch.FormatPrefix(p)); row != nil {
-				kb = append(kb, row)
-			}
-		}
+		kb = a.restoreLoginKeyboard(cb.MessageID, sshwatch.FormatPrefix(p))
 	}
 	a.send.AnswerCallback(ctx, cb.ID, toast)
 	if err := a.send.EditMessageMarkup(ctx, cb.ChatID, cb.MessageID, kb); err != nil {

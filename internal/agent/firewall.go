@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // Firewall control: open/close the SSH port through ufw. This is the
@@ -132,49 +133,79 @@ func notFound(err error) bool {
 	return errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist)
 }
 
-// firewallView renders the 🛡 screen with the appropriate action button.
-// Rule-changing buttons appear only in the states the agent can actually
-// act on: open, closed, and active-but-unmanaged.
+// firewallView renders the 🛡 Firewall screen as a message.
 func (a *Agent) firewallView(ctx context.Context) (string, telegram.Keyboard) {
-	back := []telegram.Button{{Text: "⬅️ Status", Data: "status"}, {Text: "🔐 SSH", Data: "ssh"}}
-	if a.src.Runner == nil {
-		return "🛡 Firewall control unavailable in this build.", telegram.Keyboard{back}
-	}
-	return a.renderFirewall(ctx, a.probeUFW(ctx))
+	return a.screen(ctx, tgui.Open(scrFirewall))
 }
 
-// renderFirewall renders an already-taken probe, so a change can be
-// verified and displayed from the same reading.
+// firewallScreen is the 🛡 screen, with the action buttons the probed
+// state allows.
+func (a *Agent) firewallScreen(ctx context.Context, _ tgui.Call) tgui.View {
+	if a.src.Runner == nil {
+		return tgui.View{Text: "🛡 Firewall control unavailable in this build."}
+	}
+	return a.firewallFor(ctx, a.probeUFW(ctx))
+}
+
+// renderFirewall renders an already-taken probe as the 🛡 screen, so a
+// change can be verified and displayed from the same reading.
 func (a *Agent) renderFirewall(ctx context.Context, p ufwProbe) (string, telegram.Keyboard) {
-	back := []telegram.Button{{Text: "⬅️ Status", Data: "status"}, {Text: "🔐 SSH", Data: "ssh"}}
+	v := a.firewallFor(ctx, p)
+	v.Rows = append(v.Rows, a.ui.Footer(scrFirewall, tgui.Open(scrFirewall)))
+	return encodeView(v)
+}
+
+// firewallFor renders probe p. Rule-changing buttons appear only in the
+// states the agent can actually act on: open, closed, and
+// active-but-unmanaged. They open a confirm screen; the token on its Yes
+// is what changes the rules.
+func (a *Agent) firewallFor(ctx context.Context, p ufwProbe) tgui.View {
+	open := tgui.Button{Label: "🔓 Open port 22", Call: tgui.Call{Act: askFwOpen}}
+	closeBtn := tgui.Button{Label: "🔒 Close port 22", Call: tgui.Call{Act: askFwClose}, Style: "danger"}
 	switch p.state {
 	case fwMissing:
-		return "🛡 <b>Firewall</b>\n" +
+		return tgui.View{Text: "🛡 <b>Firewall</b>\n" +
 			"<code>ufw</code> is not installed (or not on the agent's PATH) — the agent cannot manage this host's firewall.\n" +
 			"That does not mean the host is open: firewalld, nftables or iptables may be enforcing rules, and containers are usually filtered by the host.\n" +
-			"To let the agent manage port 22, install ufw on the server: " + a.ufwInstallHint(), telegram.Keyboard{back}
+			"To let the agent manage port 22, install ufw on the server: " + a.ufwInstallHint()}
 	case fwUnusable:
-		return "🛡 <b>Firewall</b>\n<code>ufw</code> is installed but the agent could not query it:\n" +
-			preBlock(p.detail()), telegram.Keyboard{back}
+		return tgui.View{Text: "🛡 <b>Firewall</b>\n<code>ufw</code> is installed but the agent could not query it:\n" +
+			preBlock(p.detail())}
 	case fwInactive:
-		return "🛡 <b>Firewall</b>\nufw is installed but <b>inactive</b> — all ports are open.\nEnable it on the server first: <code>ufw enable</code>", telegram.Keyboard{back}
+		return tgui.View{Text: "🛡 <b>Firewall</b>\nufw is installed but <b>inactive</b> — all ports are open.\nEnable it on the server first: <code>ufw enable</code>"}
 	case fwUnparsed:
-		return "🛡 <b>Firewall</b>\n<code>ufw status</code> returned output the agent could not read — " +
+		return tgui.View{Text: "🛡 <b>Firewall</b>\n<code>ufw status</code> returned output the agent could not read — " +
 			"the firewall state is <b>unknown</b>, so no changes are offered.\n" +
-			preBlock(p.out), telegram.Keyboard{back}
+			preBlock(p.out)}
 	case fwOpen:
-		return a.firewallState(ctx, p),
-			telegram.Keyboard{{{Text: "🔒 Close port 22", Data: "fw_close_ask"}}, back}
+		return tgui.View{Text: a.firewallState(ctx, p), Rows: [][]tgui.Button{{closeBtn}}}
 	case fwClosed:
-		return a.firewallState(ctx, p),
-			telegram.Keyboard{{{Text: "🔓 Open port 22", Data: "fw_open_ask"}}, back}
+		return tgui.View{Text: a.firewallState(ctx, p), Rows: [][]tgui.Button{{open}}}
 	default: // fwUnmanaged
-		return a.firewallState(ctx, p),
-			telegram.Keyboard{
-				{{Text: "🔓 Open port 22", Data: "fw_open_ask"}, {Text: "🔒 Close port 22", Data: "fw_close_ask"}},
-				back,
-			}
+		return tgui.View{Text: a.firewallState(ctx, p), Rows: [][]tgui.Button{{open, closeBtn}}}
 	}
+}
+
+// firewallSummary is the one-line firewall state of the Security screen.
+func (a *Agent) firewallSummary(ctx context.Context) string {
+	if a.src.Runner == nil {
+		return "unavailable"
+	}
+	switch a.probeUFW(ctx).state {
+	case fwMissing:
+		return "no ufw"
+	case fwUnusable:
+		return "ufw unreadable"
+	case fwInactive:
+		return "ufw inactive"
+	case fwUnparsed:
+		return "ufw unknown"
+	case fwOpen:
+		return "ufw · SSH open"
+	case fwClosed:
+		return "ufw · SSH closed"
+	}
+	return "ufw · SSH by policy"
 }
 
 // firewallState describes an active ufw: the first-match verdict for port
@@ -278,17 +309,18 @@ func (a *Agent) ufwInstallHint() string {
 }
 
 // preBlock renders command output for display, clipped so a chatty tool
-// cannot push the rest of the view out of the message.
+// cannot push the rest of the view out of the message, and wrapped to a
+// phone's width.
 func preBlock(out string) string {
 	out = strings.TrimSpace(out)
 	if out == "" {
 		return "<pre>(no output)</pre>"
 	}
-	return "<pre>" + esc(truncate(out, 300)) + "</pre>"
+	return pre(strings.Split(truncate(out, 300), "\n"))
 }
 
-// firewallCallback handles 🛡 buttons: the view, and the Open and Close
-// buttons, which open a confirm screen. fw_open and fw_close are the Yes
+// firewallCallback handles the legacy 🛡 buttons: the view, and the Open
+// and Close buttons, which open a confirm screen. fw_open and fw_close are the Yes
 // buttons of older versions: they carry the action itself, so they only
 // ever ask again, bound to a fresh token.
 func (a *Agent) firewallCallback(ctx context.Context, cb *telegram.Callback, answered bool) {
