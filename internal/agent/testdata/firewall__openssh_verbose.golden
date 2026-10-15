@@ -1,5 +1,8 @@
-🛡 <b>Firewall</b>
+🛡 <b>Firewall</b> · ufw active
 Default incoming policy: <b>deny</b>
 SSH port 22: 🔓 <b>open</b> (rule 1: 22/tcp (OpenSSH) ALLOW IN Anywhere)
+Rules: 7 (v4 5 · v6 2)
 --- keyboard ---
+[📋 Rules] → ~1v|fl  [➕ Open port] → ~1v|fa  [🧱 Presets] → ~1v|fp
+[↩️ Restore previous] → ~1v|fh
 [⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fw

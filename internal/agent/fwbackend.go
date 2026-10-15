@@ -45,9 +45,10 @@ type FwBackend interface {
 
 // Plan operations.
 const (
-	opInsert = "insert" // ufw insert 1 <spec>
-	opAdd    = "add"    // ufw <spec>
-	opDelete = "delete" // ufw --force delete <spec>
+	opInsert  = "insert"  // ufw insert 1 <spec>
+	opPrepend = "prepend" // ufw prepend <spec>: first of its family (IPv6 rules)
+	opAdd     = "add"     // ufw <spec>
+	opDelete  = "delete"  // ufw --force delete <spec>
 )
 
 // fwChange is one rule change. Spec is a ufw rule as `ufw show added`
@@ -63,6 +64,8 @@ func (c fwChange) argv() []string {
 	switch c.Op {
 	case opInsert:
 		return append([]string{"insert", "1"}, c.Spec...)
+	case opPrepend:
+		return append([]string{"prepend"}, c.Spec...)
 	case opDelete:
 		return append([]string{"--force", "delete"}, c.Spec...)
 	}
@@ -92,12 +95,18 @@ type fwSnap struct {
 	Files  map[string][]byte // by base name; a file absent then is absent here
 	Status string            // `ufw status verbose` at snapshot time
 	SHA    string
+	// Added is `ufw show added` at snapshot time, nil when it was not
+	// recorded: a restore then has no plan to undo by spec.
+	Added [][]string
 }
 
 // ufwRuleFiles are the files ufw keeps user rules in.
 var ufwRuleFiles = []string{"user.rules", "user6.rules"}
 
-const snapStatusFile = "status.txt"
+const (
+	snapStatusFile = "status.txt"
+	snapAddedFile  = "added.txt"
+)
 
 // hashRuleFiles fingerprints rule files by name and content, so an absent
 // file and an empty one differ.
@@ -141,7 +150,14 @@ func loadSnap(dir string) (fwSnap, error) {
 		return fwSnap{}, fmt.Errorf("snapshot %s has no user.rules", dir)
 	}
 	status, _ := os.ReadFile(filepath.Join(dir, snapStatusFile))
-	return fwSnap{Files: files, Status: string(status), SHA: hashRuleFiles(files)}, nil
+	s := fwSnap{Files: files, Status: string(status), SHA: hashRuleFiles(files)}
+	if added, err := os.ReadFile(filepath.Join(dir, snapAddedFile)); err == nil {
+		s.Added = parseShowAdded(string(added))
+		if s.Added == nil {
+			s.Added = [][]string{} // recorded, and empty
+		}
+	}
+	return s, nil
 }
 
 // ufwBackend is ufw: rules live in dir (/etc/ufw), changes go through
@@ -216,7 +232,18 @@ func (b *ufwBackend) Snapshot(ctx context.Context, dir string) (fwSnap, error) {
 	if err := sshwatch.WriteStateFile(filepath.Join(dir, snapStatusFile), []byte(t.out)); err != nil {
 		return fwSnap{}, err
 	}
-	return fwSnap{Files: files, Status: t.out, SHA: hashRuleFiles(files)}, nil
+	snap := fwSnap{Files: files, Status: t.out, SHA: hashRuleFiles(files)}
+	// The rule specs let a later restore of this snapshot be undone by
+	// spec. Without them the snapshot is still a rollback target.
+	if a := b.ufw(ctx, "show", "added"); a.err == nil {
+		if err := sshwatch.WriteStateFile(filepath.Join(dir, snapAddedFile), []byte(a.out)); err == nil {
+			snap.Added = parseShowAdded(a.out)
+			if snap.Added == nil {
+				snap.Added = [][]string{}
+			}
+		}
+	}
+	return snap, nil
 }
 
 func (b *ufwBackend) Hash() (string, error) {

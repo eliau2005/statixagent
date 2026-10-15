@@ -248,7 +248,7 @@ func (a *Agent) containerLogs(ctx context.Context, t svTarget) (string, error) {
 // are checked by the confirm screen, from fresh state.
 func (a *Agent) serviceAsks() map[string]askAction {
 	ask := func(k actKind, idOK func(string) bool) askAction {
-		return askAction{tgui.ClassMutate, func(args []string) (string, string, bool) {
+		return askAction{class: tgui.ClassMutate, resolve: func(args []string) (string, string, bool) {
 			if len(args) != 2 || !services.ValidVerb(args[0]) || !idOK(args[1]) {
 				return "", "", false
 			}

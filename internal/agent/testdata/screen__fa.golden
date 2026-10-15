@@ -1,0 +1,10 @@
+➕ <b>Open a port</b>
+Pick a preset, or send:
+<code>/fw_open 8080/tcp</code>
+<code>/fw_allow 10.0.0.0/8 5432/tcp</code>
+<code>/fw_deny 198.51.100.7</code>
+Every change runs as a trial: the old rules return unless you tap Keep.
+--- keyboard ---
+[🌍 Web 80+443] → ~1fps|web  [🔐 SSH (limit)] → ~1fps|ssh
+[🗄 Postgres from…] → ~1v|fd|pg^fa  [🗄 Redis from…] → ~1v|fd|rd^fa
+[⬅️ Back] → ~1v|fw  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fa

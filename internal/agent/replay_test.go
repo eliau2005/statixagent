@@ -250,6 +250,9 @@ func TestIsView(t *testing.T) {
 		{"/ports_remove 443", false},
 		{"/procs_add redis", false},
 		{"/procs_remove redis", false},
+		{"/fw_open 8080/tcp", false},
+		{"/fw_allow 10.0.0.0/8 5432/tcp", false},
+		{"/fw_deny 198.51.100.7", false},
 		{"/nope", false},
 	}
 	for _, tc := range cases {
@@ -268,6 +271,7 @@ func TestEveryCommandClassified(t *testing.T) {
 		"update_confirm": true, "clear_chat": true, "trust": true, "untrust": true,
 		"services_add": true, "services_remove": true, "ports_add": true,
 		"ports_remove": true, "procs_add": true, "procs_remove": true,
+		"fw_open": true, "fw_allow": true, "fw_deny": true,
 		"ssl": true, "http": true, "update": true, // views only without arguments
 	}
 	for _, cmd := range testAgent(&fakeSender{}).router.Commands() {

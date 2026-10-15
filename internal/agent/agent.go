@@ -256,6 +256,8 @@ type Agent struct {
 	// both are set in New and replaced only by tests.
 	fwMu    sync.Mutex
 	fwTrial *fwLive
+	// fwPlans are the planned rule changes waiting for their Yes.
+	fwPlans fwPlans
 	fwAfter func(time.Duration, func()) func() bool
 	fwCrash func(step string)
 }
@@ -852,6 +854,12 @@ func (a *Agent) buildRouter() *bot.Router {
 	r.Handle("clear_chat", func(ctx context.Context, _ []string) tgui.View {
 		return a.typedConfirm(ctx, actClear, "chat")
 	})
+	// Typed rule changes only plan: the reply is the confirm screen of a
+	// plan (fwrules.go). They are not views, so replay safety and the
+	// admin check treat them as host changes (replay.go).
+	for _, cmd := range []string{"fw_open", "fw_allow", "fw_deny"} {
+		r.Handle(cmd, a.fwCommand(cmd))
+	}
 	a.registerWatchHandlers(r)
 	a.registerTrustHandlers(r)
 	return r
@@ -917,7 +925,10 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "ssh", Description: "live SSH sessions (disconnect buttons)"},
 	{Command: "watching", Description: "manage everything watched (buttons)"},
 	{Command: "settings", Description: "tune alert thresholds (buttons)"},
-	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
+	{Command: "firewall", Description: "ufw: rules, open ports, restore"},
+	{Command: "fw_open", Description: "open a port: /fw_open 8080/tcp"},
+	{Command: "fw_allow", Description: "allow a source: /fw_allow 10.0.0.0/8 5432/tcp"},
+	{Command: "fw_deny", Description: "deny a source: /fw_deny 198.51.100.7"},
 	{Command: "trusted", Description: "trusted SSH sources (no login alert)"},
 	{Command: "trust", Description: "trust an SSH source: /trust ip-or-cidr"},
 	{Command: "untrust", Description: "stop trusting: /untrust ip-or-cidr"},

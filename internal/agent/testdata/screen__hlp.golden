@@ -19,7 +19,8 @@
 /security — overview
 /ssh — live sessions (disconnect buttons)
 /ssh history — recent logins · /ssh fails — failed attempts
-/firewall — open/close SSH port 22
+/firewall — ufw rules, presets, restore previous
+/fw_open port · /fw_allow ip port · /fw_deny ip [port]
 /trusted — trusted SSH sources (/trust ip · /untrust ip)
 
 ⚙️ <b>Settings</b>

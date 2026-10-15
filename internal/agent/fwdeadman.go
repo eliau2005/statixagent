@@ -46,8 +46,10 @@ const (
 const (
 	fwCurrentFile = "current.json"
 	fwLockFile    = ".lock"
-	// fwSnapKeep is how long a finished trial's snapshot is kept.
-	fwSnapKeep = 24 * time.Hour
+	// fwSnapKeep is how long a finished trial's snapshot is kept, past
+	// the newest fwKeepSnaps, which are kept whatever their age.
+	fwSnapKeep  = 24 * time.Hour
+	fwKeepSnaps = 5
 	// fwTickEvery spaces countdown edits.
 	fwTickEvery = 10 * time.Second
 	// fwNoTimerCap caps the trial when systemd-run is unavailable: only
@@ -78,6 +80,9 @@ type fwTrialRecord struct {
 	MsgID   int64  `json:"msg_id"`
 	ActorID int64  `json:"actor_id"`
 	Plan    fwPlan `json:"plan"`
+	// What says what the trial did ("2 rule changes"); empty in records
+	// of older versions, which only opened or closed port 22.
+	What string `json:"what,omitempty"`
 	// Layer1 records that the systemd timer was armed.
 	Layer1 bool `json:"layer1"`
 	// Evidence: Keep needs a new SSH connection seen after the change
@@ -257,7 +262,58 @@ func (a *Agent) stopLayer1(ctx context.Context, rec fwTrialRecord) {
 // runFirewallTrial opens or closes port 22 under the dead-man switch. It
 // runs from a confirmed press (confirmPress puts the press in ctx).
 func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
-	res := actionResult{target: "port " + sshPort}
+	if !open && !a.cfg.Firewall.AllowCloseSSH {
+		return actionResult{refused: true, driftToast: "Closing SSH is turned off", text: closeSSHOff, kb: fwBackKB()}
+	}
+	job := fwJob{action: actFwClose, target: "port " + sshPort, what: "port 22 closed", evidence: !open,
+		prepare: func(ctx context.Context, b *ufwBackend, p ufwProbe) fwPrep {
+			added, t := b.added(ctx)
+			if t != nil {
+				return fwPrep{fail: &fwFailure{cmd: "ufw show added", out: t.out, err: t.err}, trace: t}
+			}
+			return fwPrep{plan: sshPortPlan(added, p.fw, open)}
+		},
+		// ufw exiting 0 does not mean the port changed; only a fresh
+		// reading decides.
+		verify: func(_ context.Context, _, after ufwProbe) *fwFailure { return verifySSHPort(after, open) },
+	}
+	if open {
+		job.action, job.what = actFwOpen, "port 22 opened"
+	}
+	return a.runTrial(ctx, job)
+}
+
+// fwJob is one firewall change to run under the dead-man switch.
+type fwJob struct {
+	action string // the trial's action, as the audit log records it
+	target string // receipt and audit target, plain text
+	what   string // what the trial did, for the countdown: "port 22 closed"
+	// evidence: Keep needs a new SSH connection seen after the change.
+	evidence bool
+	// prepare builds the plan from a fresh reading, under the trial lock;
+	// it may refuse instead (nothing has changed yet).
+	prepare func(ctx context.Context, b *ufwBackend, p ufwProbe) fwPrep
+	// apply, when set, makes the change instead of applying the plan (a
+	// snapshot restore); the plan is then only what undoes it by spec.
+	apply func(ctx context.Context, b *ufwBackend) (*cmdTrace, error)
+	// verify checks a fresh reading after the change; a failure rolls
+	// it back at once.
+	verify func(ctx context.Context, before, after ufwProbe) *fwFailure
+}
+
+// fwPrep is what a job's prepare decided.
+type fwPrep struct {
+	plan    fwPlan
+	refused *actionResult // shown as it is; nothing ran
+	fail    *fwFailure
+	trace   *cmdTrace
+}
+
+// runTrial runs job under the dead-man switch: snapshot, record, arm the
+// systemd timer, apply, verify, then layer 2 and the countdown. It runs
+// from a confirmed press (confirmPress puts the press in ctx).
+func (a *Agent) runTrial(ctx context.Context, job fwJob) actionResult {
+	res := actionResult{target: job.target}
 	fail := func(f *fwFailure, trace *cmdTrace, extra string) actionResult {
 		text, kb := a.firewallView(ctx)
 		banner := "❌ <b>Change failed</b>\n<pre>" + esc(f.display()) + "</pre>\n"
@@ -267,9 +323,6 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 		res.what, res.trace = "Firewall change failed", trace
 		res.text, res.kb = banner+extra+text, kb
 		return res
-	}
-	if !open && !a.cfg.Firewall.AllowCloseSSH {
-		return actionResult{refused: true, driftToast: "Closing SSH is turned off", text: closeSSHOff, kb: fwBackKB()}
 	}
 	if a.src.Runner == nil {
 		return fail(&fwFailure{reason: "firewall control unavailable in this build"}, nil, "")
@@ -285,17 +338,21 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 	if _, pending, err := loadTrial(a.src.FwDir); pending || err != nil {
 		return fail(&fwFailure{reason: "another firewall change is on trial; Keep it or roll it back first"}, nil, "")
 	}
+	a.pruneSnapshots("")
 
 	b := a.fwBackend("")
 	p := b.Probe(ctx)
 	if f := probeRefusal(p); f != nil {
 		return fail(f, nil, "")
 	}
-	added, t := b.added(ctx)
-	if t != nil {
-		return fail(&fwFailure{cmd: "ufw show added", out: t.out, err: t.err}, t, "")
+	prep := job.prepare(ctx, b, p)
+	switch {
+	case prep.refused != nil:
+		return *prep.refused
+	case prep.fail != nil:
+		return fail(prep.fail, prep.trace, "")
 	}
-	plan := sshPortPlan(added, p.fw, open)
+	plan := prep.plan
 
 	// 1. Snapshot. Nothing may change unless steps 1-3 succeed.
 	id, err := newFwID()
@@ -314,11 +371,8 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 	in := intentFrom(ctx)
 	n := a.trialWindow()
 	start := a.now()
-	rec := fwTrialRecord{ID: id, Backend: b.Name(), Bin: b.bin, Action: actFwClose, Deadline: start.Add(n),
-		PreSHA: snap.SHA, ChatID: in.ChatID, MsgID: in.MessageID, ActorID: in.ActorID, Plan: plan, Evidence: !open}
-	if open {
-		rec.Action = actFwOpen
-	}
+	rec := fwTrialRecord{ID: id, Backend: b.Name(), Bin: b.bin, Action: job.action, What: job.what, Deadline: start.Add(n),
+		PreSHA: snap.SHA, ChatID: in.ChatID, MsgID: in.MessageID, ActorID: in.ActorID, Plan: plan, Evidence: job.evidence}
 	if err := saveTrial(a.src.FwDir, rec); err != nil {
 		os.RemoveAll(snapDir)
 		return fail(&fwFailure{reason: "could not record the trial, so nothing was changed: " + err.Error()}, nil, "")
@@ -342,7 +396,13 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 	a.fwStep("layer1")
 
 	// 4. Apply, and record what the rules look like now.
-	trace, applyErr := b.Apply(ctx, plan)
+	var trace *cmdTrace
+	var applyErr error
+	if job.apply != nil {
+		trace, applyErr = job.apply(ctx, b)
+	} else {
+		trace, applyErr = b.Apply(ctx, plan)
+	}
 	a.fwStep("apply")
 	if post, err := b.Hash(); err == nil {
 		rec.PostSHA = post
@@ -360,9 +420,8 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 		}
 		return fail(f, trace, out.text+"\n")
 	}
-	// ufw exiting 0 does not mean the port changed; only a fresh reading
-	// decides, and a mismatch is rolled back at once.
-	if f := verifySSHPort(b.Probe(ctx), open); f != nil {
+	// A mismatch with what was intended is rolled back at once.
+	if f := job.verify(ctx, p, b.Probe(ctx)); f != nil {
 		out := a.rollbackLocked(ctx, rec)
 		return fail(f, trace, out.text+"\n")
 	}
@@ -370,13 +429,18 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 	// 5. Layer 2 and the countdown.
 	live := a.armTrial(rec)
 	res.ok, res.trace = true, trace
-	res.what = "Port 22 closed · on trial"
-	if open {
-		res.what = "Port 22 opened · on trial"
-	}
+	res.what = upperFirst(job.what) + " · on trial"
 	res.text, res.kb = a.countdownText(rec), live.kb
 	res.rebind = func(msgID int64) { a.rebindTrial(id, msgID) }
 	return res
+}
+
+// upperFirst capitalizes the first letter of s.
+func upperFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // armTrial starts layer 2 and the countdown for rec, with fresh Keep and
@@ -464,11 +528,15 @@ func (a *Agent) rebindTrial(id string, msgID int64) {
 
 // countdownText is the trial message.
 func (a *Agent) countdownText(rec fwTrialRecord) string {
-	what := "port 22 closed"
-	if rec.Action == actFwOpen {
+	what := rec.What
+	switch {
+	case what != "":
+	case rec.Action == actFwOpen:
 		what = "port 22 opened"
+	default:
+		what = "port 22 closed"
 	}
-	s := "⏳ <b>Trial applied</b> · " + what + " · rollback in " + mmss(rec.Deadline.Sub(a.now())) + "\n" +
+	s := "⏳ <b>Trial applied</b> · " + esc(what) + " · rollback in " + mmss(rec.Deadline.Sub(a.now())) + "\n" +
 		"Open a <b>new</b> SSH session now.\n" +
 		"If you do nothing or the bot goes offline, the old rules return at " +
 		rec.Deadline.UTC().Format("15:04:05") + " UTC."
@@ -843,19 +911,41 @@ func (a *Agent) reconcileFwTrial(ctx context.Context) {
 	}
 }
 
-// pruneSnapshots removes trial snapshots older than fwSnapKeep, except
-// the pending one. fwMu is held.
-func (a *Agent) pruneSnapshots(keep string) {
+// fwSnapInfo is one snapshot directory.
+type fwSnapInfo struct {
+	id string
+	at time.Time // when it was taken
+}
+
+// listSnapshots lists the snapshot directories, newest first.
+func (a *Agent) listSnapshots() []fwSnapInfo {
 	entries, err := os.ReadDir(a.src.FwDir)
 	if err != nil {
-		return
+		return nil
 	}
+	var snaps []fwSnapInfo
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == keep || !fwIDPattern.MatchString(e.Name()) {
+		if !e.IsDir() || !fwIDPattern.MatchString(e.Name()) {
 			continue
 		}
-		if info, err := e.Info(); err == nil && a.now().Sub(info.ModTime()) > fwSnapKeep {
-			os.RemoveAll(filepath.Join(a.src.FwDir, e.Name()))
+		if info, err := e.Info(); err == nil {
+			snaps = append(snaps, fwSnapInfo{id: e.Name(), at: info.ModTime()})
+		}
+	}
+	slices.SortStableFunc(snaps, func(x, y fwSnapInfo) int { return y.at.Compare(x.at) })
+	return snaps
+}
+
+// pruneSnapshots removes trial snapshots older than fwSnapKeep, except
+// the pending one and the newest fwKeepSnaps, which "↩️ Restore
+// previous" offers. fwMu is held.
+func (a *Agent) pruneSnapshots(keep string) {
+	for i, s := range a.listSnapshots() {
+		if s.id == keep || i < fwKeepSnaps {
+			continue
+		}
+		if a.now().Sub(s.at) > fwSnapKeep {
+			os.RemoveAll(filepath.Join(a.src.FwDir, s.id))
 		}
 	}
 }

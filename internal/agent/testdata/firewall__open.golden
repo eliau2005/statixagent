@@ -1,4 +1,7 @@
-🛡 <b>Firewall</b>
+🛡 <b>Firewall</b> · ufw active
 SSH port 22: 🔓 <b>open</b> (rule 1: 22/tcp ALLOW Anywhere)
+Rules: 1 (v4 1 · v6 0)
 --- keyboard ---
+[📋 Rules] → ~1v|fl  [➕ Open port] → ~1v|fa  [🧱 Presets] → ~1v|fp
+[↩️ Restore previous] → ~1v|fh
 [⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fw

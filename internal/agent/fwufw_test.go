@@ -295,7 +295,7 @@ func TestFirewallViewOpenSSHProfile(t *testing.T) {
 		t.Errorf("default policy missing: %q", text)
 	}
 	// An open port offers Close.
-	if kb[0][0].Data != "~1fc" {
+	if buttonDataPrefix(kb, "🔒 Close") != "~1fc" || buttonDataPrefix(kb, "🔓 Open port 22") != "" {
 		t.Errorf("keyboard = %+v", kb)
 	}
 }
@@ -313,7 +313,7 @@ func TestFirewallViewFallsBackToPlainStatus(t *testing.T) {
 	if strings.Contains(text, "Default incoming policy") {
 		t.Errorf("plain status has no policy line: %q", text)
 	}
-	if kb[0][0].Data != "~1fo" {
+	if buttonDataPrefix(kb, "🔓 Open port 22") != "~1fo" {
 		t.Errorf("keyboard = %+v", kb)
 	}
 }
@@ -338,7 +338,7 @@ func TestFirewallViewRestrictedAndOtherPorts(t *testing.T) {
 		}
 	}
 	// No rule decides 22: both buttons, as before.
-	if len(kb[0]) != 2 {
+	if buttonDataPrefix(kb, "🔓 Open port 22") != "~1fo" || buttonDataPrefix(kb, "🔒 Close") != "~1fc" {
 		t.Errorf("keyboard = %+v", kb)
 	}
 }

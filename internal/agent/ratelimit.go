@@ -105,7 +105,15 @@ func (a *Agent) admitPress(ctx context.Context, cb *telegram.Callback, c *tgui.C
 			rec.NonceHash = nonceHash(arg)
 			a.writeAudit(rec)
 		default:
-			if ask, ok := a.asks[c.Act]; ok {
+			ask, ok := a.asks[c.Act]
+			switch {
+			case !ok:
+			case ask.resolve == nil:
+				// A firewall plan ask builds its target from fresh state
+				// only when it runs; record the act alone.
+				rec.Action = c.Act
+				a.writeAudit(rec)
+			default:
 				if rec.Action, rec.Target, ok = ask.resolve(c.Args); ok {
 					a.writeAudit(rec)
 				}

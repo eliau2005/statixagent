@@ -400,7 +400,8 @@ const helpText = "🏠 <b>Home</b>\n" +
 	"/security — overview\n" +
 	"/ssh — live sessions (disconnect buttons)\n" +
 	"/ssh history — recent logins · /ssh fails — failed attempts\n" +
-	"/firewall — open/close SSH port 22\n" +
+	"/firewall — ufw rules, presets, restore previous\n" +
+	"/fw_open port · /fw_allow ip port · /fw_deny ip [port]\n" +
 	"/trusted — trusted SSH sources (/trust ip · /untrust ip)\n\n" +
 	"⚙️ <b>Settings</b>\n" +
 	"/settings — thresholds &amp; digest\n" +

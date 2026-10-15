@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"strconv"
 
 	"github.com/eliau2005/statixagent/internal/bot"
@@ -139,6 +140,14 @@ func (a *Agent) buildScreens() *tgui.Registry {
 	view(scrHistory, scrSecurity, false, a.historyView)
 	view(scrFailed, scrSecurity, false, a.failedView)
 	view(scrFirewall, scrSecurity, false, a.firewallScreen)
+	// The firewall's rules, ways to add one, and its snapshots
+	// (fwrules.go). Each reads ufw afresh.
+	view(scrFwRules, scrFirewall, false, a.fwRulesScreen)
+	view(scrFwRule, scrFwRules, false, a.fwRuleScreen)
+	view(scrFwAdd, scrFirewall, false, a.fwAddScreen)
+	view(scrFwPresets, scrFirewall, false, a.fwPresetsScreen)
+	view(scrFwDB, scrFwAdd, false, a.fwDBScreen)
+	view(scrFwRestore, scrFirewall, false, a.fwRestoreScreen)
 	view(scrTrusted, scrSecurity, false, a.trustedScreen)
 
 	view(scrSettings, scrHome, false, a.settingsScreen)
@@ -236,6 +245,9 @@ type askAction struct {
 	// resolve validates the press's arguments into the confirm action
 	// and target it asks about; ok is false for forged or stale ones.
 	resolve func(args []string) (action, target string, ok bool)
+	// press, when set, handles the press instead: a firewall plan is
+	// built from fresh state before its confirm screen exists.
+	press func(ctx context.Context, cb *telegram.Callback, c tgui.Call)
 }
 
 // buildAsks registers the ask acts.
@@ -243,18 +255,18 @@ func (a *Agent) buildAsks() map[string]askAction {
 	fixed := func(action, target string) func([]string) (string, string, bool) {
 		return func(args []string) (string, string, bool) { return action, target, len(args) == 0 }
 	}
-	return map[string]askAction{
-		askKick: {tgui.ClassMutate, func(args []string) (string, string, bool) {
+	asks := map[string]askAction{
+		askKick: {class: tgui.ClassMutate, resolve: func(args []string) (string, string, bool) {
 			if len(args) != 1 || len(args[0]) != fingerprint || !isHex(args[0]) {
 				return "", "", false
 			}
 			return actKick, args[0], true
 		}},
-		askFwOpen:  {tgui.ClassMutate, fixed(actFwOpen, sshPort)},
-		askFwClose: {tgui.ClassMutate, fixed(actFwClose, sshPort)},
-		askUpdate:  {tgui.ClassMutate, fixed(actUpdate, "agent")},
-		askClear:   {tgui.ClassMutate, fixed(actClear, "chat")},
-		askUntrust: {tgui.ClassConfig, func(args []string) (string, string, bool) {
+		askFwOpen:  {class: tgui.ClassMutate, resolve: fixed(actFwOpen, sshPort)},
+		askFwClose: {class: tgui.ClassMutate, resolve: fixed(actFwClose, sshPort)},
+		askUpdate:  {class: tgui.ClassMutate, resolve: fixed(actUpdate, "agent")},
+		askClear:   {class: tgui.ClassMutate, resolve: fixed(actClear, "chat")},
+		askUntrust: {class: tgui.ClassConfig, resolve: func(args []string) (string, string, bool) {
 			if len(args) != 1 {
 				return "", "", false
 			}
@@ -265,6 +277,8 @@ func (a *Agent) buildAsks() map[string]askAction {
 			return actUntrust, args[0], true
 		}},
 	}
+	maps.Copy(asks, a.fwPlanAsks())
+	return asks
 }
 
 // Config acts change the bot's own settings (ClassConfig): thresholds,
@@ -363,6 +377,10 @@ func (a *Agent) handleCall(ctx context.Context, cb *telegram.Callback) {
 		}
 		if ask, ok := a.asks[c.Act]; ok {
 			if !gate(ask.class) {
+				return
+			}
+			if ask.press != nil {
+				ask.press(ctx, cb, c)
 				return
 			}
 			id, target, ok := ask.resolve(c.Args)
