@@ -115,13 +115,17 @@ the push is skipped. Some logins from a trusted address still alert:
   address still raises the brute-force alert.
 
 To recognise new keys, the agent remembers the user and SHA256 fingerprint of
-every key login it sees, from any source, in
-`/etc/statix-agent/known_keys` (`0600`, one `user fingerprint` per line).
-SSH history is not kept across restarts, so there is nothing to learn from on
-the first start: after upgrading, the first key login per user and key from a
-trusted address alerts once, and later ones stay quiet. Deleting the file
-resets this. Password and keyboard-interactive logins carry no fingerprint and
-stay suppressed from trusted addresses.
+key logins in `/etc/statix-agent/known_keys` (`0600`, one `user fingerprint`
+per line). The file is only used when `trusted_ips` is set. Keys from logins
+that alert anyway (untrusted sources, root) are learned straight away; a new
+key from a trusted source is learned only once its alert has been delivered,
+so a snoozed or undelivered alert fires again on the next login. SSH history is
+not kept across restarts, so there is nothing to learn from on the first
+start: after upgrading, the first key login per user and key from a trusted
+address alerts once, and later ones stay quiet. Deleting the file resets this.
+Unreadable lines are skipped with a log message and kept in the file.
+Password and keyboard-interactive logins carry no fingerprint and stay
+suppressed from trusted addresses.
 
 The source must be logged as an IP address: if sshd logs hostnames
 (`UseDNS yes`), the trusted list cannot match and the agent logs why. Edit
@@ -307,7 +311,7 @@ The decentralized design has deliberate costs:
 - **No aggregated view** — an "all servers" query means asking each bot.
 - **History is in memory** — a restart loses SSH/alert history; there is no
   database, by design. Only the small list of known SSH key fingerprints is
-  kept on disk.
+  kept on disk, and only when `ssh.trusted_ips` is set.
 
 ## Roadmap
 

@@ -181,10 +181,11 @@ goal:
   buffers and is lost on restart.
 - **Update state** is a small start-count file next to the config, used only by
   the rollback guard.
-- **Known SSH keys** (`known_keys` next to the config) lists the user +
-  fingerprint pairs seen in key logins, rewritten atomically when a new pair
-  appears, so a trusted source logging in with a new key alerts once and not
-  on every restart.
+- **Known SSH keys** (`known_keys` next to the config, only when
+  `ssh.trusted_ips` is set) lists the user + fingerprint pairs seen in key
+  logins. It is rewritten atomically and fsynced when a new pair appears, and
+  lines it cannot parse are kept, so a trusted source logging in with a new
+  key alerts once and not on every restart.
 
 If you are tempted to add a datastore, weigh it against this goal first — see
 [ROADMAP.md](../ROADMAP.md).
