@@ -94,6 +94,10 @@ type Sources struct {
 	// the right package manager when /firewall finds no ufw; nil falls back
 	// to a generic hint.
 	OSRelease func() map[string]string
+
+	// SSHDConfig returns sshd_config text (with drop-ins), the last-resort
+	// source for the SSH port(s) shown in /firewall; nil skips it.
+	SSHDConfig func() string
 }
 
 // Agent is the daemon.
