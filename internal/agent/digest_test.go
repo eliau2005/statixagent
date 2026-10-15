@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/eliau2005/statixagent/internal/alert"
+	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
 func TestDigestDue(t *testing.T) {
@@ -43,8 +44,13 @@ func TestDigestSettingsButtons(t *testing.T) {
 	if !strings.Contains(text, "Daily digest") || !strings.Contains(text, "09:00") {
 		t.Fatalf("settings view: %q", text)
 	}
-	last := kb[len(kb)-2]
-	if last[0].Data != "dg:hour:-1" || last[1].Data != "dg:toggle" || last[2].Data != "dg:hour:+1" {
+	var last []telegram.Button
+	for _, row := range kb {
+		if row[0].Data == "dg:toggle" {
+			last = row
+		}
+	}
+	if len(last) != 4 || last[1].Data != "dg:hour:-1" || last[2].Data != "noop" || last[3].Data != "dg:hour:+1" {
 		t.Fatalf("digest buttons = %+v", last)
 	}
 

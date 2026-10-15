@@ -8,10 +8,11 @@ import (
 
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
-// Settings view: alert thresholds tuned with ➖/➕ buttons, persisted to the
-// config like every other bot-driven change.
+// Settings view: alert thresholds tuned with −5/+5 buttons, persisted to
+// the config like every other bot-driven change.
 
 // thresholdSpec describes one tunable threshold.
 type thresholdSpec struct {
@@ -38,35 +39,52 @@ func (a *Agent) thresholds() config.Thresholds {
 	return a.cfg.Thresholds
 }
 
-// settingsView renders current thresholds with tune buttons.
+// settingsView renders the Settings screen as a message.
 func (a *Agent) settingsView() (string, telegram.Keyboard) {
+	return a.screen(context.Background(), tgui.Open(scrSettings))
+}
+
+// settingsScreen is the Settings section (§3.10): thresholds and the
+// digest, tuned in place, and the way to Watching, Update, Clear chat and
+// Help. The tune buttons still carry the legacy th:/dg: steps their
+// handler decodes; the value in the middle only labels the row.
+func (a *Agent) settingsScreen(_ context.Context, _ tgui.Call) tgui.View {
 	t := a.thresholds()
-	var b strings.Builder
-	b.WriteString("⚙️ <b>Alert thresholds</b>\nTune with ➖ / ➕ (steps of 5):\n<pre>")
-	var kb telegram.Keyboard
+	var rows []string
+	var kb [][]tgui.Button
 	for _, sp := range thresholdSpecs {
-		val := *sp.get(&t)
-		fmt.Fprintf(&b, " %s %s\n", padRight(stripEmoji(sp.label), 9), fmt.Sprintf("%.0f%s", val, sp.unit))
-		kb = append(kb, []telegram.Button{
-			{Text: "➖", Data: "th:" + sp.key + ":-5"},
-			{Text: fmt.Sprintf("%s %.0f%s", sp.label, val, sp.unit), Data: "noop"},
-			{Text: "➕", Data: "th:" + sp.key + ":+5"},
+		val := fmt.Sprintf("%.0f%s", *sp.get(&t), sp.unit)
+		rows = append(rows, padRight(stripEmoji(sp.label)+" alert", 15)+val)
+		kb = append(kb, []tgui.Button{
+			{Label: sp.label + " −5", Legacy: "th:" + sp.key + ":-5"},
+			{Label: sp.label + " " + val, Legacy: "noop"},
+			{Label: sp.label + " +5", Legacy: "th:" + sp.key + ":+5"},
 		})
 	}
-	b.WriteString("</pre>\nAlerts fire when a value crosses its threshold\n(battery: when below).")
 	enabled, hour := a.digestCfg()
 	state := "off"
 	if enabled {
 		state = "on"
 	}
-	fmt.Fprintf(&b, "\n\n📰 Daily digest <b>%s</b> at %02d:00 — tap the middle\nbutton to toggle, ➖/➕ to shift the hour.", state, hour)
-	kb = append(kb, []telegram.Button{
-		{Text: "➖", Data: "dg:hour:-1"},
-		{Text: fmt.Sprintf("📰 %s · %02d:00", state, hour), Data: "dg:toggle"},
-		{Text: "➕", Data: "dg:hour:+1"},
-	})
-	kb = append(kb, []telegram.Button{{Text: "⬅️ Status", Data: "status"}, {Text: "👁 Watching", Data: "watching"}})
-	return b.String(), kb
+	rows = append(rows, padRight("Daily digest", 15)+fmt.Sprintf("%s · %02d:00", state, hour))
+	kb = append(kb,
+		[]tgui.Button{
+			{Label: "📰 Digest: " + state, Legacy: "dg:toggle"},
+			{Label: "−1h", Legacy: "dg:hour:-1"},
+			{Label: fmt.Sprintf("%02d:00", hour), Legacy: "noop"},
+			{Label: "+1h", Legacy: "dg:hour:+1"},
+		},
+		[]tgui.Button{{Label: "👁 Watching", Legacy: "watching"}, {Label: "⬇️ Update", Call: tgui.Open(scrUpdate)}},
+		[]tgui.Button{
+			{Label: "🧹 Clear chat", Call: tgui.Call{Act: askClear}},
+			{Label: "❓ Help", Call: tgui.Open(scrHelp)},
+		},
+	)
+	return tgui.View{
+		Text: "⚙️ <b>Settings</b>\nAlert thresholds and the daily digest:\n" + pre(rows) +
+			"\nAlerts fire when a value crosses its threshold (battery: when below). Steps of 5.",
+		Rows: kb,
+	}
 }
 
 // handleSettingsCallback processes ⚙️ buttons. Same contract as

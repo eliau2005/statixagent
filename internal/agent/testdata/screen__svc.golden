@@ -1,0 +1,8 @@
+🧩 <b>Services</b> — 0/1 up
+<pre> ❔ nginx.service    exec:
+    &#34;systemctl&#34;: executable
+    file not found in $PATH</pre>
+--- keyboard ---
+[🐳 Docker] → ~1v|dk  [📜 Certificates] → ~1v|ssl
+[🌐 HTTP] → ~1v|htp  [👁 Watching] → watching
+[⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|svc

@@ -1,0 +1,23 @@
+🤝 <b>Trusted IPs</b> · 11
+Plain SSH logins from these do not alert.
+
+<b>config.toml</b> (edit ssh.trusted_ips and restart to change):
+  <code>10.0.0.0/8</code>
+  <code>192.168.1.0/24</code>
+
+<b>Telegram</b> (9/64, 🗑 or /untrust to remove):
+  <code>203.0.113.4</code>
+  <code>2001:db8::/32</code>
+  <code>ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff</code>
+  <code>198.51.100.0/24</code>
+  <code>198.51.100.7</code>
+  <code>203.0.113.0/28</code>
+
+Root logins, logins with a new key and logins right after failed attempts always alert.
+/trust ip-or-cidr to add.
+--- keyboard ---
+[🗑 203.0.113.4] → ~1ut|203.0.113.4  [🗑 2001:db8::/32] → ~1ut|2001:db8::/32
+[🗑 ffff:ffff:ffff:ffff:fff…] → ~1ut|ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff  [🗑 198.51.100.0/24] → ~1ut|198.51.100.0/24
+[🗑 198.51.100.7] → ~1ut|198.51.100.7  [🗑 203.0.113.0/28] → ~1ut|203.0.113.0/28
+[1/2] → ~1v|tru|1  [Next ▶️] → ~1v|tru|2
+[⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|tru

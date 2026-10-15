@@ -7,6 +7,7 @@ import (
 
 	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // Live mode: pressing ▶️ Live re-renders the sampler-owned status snapshot in
@@ -125,13 +126,12 @@ func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, 
 	}
 }
 
-// finishLive restores the normal status view and nav keyboard. It uses a
-// fresh context: the live context is already canceled on the stop path.
+// finishLive restores Home in place, so a stopped session leaves no
+// orphan state. It uses a fresh context: the live context is already
+// canceled on the stop path.
 func (a *Agent) finishLive(chatID, messageID int64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	a.mu.Lock()
-	body := bot.Status(a.src.Hostname, a.snap, a.thermal, a.power)
-	a.mu.Unlock()
-	a.send.EditMessageKB(ctx, chatID, messageID, body, navKeyboard("status"))
+	text, kb := a.screen(ctx, tgui.Open(scrHome))
+	a.send.EditMessageKB(ctx, chatID, messageID, text, kb)
 }

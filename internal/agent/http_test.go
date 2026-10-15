@@ -66,7 +66,7 @@ func TestHTTPRunChecks(t *testing.T) {
 	}
 	reply := dispatchText(t, a, "/http")
 	// Healthy endpoint is ✅; wrong status renders degraded (⚠️), not down.
-	if !strings.Contains(reply, "✅") || !strings.Contains(reply, "⚠️ ") || !strings.Contains(reply, "got 500, want 200") {
+	if !strings.Contains(reply, "✅") || !strings.Contains(reply, "⚠️ ") || !strings.Contains(reply, "got 500,") || !strings.Contains(reply, "want 200") {
 		t.Errorf("/http results: %q", reply)
 	}
 }

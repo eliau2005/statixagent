@@ -2,4 +2,4 @@
 Active sessions stay up, but <b>new SSH connections will be refused</b>.
 This bot keeps working and can reopen the port.
 --- keyboard ---
-[✅ Yes, close it] → ~1y|ON2GeC1nb2xkZW4t  [❌ Cancel] → ~1n|eC1nb2xkZW4t
+[✅ Yes, close it] → ~1y|ON2GeC1nb2xkZW4t (danger)  [❌ Cancel] → ~1n|eC1nb2xkZW4t

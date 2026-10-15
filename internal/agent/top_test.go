@@ -59,7 +59,7 @@ func TestAlertKeyboardOffersTop(t *testing.T) {
 		found := false
 		for _, row := range kb {
 			for _, b := range row {
-				if b.Data == "top" {
+				if b.Data == "~1o|top" {
 					found = true
 				}
 			}

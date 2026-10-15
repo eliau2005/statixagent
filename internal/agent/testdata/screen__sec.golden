@@ -1,0 +1,10 @@
+🔐 <b>Security</b>
+<pre>Sessions  3 open
+Failed    17 in 24h
+Firewall  ufw · SSH open
+Trusted   11 entries</pre>
+--- keyboard ---
+[👥 Sessions] → ~1v|ses  [🕘 History] → ~1v|his
+[🚫 Failed] → ~1v|fai  [🛡 Firewall] → ~1v|fw
+[🤝 Trusted IPs] → ~1v|tru
+[⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|sec

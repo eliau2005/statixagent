@@ -118,7 +118,7 @@ func TestLegacyRuleClaims(t *testing.T) {
 		}
 	}
 	// Every navigation view is claimed by some rule.
-	for v := range navViews {
+	for v := range legacyViews {
 		if _, ok := a.legacy.Lookup(v); !ok {
 			t.Errorf("nav view %q is claimed by no rule", v)
 		}

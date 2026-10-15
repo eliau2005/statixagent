@@ -3,6 +3,8 @@ package tgui
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
@@ -19,9 +21,13 @@ const (
 	ClassMutate
 )
 
-// ActView is the built-in action that opens the screen named by its first
-// argument: "~1v|cpu".
-const ActView = "v"
+// Built-in actions that open the screen named by their first argument:
+// ActView in the pressed message ("~1v|cpu"), ActOpen in a new one
+// ("~1o|cpu"), for buttons on messages that must not change.
+const (
+	ActView = "v"
+	ActOpen = "o"
+)
 
 // Action is a registered act. IDs are append-only: a retired ID is never
 // given new meaning, because old keyboards keep sending it.
@@ -44,7 +50,7 @@ type Registry struct {
 func NewRegistry() *Registry {
 	return &Registry{
 		screens: map[string]Screen{},
-		actions: map[string]Action{ActView: {ID: ActView, Class: ClassView}},
+		actions: map[string]Action{ActView: {ID: ActView, Class: ClassView}, ActOpen: {ID: ActOpen, Class: ClassView}},
 	}
 }
 
@@ -77,6 +83,58 @@ func (r *Registry) AddAction(a Action) {
 		panic(fmt.Sprintf("tgui: action %q has unknown screen %q", a.ID, a.Screen))
 	}
 	r.actions[a.ID] = a
+}
+
+// Screens returns the registered screen IDs, for tests that walk them all.
+func (r *Registry) Screens() []string {
+	return slices.Sorted(maps.Keys(r.screens))
+}
+
+// Known reports whether act is registered.
+func (r *Registry) Known(act string) bool {
+	_, ok := r.actions[act]
+	return ok
+}
+
+// Slow reports whether c opens a Slow screen.
+func (r *Registry) Slow(c Call) bool {
+	s, ok := r.screens[r.target(c)]
+	return ok && s.Slow
+}
+
+// target is the screen c opens, or "" when it names none.
+func (r *Registry) target(c Call) string {
+	act, ok := r.actions[c.Act]
+	switch {
+	case !ok:
+		return ""
+	case act.ID == ActView || act.ID == ActOpen:
+		if len(c.Args) == 0 {
+			return ""
+		}
+		return c.Args[0]
+	}
+	return act.Screen
+}
+
+// Show renders the screen c opens. A press of ActOpen renders as ActView,
+// so the buttons of the new message act on it in place.
+func (r *Registry) Show(ctx context.Context, c Call) (Result, error) {
+	id := r.target(c)
+	s, ok := r.screens[id]
+	if !ok {
+		return Result{Outcome: Outdated, Call: c}, nil
+	}
+	render := c
+	if c.Act == ActOpen {
+		render.Act = ActView
+	}
+	v := s.Render(ctx, render)
+	kb, err := v.Keyboard()
+	if err != nil {
+		return Result{Call: c}, fmt.Errorf("screen %q: %w", id, err)
+	}
+	return Result{Outcome: Shown, Call: c, Text: v.Text, Keyboard: kb, New: c.Act == ActOpen}, nil
 }
 
 // Back is the call a Back button on screen id makes, given the call that
@@ -112,6 +170,8 @@ type Result struct {
 	Call     Call // the decoded call, when it decoded
 	Text     string
 	Keyboard telegram.Keyboard
+	// New: show it in a new message replying to the pressed one.
+	New bool
 }
 
 // Dispatch handles one press of data. gate authorizes it for the action's
@@ -133,21 +193,5 @@ func (r *Registry) Dispatch(ctx context.Context, data string, gate func(Class) b
 	if !known {
 		return Result{Outcome: Outdated}, nil
 	}
-	id := act.Screen
-	if act.ID == ActView {
-		if len(c.Args) == 0 {
-			return Result{Outcome: Outdated, Call: c}, nil
-		}
-		id = c.Args[0]
-	}
-	s, ok := r.screens[id]
-	if !ok {
-		return Result{Outcome: Outdated, Call: c}, nil
-	}
-	v := s.Render(ctx, c)
-	kb, err := v.Keyboard()
-	if err != nil {
-		return Result{Call: c}, fmt.Errorf("screen %q: %w", id, err)
-	}
-	return Result{Outcome: Shown, Call: c, Text: v.Text, Keyboard: kb}, nil
+	return r.Show(ctx, c)
 }

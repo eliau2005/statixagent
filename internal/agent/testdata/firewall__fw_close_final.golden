@@ -1,4 +1,4 @@
 🔒 <b>Last check: refuse new SSH connections?</b>
 If your SSH session drops after this, you cannot log in again over SSH until port 22 is reopened from this bot.
 --- keyboard ---
-[✅ Yes, refuse new SSH] → ~1y|ON2Gc3RhdGl4LWdv  [❌ Cancel] → ~1n|c3RhdGl4LWdv
+[✅ Yes, refuse new SSH] → ~1y|ON2Gc3RhdGl4LWdv (danger)  [❌ Cancel] → ~1n|c3RhdGl4LWdv

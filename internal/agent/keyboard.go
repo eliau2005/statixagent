@@ -19,42 +19,16 @@ import (
 	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
-// navViews are the commands reachable from the navigation keyboard. A reply
-// to any of them carries the keyboard, and pressing a button edits the same
-// message into the chosen view — the chat stays a single live dashboard
-// instead of a scroll of stale reports. It is also the allowlist of router
-// commands a button may run: callback data is never handed to the router
-// otherwise, so forged data cannot reach a command meant to be typed.
-var navViews = map[string]bool{
-	"status": true, "cpu": true, "mem": true, "disk": true, "net": true,
-	"temp": true, "battery": true, "services": true, "docker": true, "ssh": true,
-	"top": true, "digest": true, "ssl": true, "http": true,
-	// Alert-button views: the keyboard's Refresh re-runs the same view.
-	"ssh_history": true, "ssh_fails": true,
-}
-
-// navKeyboard renders the navigation rows; the active view is highlighted.
-func navKeyboard(active string) telegram.Keyboard {
-	rows := [][]struct{ label, cmd string }{
-		{{"📊 Status", "status"}, {"🖥 CPU", "cpu"}, {"🧠 Mem", "mem"}},
-		{{"💾 Disk", "disk"}, {"🌐 Net", "net"}, {"🌡 Temp", "temp"}},
-		{{"🔋 Power", "battery"}, {"🧩 Svc", "services"}, {"🐳 Dock", "docker"}},
-		{{"🔐 SSH", "ssh"}, {"▶️ Live", "live"}, {"🔄 Refresh", active}},
-		{{"🔝 Top", "top"}, {"👁 Watching", "watching"}, {"⚙️ Settings", "settings"}},
-	}
-	var kb telegram.Keyboard
-	for _, row := range rows {
-		var btns []telegram.Button
-		for _, b := range row {
-			label := b.label
-			if b.cmd == active && b.cmd != "" && !strings.HasPrefix(label, "🔄") {
-				label = "• " + label
-			}
-			btns = append(btns, telegram.Button{Text: label, Data: b.cmd})
-		}
-		kb = append(kb, btns)
-	}
-	return kb
+// legacyViews maps the bare view tokens of the navigation keyboard older
+// versions sent (and that still sit in chats) to the screens that replace
+// them: an old button opens the new screen in place. It is also the
+// allowlist of tokens that count as views when authorized; callback data
+// never reaches the router, so forged data cannot run a typed command.
+var legacyViews = map[string]string{
+	"status": scrHome, "cpu": scrCPU, "mem": scrMem, "disk": scrDisk, "net": scrNet,
+	"temp": scrTemp, "battery": scrBattery, "services": scrServices, "docker": scrDocker,
+	"ssh": scrSessions, "top": scrTop, "digest": scrDigest, "ssl": scrSSL, "http": scrHTTP,
+	"ssh_history": scrHistory, "ssh_fails": scrFailed,
 }
 
 // Yes and Cancel buttons of the update and clear-chat prompts of older
@@ -66,51 +40,40 @@ const (
 	cbClearNo   = "clr_no"
 )
 
-// updateKeyboard is attached to "new version available" messages. Install
-// opens the confirm screen, whose Yes carries a token.
-func updateKeyboard() telegram.Keyboard {
-	return telegram.Keyboard{{
-		{Text: "⬇️ Install now", Data: "update_confirm"},
-		{Text: "Later", Data: "dismiss"},
-	}}
+// alertViews are the screens an alert's buttons open, by alert key prefix.
+func alertViews(prefix string) []tgui.Button {
+	home := tgui.Button{Label: "🏠 Home", Call: tgui.OpenNew(scrHome)}
+	open := func(label, id string) tgui.Button { return tgui.Button{Label: label, Call: tgui.OpenNew(id)} }
+	switch prefix {
+	case "ssh-login", "ssh-newkey", "ssh-brute", "keys":
+		return []tgui.Button{open("👥 Sessions", scrSessions), open("🚫 Failed", scrFailed), open("🛡 Firewall", scrFirewall)}
+	case "cpu":
+		return []tgui.Button{open("🔝 Top", scrTop), open("🖥 CPU", scrCPU), home}
+	case "mem":
+		return []tgui.Button{open("🔝 Top", scrTop), open("🧠 Memory", scrMem), home}
+	case "disk":
+		return []tgui.Button{open("💾 Disk", scrDisk), home}
+	case "temp":
+		return []tgui.Button{open("🌡 Temp", scrTemp), home}
+	case "ssl":
+		return []tgui.Button{open("📜 Certificates", scrSSL), home}
+	case "docker", "docker-up", "docker-restart":
+		return []tgui.Button{open("🐳 Docker", scrDocker), home}
+	case "battery", "power-loss", "power-restored":
+		return []tgui.Button{open("🔋 Battery", scrBattery), home}
+	}
+	return []tgui.Button{home}
 }
 
-// alertKeyboard maps an alert to one-tap context actions: the alert message
-// itself becomes the relevant view when a button is pressed.
+// alertKeyboard maps an alert to one-tap context buttons. Views open in a
+// new message replying to the alert (Decision 1a), so the alert keeps its
+// text as a record; only snooze and trust touch it, and then only its
+// keyboard.
 func (a *Agent) alertKeyboard(key string) telegram.Keyboard {
 	prefix, _, _ := strings.Cut(key, ":")
 	var row []telegram.Button
-	switch prefix {
-	case "ssh-login", "ssh-newkey", "ssh-brute", "keys":
-		row = []telegram.Button{
-			{Text: "👥 Sessions", Data: "ssh"},
-			{Text: "🚫 Fails", Data: "ssh_fails"},
-			{Text: "🛡 Firewall", Data: "firewall"},
-		}
-	case "cpu":
-		row = []telegram.Button{
-			{Text: "🔝 Top", Data: "top"},
-			{Text: "🖥 CPU", Data: "cpu"},
-			{Text: "📊 Status", Data: "status"},
-		}
-	case "mem":
-		row = []telegram.Button{
-			{Text: "🔝 Top", Data: "top"},
-			{Text: "🧠 Memory", Data: "mem"},
-			{Text: "📊 Status", Data: "status"},
-		}
-	case "disk":
-		row = []telegram.Button{{Text: "💾 Disk", Data: "disk"}, {Text: "📊 Status", Data: "status"}}
-	case "temp":
-		row = []telegram.Button{{Text: "🌡 Temp", Data: "temp"}, {Text: "📊 Status", Data: "status"}}
-	case "ssl":
-		row = []telegram.Button{{Text: "🔒 Certs", Data: "ssl"}, {Text: "📊 Status", Data: "status"}}
-	case "docker", "docker-up", "docker-restart":
-		row = []telegram.Button{{Text: "🐳 Containers", Data: "docker"}, {Text: "📊 Status", Data: "status"}}
-	case "battery", "power-loss", "power-restored":
-		row = []telegram.Button{{Text: "🔋 Power", Data: "battery"}, {Text: "📊 Status", Data: "status"}}
-	default:
-		row = []telegram.Button{{Text: "📊 Status", Data: "status"}}
+	for _, b := range alertViews(prefix) {
+		row = append(row, telegram.Button{Text: b.Label, Data: callData(b.Call)})
 	}
 	row = append(row, telegram.Button{Text: "🔕 1h", Data: a.snoozeCallbackData(key)})
 	return telegram.Keyboard{row}
@@ -157,20 +120,12 @@ func (a *Agent) popPending() (telegram.Keyboard, string) {
 	return kb, nonce
 }
 
-// reply sends a command reply, attaching the handler's stashed keyboard,
-// the navigation keyboard for view commands, or the install button for
-// update offers. A confirm prompt's token is bound to the message it
-// went out in.
+// reply sends a command reply with the keyboard its handler stashed: a
+// screen's, for commands that open one. A confirm prompt's token is bound
+// to the message it went out in.
 func (a *Agent) reply(ctx context.Context, cmd, html string) {
 	chatID := a.cfg.Telegram.ChatID
 	kb, nonce := a.popPending()
-	switch {
-	case kb != nil:
-	case navViews[cmd]:
-		kb = navKeyboard(cmd)
-	case cmd == "update" && strings.Contains(html, "/update_confirm"):
-		kb = updateKeyboard()
-	}
 	if kb == nil {
 		a.push(ctx, html)
 		return
@@ -197,6 +152,10 @@ const editFailedToast = "Couldn't update; sent as new message"
 // button from an older version, or forged data such as a bare clear_chat.
 const outdatedToast = "This button is outdated. Send /status for a fresh view."
 
+// openFailedToast answers a view button whose new message could not be
+// sent.
+const openFailedToast = "Couldn't open the view. Try again."
+
 // buildLegacy is the table of legacy callback data: every button the bot
 // sends today, and those of older versions still sitting in the chat.
 // Rules are tried in order, most specific first; NewLegacyTable panics at
@@ -207,7 +166,7 @@ const outdatedToast = "This button is outdated. Send /status for a fresh view."
 // fw_close, skk:, upd_yes, clr_yes) only ever ask again. Data no rule
 // claims is outdated.
 func (a *Agent) buildLegacy() *tgui.LegacyTable {
-	views := slices.DeleteFunc(slices.Sorted(maps.Keys(navViews)), func(v string) bool {
+	views := slices.DeleteFunc(slices.Sorted(maps.Keys(legacyViews)), func(v string) bool {
 		return v == "ssh" || v == "docker" // claimed by earlier rules
 	})
 	return tgui.NewLegacyTable(
@@ -252,9 +211,9 @@ func (a *Agent) buildLegacy() *tgui.LegacyTable {
 			}},
 		// The Docker API can take seconds: stop the spinner first.
 		tgui.LegacyRule{Name: "docker", Exact: []string{"docker"}, Slow: true, Handle: a.navCallback},
-		// Only the views a button emits reach the router; anything else,
-		// including the old update_confirm and a forged clear_chat, is
-		// left unclaimed and refused.
+		// Old navigation buttons open the screens that replaced them;
+		// anything else, including a forged clear_chat, is left unclaimed
+		// and refused.
 		tgui.LegacyRule{Name: "view", Exact: views, Handle: a.navCallback},
 	)
 }
@@ -269,7 +228,8 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	}
 	// Foreign chats and impostors are ignored entirely, not even answered.
 	// A press counts as a view only for the navigation views.
-	v := a.authorize(ctx, sender{chatID: cb.ChatID, fromID: cb.FromID, chatType: cb.ChatType}, navViews[cb.Data])
+	_, view := legacyViews[cb.Data]
+	v := a.authorize(ctx, sender{chatID: cb.ChatID, fromID: cb.FromID, chatType: cb.ChatType}, view)
 	if v == ignored {
 		return
 	}
@@ -325,14 +285,15 @@ func (a *Agent) viewCallback(h func(context.Context, string) (string, telegram.K
 	}
 }
 
-// navCallback renders a navigation view through the router.
+// navCallback opens the screen an old navigation token stands for.
 func (a *Agent) navCallback(ctx context.Context, cb *telegram.Callback, answered bool) {
-	reply, ok := a.router.Invoke(ctx, cb.Data, nil)
+	id, ok := legacyViews[cb.Data]
 	if !ok {
 		a.refuseCallback(ctx, cb, answered)
 		return
 	}
-	a.finishCallback(ctx, cb, answered, reply, navKeyboard(cb.Data), "")
+	text, kb := a.screen(ctx, tgui.Open(id))
+	a.finishCallback(ctx, cb, answered, text, kb, "")
 }
 
 // askAgain is the rule of a legacy Yes button: it carries the action

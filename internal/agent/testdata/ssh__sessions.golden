@@ -15,11 +15,7 @@
    from 10.0.0.8
    📍 local network</pre>
 --- keyboard ---
-[🚫 Kick alice pts/0] → sk:1:a9830e264ff7e802
-[🚫 Kick bob pts/1] → sk:2:43b108b4ab576fb4
-[🚫 Kick carol-with-a-long-name …] → sk:3:efb11c4104579c44
-[📊 Status] → status  [🖥 CPU] → cpu  [🧠 Mem] → mem
-[💾 Disk] → disk  [🌐 Net] → net  [🌡 Temp] → temp
-[🔋 Power] → battery  [🧩 Svc] → services  [🐳 Dock] → docker
-[• 🔐 SSH] → ssh  [▶️ Live] → live  [🔄 Refresh] → ssh
-[🔝 Top] → top  [👁 Watching] → watching  [⚙️ Settings] → settings
+[🚫 Kick alice pts/0] → ~1kk|a9830e264ff7e802 (danger)  [🚫 Kick bob pts/1] → ~1kk|43b108b4ab576fb4 (danger)
+[🚫 Kick carol-with-a-long-name …] → ~1kk|efb11c4104579c44 (danger)
+[🕘 History] → ~1v|his^ses  [🚫 Failed] → ~1v|fai^ses
+[⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|ses

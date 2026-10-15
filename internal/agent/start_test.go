@@ -20,9 +20,9 @@ func TestStartOnboarding(t *testing.T) {
 		t.Errorf("/start lists a watch line with empty watch config: %q", reply)
 	}
 
-	// The reply carries the entry-point keyboard.
+	// The reply carries Home's keyboard: the way into every section.
 	kb := a.popKB()
-	if kb == nil || len(kb) != 2 || kb[0][0].Data != "status" || kb[1][1].Data != "settings" {
+	if kb == nil || len(kb) != 3 || kb[0][0].Data != "~1v|met" || kb[1][1].Data != "~1v|set" || kb[2][1].Data != "~1v|home" {
 		t.Errorf("/start keyboard = %+v", kb)
 	}
 }

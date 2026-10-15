@@ -17,7 +17,7 @@ import (
 )
 
 // emittedDataPrefixes scans this package's non-test sources for every
-// `Data:` value a button is built with and returns what each one starts
+// `Data:` or `Legacy:` value a button is built with and returns what each one starts
 // with: a literal or constant whole, the literal head of a concatenation,
 // or the literal first argument of a builder such as fmt.Sprintf("pa:%d")
 // or watchIndexData("sa:", …). Values with no literal head are returned
@@ -83,7 +83,7 @@ func emittedDataPrefixes(t *testing.T) (prefixes, dynamic []string) {
 			if !ok {
 				return true
 			}
-			if key, ok := kv.Key.(*ast.Ident); !ok || key.Name != "Data" {
+			if key, ok := kv.Key.(*ast.Ident); !ok || (key.Name != "Data" && key.Name != "Legacy") {
 				return true
 			}
 			if s, ok := head(kv.Value); ok {
@@ -130,7 +130,9 @@ func pressRoutes(t *testing.T, data string) bool {
 // button of the keyboards built at run time, must still reach a handler.
 func TestEmittedCallbackDataRoutes(t *testing.T) {
 	prefixes, dynamic := emittedDataPrefixes(t)
-	if len(prefixes) < 40 {
+	// Navigation moved to "~1" calls, swept per screen below; the legacy
+	// literals left are the actions and older keyboards' data.
+	if len(prefixes) < 20 {
 		t.Fatalf("found only %d Data literals; is the scan broken?", len(prefixes))
 	}
 	slices.Sort(prefixes)
@@ -143,14 +145,15 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 	// Values with no literal head come from these builders; each is
 	// covered below by pressing the keyboards they build.
 	covered := map[string]bool{
-		"b.cmd":                     true, // navKeyboard
 		"a.snoozeCallbackData(key)": true, // alertKeyboard
 		"data":                      true, // trustButton
 		"yes":                       true, // confirmKeyboard
 		"no":                        true, // confirmKeyboard
 	}
 	for _, d := range dynamic {
-		if !covered[d] {
+		// "~1" calls: every screen's keyboard and the alert keyboards
+		// are pressed below.
+		if !covered[d] && !strings.HasPrefix(d, "callData(") {
 			t.Errorf("Data: %s has no literal head; cover its keyboard in this test", d)
 		}
 	}
@@ -169,11 +172,12 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 		}
 	}
 	kbs := []telegram.Keyboard{
-		updateKeyboard(),
 		{a.trustButton("203.0.113.7")},
+		a.loginKeyboard("ssh-login:alice@203.0.113.7", "203.0.113.7"),
 	}
-	for v := range navViews {
-		kbs = append(kbs, navKeyboard(v))
+	for _, id := range a.ui.Screens() {
+		_, kb := a.screen(context.Background(), tgui.Open(id))
+		kbs = append(kbs, kb)
 	}
 	for _, key := range []string{"ssh-login:x", "cpu", "mem", "disk:/", "temp", "ssl:x", "docker:x", "battery", "other",
 		"a-very-long-alert-key-that-needs-the-hashed-snooze-form-to-fit-in-64-bytes"} {
@@ -182,6 +186,9 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 	for _, kb := range kbs {
 		for _, row := range kb {
 			for _, b := range row {
+				if b.Copy != "" {
+					continue // copies text; nothing to route
+				}
 				if b.Data == "" {
 					t.Errorf("button %q has no data", b.Text)
 					continue

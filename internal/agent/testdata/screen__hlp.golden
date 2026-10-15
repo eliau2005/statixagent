@@ -1,0 +1,33 @@
+🏠 <b>Home</b>
+/status — dashboard · /start view — open a screen
+
+📈 <b>Metrics</b>
+/metrics — overview
+/cpu /mem /disk /net — one metric
+/temp /battery — hardware
+/top — heaviest processes
+/digest — daily summary (auto-sent each morning)
+
+🧩 <b>Services</b>
+/services — units, processes, ports
+/docker — containers
+/http — endpoint checks (/http add url)
+/ssl — certificate expiry (/ssl add host)
+/ping host — TCP latency from this server
+
+🔐 <b>Security</b>
+/security — overview
+/ssh — live sessions (disconnect buttons)
+/ssh history — recent logins · /ssh fails — failed attempts
+/firewall — open/close SSH port 22
+/trusted — trusted SSH sources (/trust ip · /untrust ip)
+
+⚙️ <b>Settings</b>
+/settings — thresholds &amp; digest
+/watching — manage everything watched
+/services_scan /ports_scan — find candidates
+(/services_add, /ports_add, /procs_add … still work typed)
+/update — check for a new version
+/clear_chat — wipe recent messages
+--- keyboard ---
+[🏠 Home] → ~1v|home

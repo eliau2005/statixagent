@@ -32,10 +32,12 @@ type fakeSender struct {
 	mu        sync.Mutex
 	sent      []string
 	keyboards []telegram.Keyboard
-	edits     []edit
-	answered  []string
-	deleted   []int64
-	cmds      []telegram.BotCommand
+	// replyTo is the message each send replied to (0: none), by index.
+	replyTo  []int64
+	edits    []edit
+	answered []string
+	deleted  []int64
+	cmds     []telegram.BotCommand
 	// scopes logs SetMyCommands ("set:<scope>") and DeleteMyCommands
 	// ("delete:<scope>") calls in order; setCmdsErr fails SetMyCommands.
 	scopes     []string
@@ -63,12 +65,17 @@ func (f *fakeSender) SendMessageID(ctx context.Context, chatID int64, html strin
 	return f.SendMessageKB(ctx, chatID, html, nil)
 }
 
-func (f *fakeSender) SendMessageKB(_ context.Context, _ int64, html string, kb telegram.Keyboard) (int64, error) {
+func (f *fakeSender) SendMessageKB(ctx context.Context, chatID int64, html string, kb telegram.Keyboard) (int64, error) {
+	return f.SendReplyKB(ctx, chatID, 0, html, kb)
+}
+
+func (f *fakeSender) SendReplyKB(_ context.Context, _ int64, replyTo int64, html string, kb telegram.Keyboard) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, "send")
 	f.sent = append(f.sent, html)
 	f.keyboards = append(f.keyboards, kb)
+	f.replyTo = append(f.replyTo, replyTo)
 	f.nextID++
 	return f.nextID + 1000, nil
 }
@@ -559,7 +566,7 @@ func TestClearChat(t *testing.T) {
 	}
 }
 
-func TestReplyAttachesNavKeyboard(t *testing.T) {
+func TestReplyAttachesHomeKeyboard(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
@@ -575,7 +582,7 @@ func TestReplyAttachesNavKeyboard(t *testing.T) {
 	defer send.mu.Unlock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	if kb == nil {
-		t.Fatal("/status reply must carry the nav keyboard")
+		t.Fatal("/status reply must carry the Home keyboard")
 	}
 	var labels []string
 	for _, row := range kb {
@@ -584,7 +591,7 @@ func TestReplyAttachesNavKeyboard(t *testing.T) {
 		}
 	}
 	joined := strings.Join(labels, " ")
-	for _, want := range []string{"• 📊 Status=status", "🖥 CPU=cpu", "🔐 SSH=ssh", "🔄 Refresh=status"} {
+	for _, want := range []string{"📈 Metrics=~1v|met", "🔐 Security=~1v|sec", "▶️ Live=live", "🔄 Refresh=~1v|home"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("keyboard missing %q in %s", want, joined)
 		}
@@ -653,12 +660,12 @@ func TestUpdateOfferKeyboardAndInstallButton(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "update_confirm" {
+	if kb == nil || kb[0][0].Data != "~1up" {
 		t.Fatalf("update offer keyboard = %+v", kb)
 	}
 
 	// Pressing Install asks; its Yes runs the update; Later dismisses.
-	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: "update_confirm"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb2", ChatID: 42, MessageID: 9, Data: kb[0][0].Data})
 	if applied {
 		t.Fatal("install button must ask before applying")
 	}
@@ -744,8 +751,8 @@ func TestLiveModeAnimatesAndFinishes(t *testing.T) {
 			flatNav += b.Data + " "
 		}
 	}
-	if final.messageID != 7 || !strings.Contains(flatNav, "live") || !strings.Contains(flatNav, "status") {
-		t.Errorf("final edit must restore the nav keyboard on msg 7: %+v", final)
+	if final.messageID != 7 || !strings.Contains(flatNav, "live") || !strings.Contains(flatNav, "~1v|home") {
+		t.Errorf("final edit must restore Home on msg 7: %+v", final)
 	}
 }
 
@@ -929,7 +936,7 @@ func TestWatchingCommand(t *testing.T) {
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	kb := send.keyboards[len(send.keyboards)-1]
-	if kb == nil || kb[len(kb)-1][1].Data != "scan_svc" {
+	if len(kb) < 2 || kb[len(kb)-2][1].Data != "scan_svc" || kb[len(kb)-1][1].Data != "~1v|home" {
 		t.Errorf("watching keyboard = %+v", kb)
 	}
 }
@@ -944,7 +951,7 @@ func TestAlertActionButtons(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || len(kb[0]) != 4 || kb[0][0].Data != "ssh" || kb[0][1].Data != "ssh_fails" || kb[0][2].Data != "firewall" {
+	if kb == nil || len(kb[0]) != 4 || kb[0][0].Data != "~1o|ses" || kb[0][1].Data != "~1o|fai" || kb[0][2].Data != "~1o|fw" {
 		t.Fatalf("ssh alert keyboard = %+v", kb)
 	}
 	if last := kb[0][len(kb[0])-1]; !strings.HasPrefix(last.Data, "snz:") {
@@ -957,7 +964,7 @@ func TestAlertActionButtons(t *testing.T) {
 	send.mu.Lock()
 	kb = send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "top" || kb[0][1].Data != "cpu" {
+	if kb == nil || kb[0][0].Data != "~1o|top" || kb[0][1].Data != "~1o|cpu" {
 		t.Fatalf("cpu alert keyboard = %+v", kb)
 	}
 
@@ -966,13 +973,18 @@ func TestAlertActionButtons(t *testing.T) {
 	send.mu.Lock()
 	kb = send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "disk" {
+	if kb == nil || kb[0][0].Data != "~1o|dsk" {
 		t.Fatalf("disk alert keyboard = %+v", kb)
 	}
 
-	// The fails button resolves to a real handler.
+	// The fails button resolves to a real screen, sent as a reply to
+	// the alert; the legacy button of older alerts too, in place.
+	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 3, Data: "~1o|fai"})
+	if sent := send.all(); !strings.Contains(sent[len(sent)-1], "Failed logins") {
+		t.Errorf("fails button view = %q", sent[len(sent)-1])
+	}
 	a.handleCallback(ctx, &telegram.Callback{ID: "cb", ChatID: 42, MessageID: 3, Data: "ssh_fails"})
-	if last := send.lastEdit(); !strings.Contains(last.html, "Failed attempts") && !strings.Contains(last.html, "Nothing recorded") {
+	if last := send.lastEdit(); !strings.Contains(last.html, "Failed logins") {
 		t.Errorf("ssh_fails callback view = %q", last.html)
 	}
 }
@@ -992,7 +1004,7 @@ func TestStartupHelloHasButtons(t *testing.T) {
 	for i, s := range send.sent {
 		if strings.Contains(s, "statix-agent started") {
 			kb := send.keyboards[i]
-			if kb == nil || kb[0][0].Data != "status" || kb[0][1].Data != "watching" {
+			if kb == nil || kb[0][0].Data != "~1v|home" || kb[0][1].Data != "watching" {
 				t.Errorf("hello keyboard = %+v", kb)
 			}
 			return
@@ -1146,13 +1158,13 @@ func TestFirewallFlow(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "fw_close_ask" {
+	if kb == nil || kb[0][0].Data != "~1fc" {
 		t.Fatalf("firewall keyboard = %+v", kb)
 	}
 
 	// The ask step warns and does NOT touch ufw.
 	rulesBefore := len(ufw.calls)
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 8, Data: "fw_close_ask"})
+	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 8, Data: kb[0][0].Data})
 	if len(ufw.calls) != rulesBefore {
 		t.Fatal("confirmation screen must not run ufw commands")
 	}
@@ -1528,11 +1540,11 @@ func TestSSHKickFlow(t *testing.T) {
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
 	sessions := sshTestSessions()
-	wantSK1 := sessionCallbackData("sk:", 1, sessions[0])
-	if kb == nil || kb[0][0].Data != wantSK1 || kb[1][0].Data != sessionCallbackData("sk:", 2, sessions[1]) {
+	wantSK1 := "~1kk|" + sessionFingerprint(sessions[0])
+	if kb == nil || kb[0][0].Data != wantSK1 || kb[0][1].Data != "~1kk|"+sessionFingerprint(sessions[1]) {
 		t.Fatalf("ssh keyboard = %+v", kb)
 	}
-	if kb[2][0].Data != "status" {
+	if kb[1][0].Data != "~1v|his^ses" || kb[2][1].Data != "~1v|home" {
 		t.Fatalf("nav rows must follow kick rows: %+v", kb)
 	}
 

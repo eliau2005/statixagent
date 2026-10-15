@@ -1,0 +1,19 @@
+⚙️ <b>Settings</b>
+Alert thresholds and the daily digest:
+<pre>CPU alert      90%
+Memory alert   90%
+Disk alert     85%
+Temp alert     85°C
+Battery alert  15%
+Daily digest   on · 09:00</pre>
+Alerts fire when a value crosses its threshold (battery: when below). Steps of 5.
+--- keyboard ---
+[🖥 CPU −5] → th:cpu:-5  [🖥 CPU 90%] → noop  [🖥 CPU +5] → th:cpu:+5
+[🧠 Memory −5] → th:mem:-5  [🧠 Memory 90%] → noop  [🧠 Memory +5] → th:mem:+5
+[💾 Disk −5] → th:disk:-5  [💾 Disk 85%] → noop  [💾 Disk +5] → th:disk:+5
+[🌡 Temp −5] → th:temp:-5  [🌡 Temp 85°C] → noop  [🌡 Temp +5] → th:temp:+5
+[🔋 Battery −5] → th:batt:-5  [🔋 Battery 15%] → noop  [🔋 Battery +5] → th:batt:+5
+[📰 Digest: on] → dg:toggle  [−1h] → dg:hour:-1  [09:00] → noop  [+1h] → dg:hour:+1
+[👁 Watching] → watching  [⬇️ Update] → ~1v|upd
+[🧹 Clear chat] → ~1cc  [❓ Help] → ~1v|hlp
+[⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|set

@@ -50,7 +50,7 @@ func (a *Agent) noteSSHEvent(kind sshwatch.EventKind) {
 // digestView renders the accumulated digest. reset starts a new window —
 // the scheduled daily send resets; the on-demand /digest command does not.
 func (a *Agent) digestView(reset bool) string {
-	now := time.Now()
+	now := a.now()
 	a.mu.Lock()
 	d := bot.DigestData{
 		Since:   a.digest.since,

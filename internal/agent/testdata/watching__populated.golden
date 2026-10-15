@@ -17,3 +17,4 @@ Tap 🗑 to stop watching:
 [🗑 example.com:8443] → cr:0:e20821ad3d0279c3
 [🗑 https://example.com…] → hr:0:3b624c863eb828e7
 [👁 Watching] → watching  [🔎 Services] → scan_svc  [🔎 Ports] → scan_port
+[⬅️ Back] → ~1v|set  [🏠 Home] → ~1v|home

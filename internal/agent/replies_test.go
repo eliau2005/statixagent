@@ -242,7 +242,7 @@ func TestThresholdCallbackRejectsForgedDelta(t *testing.T) {
 }
 
 // TestLiveStopWithoutSession: a Stop button that outlived its session (agent
-// restart) must restore Status with the nav keyboard, not stay stuck.
+// restart) must restore Home with its keyboard, not stay stuck.
 func TestLiveStopWithoutSession(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
@@ -262,8 +262,8 @@ func TestLiveStopWithoutSession(t *testing.T) {
 	if e.messageID != 11 || strings.Contains(e.html, "LIVE") || !strings.Contains(e.html, "testhost") {
 		t.Errorf("restore edit = %+v", e)
 	}
-	if e.kb == nil || e.kb[0][0].Data != "status" {
-		t.Errorf("restore edit must carry the nav keyboard: %+v", e.kb)
+	if e.kb == nil || e.kb[len(e.kb)-1][1].Data != "~1v|home" {
+		t.Errorf("restore edit must carry the Home keyboard: %+v", e.kb)
 	}
 }
 
@@ -338,16 +338,17 @@ func navRefresh(kb telegram.Keyboard) string {
 	return ""
 }
 
-// TestSSHEventViewsKeepKeyboard: History and Fails (alert buttons and
-// commands) carry the nav keyboard, and Refresh re-runs the same view.
+// TestSSHEventViewsKeepKeyboard: History and Failed logins (old alert
+// buttons and commands) open their screens, and Refresh re-runs the same
+// screen.
 func TestSSHEventViewsKeepKeyboard(t *testing.T) {
 	for _, tc := range []struct {
-		token, text, cmd, title string
+		token, text, cmd, title, refresh string
 	}{
-		{"ssh_fails", "/ssh_fails", "ssh_fails", "Failed attempts"},
-		{"ssh_fails", "/ssh fails", "ssh", "Failed attempts"},
-		{"ssh_history", "/ssh_history", "ssh_history", "SSH history"},
-		{"ssh_history", "/ssh history", "ssh", "SSH history"},
+		{"ssh_fails", "/ssh_fails", "ssh_fails", "Failed logins", "~1v|fai"},
+		{"ssh_fails", "/ssh fails", "ssh", "Failed logins", "~1v|fai"},
+		{"ssh_history", "/ssh_history", "ssh_history", "SSH history", "~1v|his"},
+		{"ssh_history", "/ssh history", "ssh", "SSH history", "~1v|his"},
 	} {
 		t.Run(tc.text, func(t *testing.T) {
 			send := &fakeSender{}
@@ -361,8 +362,8 @@ func TestSSHEventViewsKeepKeyboard(t *testing.T) {
 			if e.messageID != 3 || !strings.Contains(e.html, tc.title) {
 				t.Errorf("callback view = %+v", e)
 			}
-			if got := navRefresh(e.kb); got != tc.token {
-				t.Errorf("callback Refresh = %q, want %q (kb %+v)", got, tc.token, e.kb)
+			if got := navRefresh(e.kb); got != tc.refresh {
+				t.Errorf("callback Refresh = %q, want %q (kb %+v)", got, tc.refresh, e.kb)
 			}
 
 			// Typed command replies with the same keyboard.
@@ -374,8 +375,8 @@ func TestSSHEventViewsKeepKeyboard(t *testing.T) {
 			send.mu.Lock()
 			kb := send.keyboards[len(send.keyboards)-1]
 			send.mu.Unlock()
-			if got := navRefresh(kb); got != tc.token {
-				t.Errorf("command Refresh = %q, want %q (kb %+v)", got, tc.token, kb)
+			if got := navRefresh(kb); got != tc.refresh {
+				t.Errorf("command Refresh = %q, want %q (kb %+v)", got, tc.refresh, kb)
 			}
 		})
 	}

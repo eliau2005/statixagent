@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +26,8 @@ import (
 
 var update = flag.Bool("update", false, "rewrite testdata/*.golden from the current output")
 
-// dumpKeyboard renders a keyboard one row per line as "[label] → data".
+// dumpKeyboard renders a keyboard one row per line as "[label] → data",
+// a copy button as "[label] ⧉ text", and a style as "(style)".
 func dumpKeyboard(kb telegram.Keyboard) string {
 	var b strings.Builder
 	for _, row := range kb {
@@ -35,7 +35,14 @@ func dumpKeyboard(kb telegram.Keyboard) string {
 			if i > 0 {
 				b.WriteString("  ")
 			}
-			fmt.Fprintf(&b, "[%s] → %s", btn.Text, btn.Data)
+			if btn.Copy != "" {
+				fmt.Fprintf(&b, "[%s] ⧉ %s", btn.Text, btn.Copy)
+			} else {
+				fmt.Fprintf(&b, "[%s] → %s", btn.Text, btn.Data)
+			}
+			if btn.Style != "" {
+				fmt.Fprintf(&b, " (%s)", btn.Style)
+			}
 		}
 		b.WriteString("\n")
 	}
@@ -81,17 +88,6 @@ func ufwOnly(out string, err error) runFunc {
 			return out, err
 		}
 		return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-	}
-}
-
-func TestGoldenNavKeyboards(t *testing.T) {
-	views := []string{"live", "watching", "settings", "firewall"}
-	for v := range navViews {
-		views = append(views, v)
-	}
-	slices.Sort(views)
-	for _, v := range views {
-		checkGolden(t, "nav__"+v, "", navKeyboard(v))
 	}
 }
 

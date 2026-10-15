@@ -1,0 +1,4 @@
+🌐 No HTTP checks yet.
+Add one: <code>/http add https://example.com/healthz</code>
+--- keyboard ---
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|htp

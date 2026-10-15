@@ -1,5 +1,5 @@
 🛡 <b>Firewall</b>
 SSH port 22: 🔓 <b>open</b> (rule 1: 22/tcp ALLOW Anywhere)
 --- keyboard ---
-[🔒 Close port 22] → fw_close_ask
-[⬅️ Status] → status  [🔐 SSH] → ssh
+[🔒 Close port 22] → ~1fc (danger)
+[⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fw

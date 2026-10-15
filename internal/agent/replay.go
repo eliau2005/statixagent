@@ -40,7 +40,7 @@ var viewCommands = map[string]bool{
 	"top": true, "digest": true, "disk": true, "net": true, "temp": true,
 	"battery": true, "services": true, "docker": true, "ssh": true,
 	"ping": true, "ssh_history": true, "ssh_fails": true, "trusted": true,
-	"watching": true, "settings": true, "firewall": true,
+	"watching": true, "settings": true, "firewall": true, "metrics": true, "security": true,
 	"services_scan": true, "ports_scan": true,
 }
 
