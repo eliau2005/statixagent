@@ -186,7 +186,7 @@ func TestConfirmedErrorsAreValidHTML(t *testing.T) {
 			a := New(testConfig(), send, nil, testAgent(send.fakeSender).src)
 			a.src.UpdateCheck = func(context.Context) (string, bool, error) { return "v2", true, nil }
 			a.src.UpdateApply = func(context.Context) error { return hostileErr }
-			a.handleCallback(context.Background(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: tc.data})
+			confirmThrough(t, a, send.fakeSender, tc.data, 5) // the legacy Yes asks again
 			var out string
 			if tc.data == cbClearYes {
 				// The clear outcome is a new message: the prompt is gone.

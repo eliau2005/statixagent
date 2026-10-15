@@ -37,14 +37,14 @@ func TestLegacyRuleClaims(t *testing.T) {
 		{"dismiss", "dismiss"},
 		{"live", "live"},
 		{"live_stop", "live_stop"},
-		// Firewall: the two that run ufw are slow.
+		// Firewall: the Yes buttons of older versions, which ask again.
 		{"fw_close", "firewall-apply"},
 		{"fw_open", "firewall-apply"},
 		{"firewall", "firewall"},
 		{"fw_close_ask", "firewall"},
 		{"fw_open_ask", "firewall"},
-		// SSH: skk: kicks (slow); sk: and the list are not. "ssh" is also
-		// a nav view, but it renders the sessions list with kick buttons.
+		// SSH: skk: (an older Yes) asks again; sk: asks. "ssh" is also a
+		// nav view, but it renders the sessions list with kick buttons.
 		{"skk:1", "ssh-kick"},
 		{"skk:3", "ssh-kick"},
 		{"skk:1:zzzzzzzzzzzzzzzz", "ssh-kick"},
@@ -126,19 +126,18 @@ func TestLegacyRuleClaims(t *testing.T) {
 }
 
 // TestLegacySlowRules pins which presses are answered before their work,
-// and with what.
+// and with what. Host-changing work runs only from a confirm token, so a
+// legacy rule never does it.
 func TestLegacySlowRules(t *testing.T) {
 	a := testAgent(&fakeSender{})
-	want := map[string]string{
-		"fw_close": "Working…", "fw_open": "Working…", "skk:1": "Working…",
-		cbUpdateYes: "Updating…", cbClearYes: "Clearing…", "docker": "",
-	}
+	want := map[string]string{"docker": ""}
 	for data, ack := range want {
 		if rule, ok := a.legacy.Lookup(data); !ok || !rule.Slow || rule.Ack != ack {
 			t.Errorf("%q: slow=%v ack=%q, want slow with %q", data, rule.Slow, rule.Ack, ack)
 		}
 	}
-	for _, data := range []string{"firewall", "fw_close_ask", "sk:1", "ssh", "status", "settings", "snz:cpu", "live", "update_confirm", cbClearNo} {
+	for _, data := range []string{"firewall", "fw_close_ask", "fw_close", "fw_open", "sk:1", "skk:1", "ssh", "status",
+		"settings", "snz:cpu", "live", "update_confirm", cbUpdateYes, cbClearYes, cbClearNo} {
 		if rule, _ := a.legacy.Lookup(data); rule.Slow {
 			t.Errorf("%q is slow; only work that takes seconds should be", data)
 		}

@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/eliau2005/statixagent/internal/dockermon"
-	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
 // Real `ufw status verbose` output from an Ubuntu host where the SSH
@@ -345,7 +344,7 @@ func TestFirewallCloseVerifiesResult(t *testing.T) {
 	a := testAgent(send)
 	ufw := &verboseUFW{plain: ufwPlainOpenSSH, verbose: ufwVerboseOpenSSH}
 	a.src.Runner = ufw
-	a.handleCallback(t.Context(), &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "fw_close"})
+	id := confirmThrough(t, a, send, "fw_close_ask", 4)
 
 	last := send.lastEdit()
 	if !strings.Contains(last.html, "Change failed") || !strings.Contains(last.html, "port 22 is not closed") ||
@@ -355,7 +354,7 @@ func TestFirewallCloseVerifiesResult(t *testing.T) {
 	if strings.Contains(last.html, "ReadWritePaths") {
 		t.Errorf("a shadowed rule is not a sandbox problem: %q", last.html)
 	}
-	if out := slowOutcome(t, send, "c1"); strings.Contains(out, "port 22 closed") {
+	if out := slowOutcome(t, send, id); strings.Contains(out, "Port 22 closed") {
 		t.Errorf("a failed close must not report success: %q", out)
 	}
 	// The write path itself is unchanged: delete allow, deny, reload.

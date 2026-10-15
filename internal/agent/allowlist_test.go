@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // emittedDataPrefixes scans this package's non-test sources for every
@@ -145,6 +146,8 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 		"b.cmd":                     true, // navKeyboard
 		"a.snoozeCallbackData(key)": true, // alertKeyboard
 		"data":                      true, // trustButton
+		"yes":                       true, // confirmKeyboard
+		"no":                        true, // confirmKeyboard
 	}
 	for _, d := range dynamic {
 		if !covered[d] {
@@ -152,8 +155,21 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 		}
 	}
 	a := testAgent(&fakeSender{})
+	// Confirm buttons route on any agent: one that never minted the
+	// token answers it as stale, not outdated.
+	confirmKB, _, err := a.mintConfirm(tgui.Intent{Action: actClear, Target: "chat", ChatID: 42, MessageID: 5}, "✅ Yes, clear")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range confirmKB {
+		for _, b := range row {
+			if !pressRoutes(t, b.Data) {
+				t.Errorf("confirm button %q data %q does not route", b.Text, b.Data)
+			}
+		}
+	}
 	kbs := []telegram.Keyboard{
-		updateKeyboard(), updateConfirmKeyboard(), clearConfirmKeyboard(),
+		updateKeyboard(),
 		{a.trustButton("203.0.113.7")},
 	}
 	for v := range navViews {
@@ -207,9 +223,10 @@ func TestForgedCallbackRejected(t *testing.T) {
 	}
 }
 
-// TestLegacyUpdateConfirmReprompts: the Install button of an older
-// version asks again with a fresh Yes and never installs by itself.
-func TestLegacyUpdateConfirmReprompts(t *testing.T) {
+// TestUpdateInstallAsks: the Install button of an update offer, today's
+// and older versions' alike, opens the confirm screen and never installs
+// by itself.
+func TestUpdateInstallAsks(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	applied := false
@@ -219,18 +236,18 @@ func TestLegacyUpdateConfirmReprompts(t *testing.T) {
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	if applied {
-		t.Fatal("legacy update_confirm installed the update")
+		t.Fatal("update_confirm installed the update")
 	}
-	if len(send.edits) != 1 || !strings.Contains(send.edits[0].html, "Install the update?") || len(send.edits[0].kb) == 0 || send.edits[0].kb[0][0].Data != cbUpdateYes {
+	if len(send.edits) != 1 || !strings.Contains(send.edits[0].html, "Install the update?") || tokenData(send.edits[0].kb, tgui.ActYes) == "" {
 		t.Fatalf("edits = %v, want the confirm prompt", send.edits)
 	}
-	if !slices.Equal(send.answered, []string{"c1:Please confirm again"}) {
-		t.Errorf("answered = %v, want one re-confirm toast", send.answered)
+	if !slices.Equal(send.answered, []string{"c1:"}) {
+		t.Errorf("answered = %v, want one plain answer", send.answered)
 	}
 }
 
-// TestConfirmYesReauthorizes: the Yes buttons are not views, so in a group
-// with admins only an admin may press them, and a foreign chat is ignored.
+// TestConfirmYesReauthorizes: a Yes is not a view, so in a group with
+// admins only an admin may press it, and a foreign chat is ignored.
 func TestConfirmYesReauthorizes(t *testing.T) {
 	for _, data := range []string{cbUpdateYes, cbClearYes} {
 		t.Run(data, func(t *testing.T) {
@@ -245,20 +262,26 @@ func TestConfirmYesReauthorizes(t *testing.T) {
 				defer send.mu.Unlock()
 				return applied > 0 || len(send.deleted) > 0
 			}
+			// The legacy Yes asks again; the admin's fresh Yes is the token.
+			a.handleCallback(ctx, &telegram.Callback{ID: "ask", ChatID: -100, ChatType: "supergroup", FromID: 7, MessageID: 5, Data: data})
+			yes := tokenData(lastEditKB(send), tgui.ActYes)
+			if acted() || yes == "" {
+				t.Fatalf("legacy %s acted=%v yes=%q", data, acted(), yes)
+			}
 
-			a.handleCallback(ctx, &telegram.Callback{ID: "foreign", ChatID: 666, ChatType: "group", FromID: 7, MessageID: 5, Data: data})
-			a.handleCallback(ctx, &telegram.Callback{ID: "member", ChatID: -100, ChatType: "supergroup", FromID: 5, MessageID: 5, Data: data})
+			a.handleCallback(ctx, &telegram.Callback{ID: "foreign", ChatID: 666, ChatType: "group", FromID: 7, MessageID: 5, Data: yes})
+			a.handleCallback(ctx, &telegram.Callback{ID: "member", ChatID: -100, ChatType: "supergroup", FromID: 5, MessageID: 5, Data: yes})
 			if acted() {
 				t.Fatal("Yes acted for a foreign chat or a non-admin")
 			}
 			send.mu.Lock()
 			answered := slices.Clone(send.answered)
 			send.mu.Unlock()
-			if !slices.Equal(answered, []string{"member:" + adminOnlyToast}) {
+			if !slices.Equal(answered, []string{"ask:" + reconfirmToast, "member:" + adminOnlyToast}) {
 				t.Errorf("answered = %v, want only the non-admin refused", answered)
 			}
 
-			a.handleCallback(ctx, &telegram.Callback{ID: "admin", ChatID: -100, ChatType: "supergroup", FromID: 7, MessageID: 5, Data: data})
+			a.handleCallback(ctx, &telegram.Callback{ID: "admin", ChatID: -100, ChatType: "supergroup", FromID: 7, MessageID: 5, Data: yes})
 			if !acted() {
 				t.Error("Yes from an admin did not act")
 			}

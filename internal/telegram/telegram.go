@@ -125,6 +125,10 @@ func redact(s string) string {
 	return tokenPattern.ReplaceAllString(s, "bot<redacted>")
 }
 
+// Redact is redact for text that leaves the agent by another way than
+// the client, such as command output kept in the audit log.
+func Redact(s string) string { return redact(s) }
+
 // redactedError hides a token that appears in a wrapped error's text while
 // keeping the chain intact for errors.Is / errors.As.
 type redactedError struct {

@@ -59,6 +59,14 @@ func (a *Agent) handleCall(ctx context.Context, cb *telegram.Callback) {
 		}
 		return true
 	}
+	// Yes and Cancel name a confirm token, not a screen. Decoding is pure,
+	// so the gate still runs before anything else.
+	if c, err := tgui.Decode(cb.Data); err == nil && (c.Act == tgui.ActYes || c.Act == tgui.ActNo) {
+		if gate(tgui.ClassMutate) {
+			a.confirmPress(ctx, cb, c)
+		}
+		return
+	}
 	res, err := a.ui.Dispatch(ctx, cb.Data, gate)
 	switch {
 	case err != nil:

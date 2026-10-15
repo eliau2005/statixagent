@@ -179,9 +179,10 @@ func TestCallScreensEncode(t *testing.T) {
 	}
 }
 
-// Nothing the bot sends today carries tgui data: the goldens pin every
-// keyboard, and none of them has a "~" button.
+// Nothing the bot sends today carries tgui data but confirm tokens: the
+// goldens pin every keyboard, and none of them has another "~" button.
 func TestNoKeyboardEmitsCalls(t *testing.T) {
+	tokens := strings.NewReplacer("→ ~1y|", "", "→ ~1n|", "")
 	files, err := filepath.Glob(filepath.Join("testdata", "*.golden"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("no goldens: %v", err)
@@ -191,7 +192,7 @@ func TestNoKeyboardEmitsCalls(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(b), "→ ~") {
+		if strings.Contains(tokens.Replace(string(b)), "→ ~") {
 			t.Errorf("%s has a tgui button", f)
 		}
 	}
