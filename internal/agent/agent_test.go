@@ -373,6 +373,48 @@ func TestWatchManagement(t *testing.T) {
 	}
 }
 
+func TestWatchRejectsInvalidUnitNames(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	a.src.ConfigPath = cfgPath
+	a.src.Runner = scanRunner{listOutput: "" +
+		"nginx.service loaded active running A high performance web server\n" +
+		"-x.service loaded active running Not a unit we pass to systemctl\n"}
+	ctx := context.Background()
+	dispatch := func(text string) string {
+		reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: text})
+		return reply
+	}
+
+	// Option-shaped names never reach the watch list (or systemctl).
+	for _, arg := range []string{"--host=x", "-H", "a/b", "nginx;id"} {
+		if reply := dispatch("/services_add " + arg); !strings.Contains(reply, "Invalid unit name") {
+			t.Errorf("/services_add %s = %q, want rejection", arg, reply)
+		}
+	}
+	if got := a.watchCopy().Services; len(got) != 0 {
+		t.Errorf("services after invalid adds = %v", got)
+	}
+
+	// The scan does not offer a name the add would refuse.
+	if scan := dispatch("/services_scan"); !strings.Contains(scan, "nginx.service") || strings.Contains(scan, "-x.service") {
+		t.Errorf("scan = %q", scan)
+	}
+
+	// An invalid entry already in the config still loads, and can be removed.
+	a.cfg.Watch.Services = []string{"--host=x"}
+	if note := a.persist(a.cfg); note != "" {
+		t.Fatalf("persist with a legacy entry: %q", note)
+	}
+	if _, err := config.Load(cfgPath); err != nil {
+		t.Fatalf("config with a legacy entry must load: %v", err)
+	}
+	if reply := dispatch("/services_remove 1"); !strings.Contains(reply, "stopped watching --host=x") {
+		t.Errorf("remove legacy entry = %q", reply)
+	}
+}
+
 func TestWatchWithoutConfigPath(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
