@@ -115,6 +115,7 @@ func (a *Agent) buildConfirms() map[string]confirmAction {
 		actUpdate:  a.updateAction(),
 		actClear:   a.clearAction(),
 		actUntrust: a.untrustAction(),
+		actFwPlan:  a.planAction(),
 		// A firewall trial's buttons: minted with the trial, never from
 		// a confirm screen of their own.
 		actFwKeep:     a.trialAction(a.keepTrial),
@@ -131,7 +132,12 @@ func (a *Agent) confirmRow(yesLabel, nonce string) []tgui.Button {
 // mintToken stores a token for in, audited as requested, and returns its
 // nonce.
 func (a *Agent) mintToken(in tgui.Intent) (string, error) {
-	nonce, err := a.tokens.Mint(in)
+	return a.mintTokenTTL(in, tgui.TokenTTL)
+}
+
+// mintTokenTTL is mintToken with its own lifetime, for a firewall plan.
+func (a *Agent) mintTokenTTL(in tgui.Intent, ttl time.Duration) (string, error) {
+	nonce, err := a.tokens.MintTTL(in, ttl)
 	if err != nil {
 		return "", err
 	}

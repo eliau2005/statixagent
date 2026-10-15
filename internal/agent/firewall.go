@@ -181,19 +181,20 @@ func (a *Agent) firewallFor(ctx context.Context, p ufwProbe) tgui.View {
 			"the firewall state is <b>unknown</b>, so no changes are offered.\n" +
 			preBlock(p.out)}
 	}
+	// The rules and the ways to change them (fwrules.go), then port 22.
 	// Closing SSH is offered only when the owner opted in (Decision 15).
-	var row []tgui.Button
+	row := []tgui.Button{{Label: "↩️ Restore previous", Call: tgui.Open(scrFwRestore)}}
 	if p.state != fwOpen {
 		row = append(row, open)
 	}
 	if p.state != fwClosed && a.cfg.Firewall.AllowCloseSSH {
 		row = append(row, closeBtn)
 	}
-	v := tgui.View{Text: a.firewallState(ctx, p)}
-	if len(row) > 0 {
-		v.Rows = [][]tgui.Button{row}
-	}
-	return v
+	return tgui.View{Text: a.firewallState(ctx, p), Rows: [][]tgui.Button{
+		{{Label: "📋 Rules", Call: tgui.Open(scrFwRules)}, {Label: "➕ Open port", Call: tgui.Open(scrFwAdd)},
+			{Label: "🧱 Presets", Call: tgui.Open(scrFwPresets)}},
+		row,
+	}}
 }
 
 // firewallSummary is the one-line firewall state of the Security screen.
@@ -229,7 +230,7 @@ const closeSSHOff = "⛔ <b>Closing the SSH port from Telegram is turned off.</b
 // Docker-published ports, which bypass ufw's INPUT rules altogether.
 func (a *Agent) firewallState(ctx context.Context, p ufwProbe) string {
 	var b strings.Builder
-	b.WriteString("🛡 <b>Firewall</b>\n")
+	b.WriteString("🛡 <b>Firewall</b> · ufw active\n")
 	if p.fw.policy != "" {
 		b.WriteString("Default incoming policy: <b>" + esc(p.fw.policy) + "</b>\n")
 	}
@@ -247,6 +248,28 @@ func (a *Agent) firewallState(ctx context.Context, p ufwProbe) string {
 			b.WriteString("\nSSH port " + strconv.Itoa(port) + ": " + describeVerdict(p.fw.verdict(port, false, netip.Addr{})))
 		}
 	}
+	if peers := a.adminPeers(ctx, ports); len(peers) > 0 {
+		var names []string
+		for i, p := range peers {
+			if i == 3 {
+				names = append(names, fmt.Sprintf("+%d more", len(peers)-3))
+				break
+			}
+			names = append(names, p.String())
+		}
+		label := "Your SSH peer: "
+		if len(peers) > 1 {
+			label = "Your SSH peers: "
+		}
+		b.WriteString("\n" + label + esc(strings.Join(names, ", ")))
+	}
+	v6 := 0
+	for _, r := range p.fw.rules {
+		if r.V6 {
+			v6++
+		}
+	}
+	fmt.Fprintf(&b, "\nRules: %d (v4 %d · v6 %d)", len(p.fw.rules), len(p.fw.rules)-v6, v6)
 	if w := a.dockerPortsWarning(ctx); w != "" {
 		b.WriteString("\n" + w)
 	}

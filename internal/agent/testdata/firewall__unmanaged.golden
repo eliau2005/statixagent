@@ -1,5 +1,7 @@
-🛡 <b>Firewall</b>
+🛡 <b>Firewall</b> · ufw active
 SSH port 22: no explicit rule (ufw default policy applies)
+Rules: 1 (v4 1 · v6 0)
 --- keyboard ---
-[🔓 Open port 22] → ~1fo
+[📋 Rules] → ~1v|fl  [➕ Open port] → ~1v|fa  [🧱 Presets] → ~1v|fp
+[↩️ Restore previous] → ~1v|fh  [🔓 Open port 22] → ~1fo
 [⬅️ Back] → ~1v|sec  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fw

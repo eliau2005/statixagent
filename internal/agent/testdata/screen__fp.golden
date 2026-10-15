@@ -1,0 +1,8 @@
+🧱 <b>Presets</b>
+🌍 Web: allow 80/tcp and 443/tcp from Anywhere
+🔐 SSH (limit): rate-limit new connections to the SSH port
+🗄 Postgres and Redis: only from a source you name, never from Anywhere
+--- keyboard ---
+[🌍 Web 80+443] → ~1fps|web  [🔐 SSH (limit)] → ~1fps|ssh
+[🗄 Postgres from…] → ~1v|fd|pg^fp  [🗄 Redis from…] → ~1v|fd|rd^fp
+[⬅️ Back] → ~1v|fw  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fp

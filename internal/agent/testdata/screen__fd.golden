@@ -1,0 +1,7 @@
+🗄 <b>Postgres</b> (5432/tcp) is never opened to Anywhere. Send the network to allow, for example:
+<code>/fw_allow 10.0.0.0/8 5432/tcp</code>
+
+🗄 <b>Redis</b> (6379/tcp) is never opened to Anywhere. Send the network to allow, for example:
+<code>/fw_allow 10.0.0.0/8 6379/tcp</code>
+--- keyboard ---
+[⬅️ Back] → ~1v|fa  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|fd
