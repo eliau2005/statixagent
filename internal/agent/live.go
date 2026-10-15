@@ -13,7 +13,8 @@ import (
 // place on a short tick until the user taps ⏹ Stop (or a safety ceiling is
 // reached). Rendering never collects or evaluates extra samples, so viewing
 // the dashboard cannot change alert cadence or trend history. Only one live
-// session runs at a time.
+// session runs at a time. A 429 pauses frames for the retry_after Telegram
+// asked for, and a deleted message ends the session.
 
 // spinnerFrames animate the live header, one frame per tick.
 var spinnerFrames = []string{"◐", "◓", "◑", "◒"}
@@ -62,18 +63,34 @@ func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, 
 	tick := time.NewTicker(interval)
 	defer tick.Stop()
 
-	frame := 0
+	n := 0
 	render := func() string {
 		a.mu.Lock()
 		body := bot.Status(a.src.Hostname, a.snap, a.thermal, a.power)
 		a.mu.Unlock()
 		elapsed := time.Since(start).Round(time.Second)
-		header := fmt.Sprintf("%s 🔴 <b>LIVE</b> · %s\n", spinnerFrames[frame%len(spinnerFrames)], bot.Dur(elapsed))
-		frame++
+		header := fmt.Sprintf("%s 🔴 <b>LIVE</b> · %s\n", spinnerFrames[n%len(spinnerFrames)], bot.Dur(elapsed))
+		n++
 		return header + body
 	}
 
-	a.send.EditMessageKB(ctx, chatID, messageID, render(), liveKeyboard())
+	// pauseUntil holds frames back after a 429. frame reports false once
+	// the message is gone: there is nothing left to edit or restore.
+	var pauseUntil time.Time
+	frame := func() bool {
+		err := a.send.EditMessageKB(ctx, chatID, messageID, render(), liveKeyboard())
+		if telegram.IsMessageNotFound(err) {
+			return false
+		}
+		if wait, ok := telegram.RetryAfter(err); ok {
+			pauseUntil = time.Now().Add(max(wait, interval))
+		}
+		return true
+	}
+
+	if !frame() {
+		return
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -84,7 +101,12 @@ func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, 
 				a.finishLive(chatID, messageID)
 				return
 			}
-			a.send.EditMessageKB(ctx, chatID, messageID, render(), liveKeyboard())
+			if time.Now().Before(pauseUntil) {
+				continue
+			}
+			if !frame() {
+				return
+			}
 		}
 	}
 }
