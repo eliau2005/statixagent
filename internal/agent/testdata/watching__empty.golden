@@ -1,5 +1,5 @@
 👁 <b>Watching</b>
 Nothing yet — scan to add:
 --- keyboard ---
-[👁 Watching] → watching  [🔎 Services] → scan_svc  [🔎 Ports] → scan_port
-[⬅️ Back] → ~1v|set  [🏠 Home] → ~1v|home
+[🔎 Scan services] → ~1v|scs  [🔎 Scan ports] → ~1v|scp
+[⬅️ Back] → ~1v|set  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|wat

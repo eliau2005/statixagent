@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
 	"github.com/eliau2005/statixagent/internal/tgui"
@@ -130,9 +131,10 @@ func pressRoutes(t *testing.T, data string) bool {
 // button of the keyboards built at run time, must still reach a handler.
 func TestEmittedCallbackDataRoutes(t *testing.T) {
 	prefixes, dynamic := emittedDataPrefixes(t)
-	// Navigation moved to "~1" calls, swept per screen below; the legacy
-	// literals left are the actions and older keyboards' data.
-	if len(prefixes) < 20 {
+	// Navigation, settings, watching and snooze moved to "~1" calls,
+	// swept per screen and keyboard below; the legacy literals left are
+	// Live, trust and their labels.
+	if len(prefixes) < 5 {
 		t.Fatalf("found only %d Data literals; is the scan broken?", len(prefixes))
 	}
 	slices.Sort(prefixes)
@@ -145,10 +147,7 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 	// Values with no literal head come from these builders; each is
 	// covered below by pressing the keyboards they build.
 	covered := map[string]bool{
-		"a.snoozeCallbackData(key)": true, // alertKeyboard
-		"data":                      true, // trustButton
-		"yes":                       true, // confirmKeyboard
-		"no":                        true, // confirmKeyboard
+		"data": true, // trustButton
 	}
 	for _, d := range dynamic {
 		// "~1" calls: every screen's keyboard and the alert keyboards
@@ -183,6 +182,9 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 		"a-very-long-alert-key-that-needs-the-hashed-snooze-form-to-fit-in-64-bytes"} {
 		kbs = append(kbs, a.alertKeyboard(key))
 	}
+	// A snoozed alert's Undo.
+	a.engine.Snooze("cpu", time.Now().Add(time.Hour))
+	kbs = append(kbs, a.alertKeyboard("cpu"))
 	for _, kb := range kbs {
 		for _, row := range kb {
 			for _, b := range row {

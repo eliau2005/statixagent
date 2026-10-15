@@ -1,3 +1,4 @@
 battery
 --- keyboard ---
-[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:battery
+[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|battery  [🔕 8h] → ~1sz|8h|k|battery  [🔕 24h] → ~1sz|24h|k|battery

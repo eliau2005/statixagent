@@ -104,6 +104,10 @@ func TestGoldenAlertKeyboards(t *testing.T) {
 		name := strings.NewReplacer(":", "_", "/", "_", "@", "_", ".", "_").Replace(key)
 		checkGolden(t, "alert__"+name, key, a.alertKeyboard(key))
 	}
+	// Snoozed: the row becomes its Undo.
+	a.now = func() time.Time { return time.Date(2026, 10, 15, 14, 5, 0, 0, time.Local) }
+	a.engine.Snooze("cpu", a.now().Add(8*time.Hour))
+	checkGolden(t, "alert__cpu_snoozed", "cpu", a.alertKeyboard("cpu"))
 }
 
 func TestGoldenSettings(t *testing.T) {
@@ -177,6 +181,13 @@ func TestGoldenWatching(t *testing.T) {
 	}
 	text, kb = a.watchingView()
 	checkGolden(t, "watching__populated", text, kb)
+
+	// Paged, opened from Services: page 2 of 3, Back to Services.
+	for i := range 10 {
+		a.cfg.Watch.Ports = append(a.cfg.Watch.Ports, config.PortCheck{Port: 9000 + i})
+	}
+	text, kb = a.screen(context.Background(), tgui.Call{Act: tgui.ActView, Args: []string{scrWatching, "2"}, From: scrServices})
+	checkGolden(t, "watching__page_2", text, kb)
 }
 
 func TestGoldenScans(t *testing.T) {

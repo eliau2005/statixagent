@@ -52,21 +52,15 @@ func (a *Agent) persist(cfg config.Config) string {
 	return ""
 }
 
-// registerWatchHandlers adds the scan/add/remove command family.
+// registerWatchHandlers adds the add/remove command family; /watching and
+// the scans are screens (commandScreens).
 func (a *Agent) registerWatchHandlers(r *bot.Router) {
-	r.Handle("watching", func(ctx context.Context, _ []string) string {
-		text, kb := a.watchingView()
-		a.stashKB(kb)
-		return text
-	})
-	r.Handle("services_scan", a.servicesScan)
-	r.Handle("services_add", a.servicesAdd)
-	r.Handle("services_remove", a.servicesRemove)
-	r.Handle("ports_scan", a.portsScan)
-	r.Handle("ports_add", a.portsAdd)
-	r.Handle("ports_remove", a.portsRemove)
-	r.Handle("procs_add", a.procsAdd)
-	r.Handle("procs_remove", a.procsRemove)
+	r.Handle("services_add", bot.Text(a.servicesAdd))
+	r.Handle("services_remove", bot.Text(a.servicesRemove))
+	r.Handle("ports_add", bot.Text(a.portsAdd))
+	r.Handle("ports_remove", bot.Text(a.portsRemove))
+	r.Handle("procs_add", bot.Text(a.procsAdd))
+	r.Handle("procs_remove", bot.Text(a.procsRemove))
 }
 
 // ---- services ----
@@ -108,55 +102,41 @@ func (a *Agent) scanServices(ctx context.Context) ([]unitInfo, error) {
 	return found, nil
 }
 
-// servicesScanView renders the scan with one ➕ button per candidate.
+// servicesScanView renders the Scan services screen as a message.
 func (a *Agent) servicesScanView(ctx context.Context) (string, telegram.Keyboard) {
-	found, err := a.scanServices(ctx)
-	if err != nil {
-		return "Scan failed: " + esc(err.Error()), backKeyboard()
-	}
-	if len(found) == 0 {
-		return "👁 Every running service is already watched.", backKeyboard()
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "👁 <b>Running, not watched</b> — %d\nTap ➕ to watch:\n<pre>", len(found))
-	const maxButtons = 12
-	for i, u := range found {
-		if i >= maxButtons {
-			fmt.Fprintf(&b, " … %d more — /services_add &lt;name&gt;\n", len(found)-maxButtons)
-			break
-		}
-		fmt.Fprintf(&b, " %2d  %s\n", i+1, esc(u.name))
-		if u.desc != "" {
-			fmt.Fprintf(&b, "     %s\n", esc(truncate(u.desc, 30)))
-		}
-	}
-	b.WriteString("</pre>")
-	var kb telegram.Keyboard
-	var row []telegram.Button
-	for i, u := range found {
-		if i >= maxButtons {
-			break
-		}
-		row = append(row, telegram.Button{
-			Text: "➕ " + truncate(strings.TrimSuffix(u.name, ".service"), 18),
-			Data: watchIndexData("sa:", i, u.name),
-		})
-		if len(row) == 2 {
-			kb = append(kb, row)
-			row = nil
-		}
-	}
-	if len(row) > 0 {
-		kb = append(kb, row)
-	}
-	kb = append(kb, watchFooterRow())
-	return b.String(), kb
+	return a.screen(ctx, tgui.Open(scrScanServices))
 }
 
-func (a *Agent) servicesScan(ctx context.Context, _ []string) string {
-	text, kb := a.servicesScanView(ctx)
-	a.stashKB(kb)
-	return text
+// scanServicesScreen pages the running units nobody watches, one ➕
+// button each. A button names its unit by digest and is resolved
+// against a fresh scan when pressed. The numbers are the ones
+// /services_add takes.
+func (a *Agent) scanServicesScreen(ctx context.Context, c tgui.Call) tgui.View {
+	found, err := a.scanServices(ctx)
+	if err != nil {
+		return tgui.View{Text: "🔎 Scan failed: " + esc(err.Error())}
+	}
+	if len(found) == 0 {
+		return tgui.View{Text: "🔎 Every running service is already watched."}
+	}
+	page, pages := pageOf(c, len(found))
+	var lines []string
+	var btns []tgui.Button
+	for i, u := range pageSlice(found, page) {
+		lines = append(lines, fmt.Sprintf("%2d %s", (page-1)*pageSize+i+1, u.name))
+		if u.desc != "" {
+			lines = append(lines, "   "+bot.Clip(u.desc, bot.PreCols-3))
+		}
+		btns = append(btns, tgui.Button{
+			Label: "➕ " + truncate(strings.TrimSuffix(u.name, ".service"), 18),
+			Call:  tgui.Call{Act: cfgWatch, Args: []string{watchUnit, callbackDigest(u.name), strconv.Itoa(page)}, From: c.From},
+		})
+	}
+	title := listTitle("🔎 <b>Running, not watched</b>", plural(len(found), "service"), page, pages)
+	return tgui.View{
+		Text: title + "\nTap ➕ to watch, or /services_add &lt;number&gt;:\n" + pre(lines),
+		Rows: append(buttonRows(btns, 2), pageRow(scrScanServices, c, page, pages)),
+	}
 }
 
 func (a *Agent) servicesAdd(ctx context.Context, args []string) string {
@@ -238,49 +218,36 @@ func (a *Agent) scanPorts() ([]int, error) {
 	return found, nil
 }
 
-// portsScanView renders the scan with one ➕ button per port.
+// portsScanView renders the Scan ports screen as a message.
 func (a *Agent) portsScanView() (string, telegram.Keyboard) {
-	found, err := a.scanPorts()
-	if err != nil {
-		return "Scan failed: " + esc(err.Error()), backKeyboard()
-	}
-	if len(found) == 0 {
-		return "👁 Every listening port is already watched.", backKeyboard()
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "👁 <b>Listening, not watched</b> — %d\nTap ➕ to watch:\n<pre>", len(found))
-	const maxButtons = 12
-	for i, p := range found {
-		if i >= maxButtons {
-			fmt.Fprintf(&b, " … %d more — /ports_add &lt;port&gt;\n", len(found)-maxButtons)
-			break
-		}
-		fmt.Fprintf(&b, " %2d  port %d\n", i+1, p)
-	}
-	b.WriteString("</pre>")
-	var kb telegram.Keyboard
-	var row []telegram.Button
-	for i, p := range found {
-		if i >= maxButtons {
-			break
-		}
-		row = append(row, telegram.Button{Text: fmt.Sprintf("➕ %d", p), Data: fmt.Sprintf("pa:%d", p)})
-		if len(row) == 3 {
-			kb = append(kb, row)
-			row = nil
-		}
-	}
-	if len(row) > 0 {
-		kb = append(kb, row)
-	}
-	kb = append(kb, watchFooterRow())
-	return b.String(), kb
+	return a.screen(context.Background(), tgui.Open(scrScanPorts))
 }
 
-func (a *Agent) portsScan(ctx context.Context, _ []string) string {
-	text, kb := a.portsScanView()
-	a.stashKB(kb)
-	return text
+// scanPortsScreen pages the listening ports nobody watches, one ➕
+// button each, carrying the port itself.
+func (a *Agent) scanPortsScreen(_ context.Context, c tgui.Call) tgui.View {
+	found, err := a.scanPorts()
+	if err != nil {
+		return tgui.View{Text: "🔎 Scan failed: " + esc(err.Error())}
+	}
+	if len(found) == 0 {
+		return tgui.View{Text: "🔎 Every listening port is already watched."}
+	}
+	page, pages := pageOf(c, len(found))
+	var lines []string
+	var btns []tgui.Button
+	for i, p := range pageSlice(found, page) {
+		lines = append(lines, fmt.Sprintf("%2d port %d", (page-1)*pageSize+i+1, p))
+		btns = append(btns, tgui.Button{
+			Label: fmt.Sprintf("➕ %d", p),
+			Call:  tgui.Call{Act: cfgWatch, Args: []string{watchPort, strconv.Itoa(p), strconv.Itoa(page)}, From: c.From},
+		})
+	}
+	title := listTitle("🔎 <b>Listening, not watched</b>", plural(len(found), "port"), page, pages)
+	return tgui.View{
+		Text: title + "\nTap ➕ to watch, or /ports_add &lt;number&gt;:\n" + pre(lines),
+		Rows: append(buttonRows(btns, 4), pageRow(scrScanPorts, c, page, pages)),
+	}
 }
 
 func (a *Agent) portsAdd(ctx context.Context, args []string) string {
@@ -476,69 +443,247 @@ func esc(s string) string {
 
 // ---- button-driven management ----
 
-// watchingView is the management hub: everything watched, one 🗑 button
-// per item, plus scan entry points.
+// Watch item kinds, as the Watching and scan buttons name them.
+const (
+	watchUnit = "u" // systemd unit
+	watchProc = "x" // process
+	watchPort = "p" // TCP port
+	watchCert = "c" // certificate host
+	watchHTTP = "h" // HTTP check URL
+)
+
+// watchItem is one watched thing as the Watching screen lists it.
+type watchItem struct {
+	kind string
+	// id names the item in callback data: the port itself, else the
+	// digest of the name, resolved by hashing the current list again.
+	id   string
+	name string // as the config holds it
+	note string // a port's label
+}
+
+// watchIcons are the glossary emoji of each kind (§2).
+var watchIcons = map[string]string{watchUnit: "🧩", watchProc: "🧵", watchPort: "🔌", watchCert: "📜", watchHTTP: "🌐"}
+
+// watchItems flattens the watch lists in the order Watching shows them.
+func watchItems(w config.Watch) []watchItem {
+	var items []watchItem
+	named := func(kind string, names []string) {
+		for _, n := range names {
+			items = append(items, watchItem{kind: kind, id: callbackDigest(n), name: n})
+		}
+	}
+	named(watchUnit, w.Services)
+	named(watchProc, w.Processes)
+	for _, p := range w.Ports {
+		items = append(items, watchItem{kind: watchPort, id: strconv.Itoa(p.Port), name: strconv.Itoa(p.Port), note: p.Label})
+	}
+	named(watchCert, w.SSLHosts)
+	for _, h := range w.HTTPChecks {
+		items = append(items, watchItem{kind: watchHTTP, id: callbackDigest(h.URL), name: h.URL})
+	}
+	return items
+}
+
+// short is the item's name for a button.
+func (it watchItem) short() string {
+	s := strings.TrimSuffix(it.name, ".service")
+	if it.kind == watchHTTP {
+		s = strings.TrimPrefix(strings.TrimPrefix(s, "https://"), "http://")
+	}
+	return truncate(s, 12)
+}
+
+// line is the item as the Watching screen lists it.
+func (it watchItem) line() string {
+	s := watchIcons[it.kind] + " " + it.name
+	if it.note != "" {
+		s += " (" + it.note + ")"
+	}
+	return s
+}
+
+// unwatch removes the item from w.
+func (it watchItem) unwatch(w *config.Watch) {
+	switch it.kind {
+	case watchUnit:
+		w.Services = remove(w.Services, it.name)
+	case watchProc:
+		w.Processes = remove(w.Processes, it.name)
+	case watchCert:
+		w.SSLHosts = remove(w.SSLHosts, it.name)
+	case watchPort:
+		w.Ports = slices.DeleteFunc(w.Ports, func(p config.PortCheck) bool { return strconv.Itoa(p.Port) == it.name })
+	case watchHTTP:
+		w.HTTPChecks = slices.DeleteFunc(w.HTTPChecks, func(h config.HTTPCheck) bool { return h.URL == it.name })
+	}
+}
+
+// validWatchID reports whether id can name an item of kind: a port in
+// canonical form, or a digest.
+func validWatchID(kind, id string) bool {
+	switch kind {
+	case watchPort:
+		_, ok := parsePort(id)
+		return ok
+	case watchUnit, watchProc, watchCert, watchHTTP:
+		return len(id) == 16 && isHex(id)
+	}
+	return false
+}
+
+// parsePort parses a port in canonical form, 1-65535.
+func parsePort(s string) (int, bool) {
+	n, err := strconv.Atoi(s)
+	return n, err == nil && strconv.Itoa(n) == s && n >= 1 && n <= 65535
+}
+
+// parsePage parses a page argument in canonical form. Pages past the
+// end are clamped when rendered.
+func parsePage(s string) (int, bool) {
+	n, err := strconv.Atoi(s)
+	return n, err == nil && strconv.Itoa(n) == s && n >= 1
+}
+
+// watchingView renders the Watching screen as a message.
 func (a *Agent) watchingView() (string, telegram.Keyboard) {
-	w := a.watchCopy()
-	var kb telegram.Keyboard
-	var b strings.Builder
-	b.WriteString("👁 <b>Watching</b>\n")
-	total := len(w.Services) + len(w.Processes) + len(w.Ports) + len(w.SSLHosts) + len(w.HTTPChecks)
-	if total == 0 {
-		b.WriteString("Nothing yet — scan to add:")
+	return a.screen(context.Background(), tgui.Open(scrWatching))
+}
+
+// watchingScreen is the bulk editor (§3.11): everything watched, paged,
+// with a 🗑 button per item carrying its stable ID, and the scans.
+func (a *Agent) watchingScreen(_ context.Context, c tgui.Call) tgui.View {
+	scans := []tgui.Button{
+		{Label: "🔎 Scan services", Call: tgui.Open(scrScanServices)},
+		{Label: "🔎 Scan ports", Call: tgui.Open(scrScanPorts)},
+	}
+	items := watchItems(a.watchCopy())
+	if len(items) == 0 {
+		return tgui.View{Text: "👁 <b>Watching</b>\nNothing yet — scan to add:", Rows: [][]tgui.Button{scans}}
+	}
+	page, pages := pageOf(c, len(items))
+	var lines []string
+	var btns []tgui.Button
+	for _, it := range pageSlice(items, page) {
+		lines = append(lines, it.line())
+		btns = append(btns, tgui.Button{
+			Label: "🗑 " + it.short(),
+			Call:  tgui.Call{Act: cfgUnwatch, Args: []string{it.kind, it.id, strconv.Itoa(page)}, From: c.From},
+		})
+	}
+	title := listTitle("👁 <b>Watching</b>", plural(len(items), "item"), page, pages)
+	return tgui.View{
+		Text: title + "\nTap 🗑 to stop watching:\n" + pre(lines),
+		Rows: append(buttonRows(btns, 3), scans, pageRow(scrWatching, c, page, pages)),
+	}
+}
+
+// listTitle is a paged list's title: "👁 Watching · 14 items · 1/2".
+func listTitle(title, count string, page, pages int) string {
+	title += " · " + count
+	if pages > 1 {
+		title += fmt.Sprintf(" · %d/%d", page, pages)
+	}
+	return title
+}
+
+// buttonRows lays btns out n to a row.
+func buttonRows(btns []tgui.Button, n int) [][]tgui.Button {
+	var rows [][]tgui.Button
+	for len(btns) > n {
+		rows, btns = append(rows, btns[:n]), btns[n:]
+	}
+	return append(rows, btns)
+}
+
+// itemGoneToast answers a press whose item is no longer listed.
+const itemGoneToast = "Item gone, refreshed"
+
+// unwatchPress handles "~1wr|<kind>|<id>|<page>": it stops watching the
+// item id names, if it is still watched, and shows Watching again at
+// that page. A replay finds the item gone and changes nothing.
+func (a *Agent) unwatchPress(ctx context.Context, cb *telegram.Callback, c tgui.Call) {
+	if len(c.Args) != 3 || !validWatchID(c.Args[0], c.Args[1]) {
+		a.refuseCallback(ctx, cb, false)
+		return
+	}
+	page, ok := parsePage(c.Args[2])
+	if !ok {
+		a.refuseCallback(ctx, cb, false)
+		return
+	}
+	toast := itemGoneToast
+	items := watchItems(a.watchCopy())
+	if i := slices.IndexFunc(items, func(it watchItem) bool { return it.kind == c.Args[0] && it.id == c.Args[1] }); i >= 0 {
+		it := items[i]
+		toast = "🗑 Stopped watching " + truncate(it.name, 60) + a.mutateWatch(it.unwatch)
+	}
+	text, kb := a.screen(ctx, tgui.Call{Act: tgui.ActView, Args: []string{scrWatching, strconv.Itoa(page)}, From: c.From})
+	a.finishCallback(ctx, cb, false, text, kb, toast)
+}
+
+// watchPress handles "~1wa|<kind>|<id>|<page>" from a scan: a unit named
+// by digest, resolved against a fresh scan, or a port. It shows the scan
+// again at that page. A replay finds the item watched and changes nothing.
+func (a *Agent) watchPress(ctx context.Context, cb *telegram.Callback, c tgui.Call) {
+	if len(c.Args) != 3 || (c.Args[0] != watchUnit && c.Args[0] != watchPort) || !validWatchID(c.Args[0], c.Args[1]) {
+		a.refuseCallback(ctx, cb, false)
+		return
+	}
+	page, ok := parsePage(c.Args[2])
+	if !ok {
+		a.refuseCallback(ctx, cb, false)
+		return
+	}
+	var toast, screen string
+	if c.Args[0] == watchPort {
+		screen = scrScanPorts
+		port, _ := parsePort(c.Args[1])
+		toast = fmt.Sprintf("Port %d is already watched", port)
+		if !portWatched(a.watchCopy().Ports, port) {
+			toast = fmt.Sprintf("✅ Watching port %d", port) + a.mutateWatch(func(w *config.Watch) {
+				if !portWatched(w.Ports, port) {
+					w.Ports = append(w.Ports, config.PortCheck{Port: port})
+					sort.Slice(w.Ports, func(i, j int) bool { return w.Ports[i].Port < w.Ports[j].Port })
+				}
+			})
+		}
 	} else {
-		b.WriteString("Tap 🗑 to stop watching:\n<pre>")
-		// Services / processes / SSL hosts are removed by index: long unit
-		// names and hosts overflow Telegram's 64-byte callback_data limit
-		// the same way HTTP URLs do (hr:<i>).
-		for i, s := range w.Services {
-			fmt.Fprintf(&b, " 🧩 %s\n", esc(s))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(strings.TrimSuffix(s, ".service"), 20), Data: watchIndexData("sr:", i, s)}})
-		}
-		for i, p := range w.Processes {
-			fmt.Fprintf(&b, " ⚙ %s\n", esc(p))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(p, 20), Data: watchIndexData("xr:", i, p)}})
-		}
-		for _, p := range w.Ports {
-			label := ""
-			if p.Label != "" {
-				label = " (" + esc(p.Label) + ")"
-			}
-			fmt.Fprintf(&b, " 🔌 port %d%s\n", p.Port, label)
-			kb = append(kb, []telegram.Button{{Text: fmt.Sprintf("🗑 port %d", p.Port), Data: fmt.Sprintf("pr:%d", p.Port)}})
-		}
-		for i, h := range w.SSLHosts {
-			fmt.Fprintf(&b, " 🔒 %s\n", esc(h))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h, 20), Data: watchIndexData("cr:", i, h)}})
-		}
-		for i, h := range w.HTTPChecks {
-			fmt.Fprintf(&b, " 🌐 %s\n", esc(truncate(h.URL, 34)))
-			kb = append(kb, []telegram.Button{{Text: "🗑 " + truncate(h.URL, 20), Data: watchIndexData("hr:", i, h.URL)}})
-		}
-		b.WriteString("</pre>")
+		screen = scrScanServices
+		toast = a.watchScannedUnit(ctx, c.Args[1])
 	}
-	kb = append(kb, watchFooterRow(), []telegram.Button{
-		{Text: "⬅️ Back", Data: callData(tgui.Open(scrSettings))},
-		{Text: "🏠 Home", Data: callData(tgui.Open(scrHome))},
+	text, kb := a.screen(ctx, tgui.Call{Act: tgui.ActView, Args: []string{screen, strconv.Itoa(page)}, From: c.From})
+	a.finishCallback(ctx, cb, false, text, kb, toast)
+}
+
+// watchScannedUnit watches the running unit whose name hashes to id and
+// returns the toast saying what happened.
+func (a *Agent) watchScannedUnit(ctx context.Context, id string) string {
+	for _, s := range a.watchCopy().Services {
+		if callbackDigest(s) == id {
+			return truncate(s, 60) + " is already watched"
+		}
+	}
+	found, err := a.scanServices(ctx)
+	if err != nil {
+		return "Scan failed"
+	}
+	i := slices.IndexFunc(found, func(u unitInfo) bool { return callbackDigest(u.name) == id })
+	if i < 0 {
+		return itemGoneToast
+	}
+	name := found[i].name
+	return "✅ Watching " + truncate(name, 60) + a.mutateWatch(func(w *config.Watch) {
+		if !contains(w.Services, name) {
+			w.Services = append(w.Services, name)
+			sort.Strings(w.Services)
+		}
 	})
-	return b.String(), kb
 }
 
-// watchFooterRow links the management views together.
-func watchFooterRow() []telegram.Button {
-	return []telegram.Button{
-		{Text: "👁 Watching", Data: "watching"},
-		{Text: "🔎 Services", Data: "scan_svc"},
-		{Text: "🔎 Ports", Data: "scan_port"},
-	}
-}
-
-func backKeyboard() telegram.Keyboard {
-	return telegram.Keyboard{watchFooterRow()}
-}
-
-// handleWatchCallback executes management button presses. It returns the
-// new message content, keyboard, a toast, and whether the data was ours.
+// handleWatchCallback executes the management buttons of older versions,
+// which name items by list index and fingerprint. It returns the new
+// message content, keyboard, a toast, and whether the data was ours.
 func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, telegram.Keyboard, string, bool) {
 	switch {
 	case data == "watching":
@@ -636,15 +781,7 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 			return text, kb, "stale list", true
 		}
 		url := checks[i].URL
-		a.mutateWatch(func(w *config.Watch) {
-			kept := w.HTTPChecks[:0]
-			for _, h := range w.HTTPChecks {
-				if h.URL != url {
-					kept = append(kept, h)
-				}
-			}
-			w.HTTPChecks = kept
-		})
+		a.mutateWatch(watchItem{kind: watchHTTP, name: url}.unwatch)
 		text, kb := a.watchingView()
 		return text, kb, "🗑 " + truncate(url, 30), true
 
@@ -653,25 +790,11 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 		if err != nil {
 			return "", nil, "bad port", true
 		}
-		a.mutateWatch(func(w *config.Watch) {
-			kept := w.Ports[:0]
-			for _, p := range w.Ports {
-				if p.Port != port {
-					kept = append(kept, p)
-				}
-			}
-			w.Ports = kept
-		})
+		a.mutateWatch(watchItem{kind: watchPort, name: strconv.Itoa(port)}.unwatch)
 		text, kb := a.watchingView()
 		return text, kb, fmt.Sprintf("🗑 port %d", port), true
 	}
 	return "", nil, "", false
-}
-
-// watchIndexData binds a list index to a short fingerprint of the item so a
-// stale /watching keyboard cannot remove a different entry after the list shifts.
-func watchIndexData(prefix string, i int, item string) string {
-	return fmt.Sprintf("%s%d:%s", prefix, i, callbackDigest(item))
 }
 
 func parseWatchIndexData(data, prefix string) (int, string, bool) {

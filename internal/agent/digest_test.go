@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -37,32 +38,75 @@ func TestDigestDue(t *testing.T) {
 func TestDigestSettingsButtons(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
-	ctx := context.Background()
 
-	// The settings view shows the digest row.
+	// The settings view shows the digest row; its buttons carry the state
+	// and hour they set.
 	text, kb := a.settingsView()
 	if !strings.Contains(text, "Daily digest") || !strings.Contains(text, "09:00") {
 		t.Fatalf("settings view: %q", text)
 	}
-	var last []telegram.Button
-	for _, row := range kb {
-		if row[0].Data == "dg:toggle" {
-			last = row
+	digestRow := func(kb telegram.Keyboard) []telegram.Button {
+		for _, row := range kb {
+			if strings.HasPrefix(row[0].Text, "📰 Digest") {
+				return row
+			}
 		}
+		return nil
 	}
-	if len(last) != 4 || last[1].Data != "dg:hour:-1" || last[2].Data != "noop" || last[3].Data != "dg:hour:+1" {
-		t.Fatalf("digest buttons = %+v", last)
+	if got := dumpKeyboard(telegram.Keyboard{digestRow(kb)}); got != "[📰 Digest: on] → ~1dg|off  [−1h] → ~1dh|8  [09:00] → ~1dh  [+1h] → ~1dh|10\n" {
+		t.Fatalf("digest buttons = %s", got)
 	}
 
-	// Toggle flips the runtime config.
+	// Off, twice: the replay finds it off and changes nothing.
+	press(a, "c1", "~1dg|off")
+	press(a, "c2", "~1dg|off")
+	if enabled, _ := a.digestCfg(); enabled {
+		t.Error("digest still enabled after Off")
+	}
+	if got := send.answered[len(send.answered)-2:]; got[0] != "c1:Digest off (not persisted: no config path)" || got[1] != "c2:Digest is already off" {
+		t.Errorf("answered = %v", got)
+	}
+
+	// Hour wraps around midnight in both directions, following the
+	// buttons each fresh screen offers.
+	for i := range 10 {
+		press(a, fmt.Sprint("m", i), digestRow(send.lastEdit().kb)[1].Data)
+	}
+	if _, hour := a.digestCfg(); hour != 23 {
+		t.Errorf("hour after 10x −1h from 9: got %d, want 23", hour)
+	}
+	press(a, "p", digestRow(send.lastEdit().kb)[3].Data)
+	if _, hour := a.digestCfg(); hour != 0 {
+		t.Errorf("hour after +1h from 23: got %d, want 0", hour)
+	}
+	// The hour label explains itself and changes nothing.
+	before := send.editCount()
+	press(a, "l", "~1dh")
+	if send.editCount() != before || send.answered[len(send.answered)-1] != "l:Tap −1h or +1h to move the daily digest." {
+		t.Errorf("hour label: answered %v", send.answered[len(send.answered)-1])
+	}
+	// Forged values are refused.
+	for _, data := range []string{"~1dg", "~1dg|maybe", "~1dh|24", "~1dh|-1", "~1dh|07", "~1dh|1|2"} {
+		press(a, "f", data)
+		if send.answered[len(send.answered)-1] != "f:"+outdatedToast {
+			t.Errorf("%s: answered %v", data, send.answered[len(send.answered)-1])
+		}
+	}
+	if enabled, hour := a.digestCfg(); enabled || hour != 0 {
+		t.Errorf("forged presses changed the digest: %v %d", enabled, hour)
+	}
+}
+
+// The digest buttons of older versions apply their step once per press.
+func TestDigestLegacyButtons(t *testing.T) {
+	a := testAgent(&fakeSender{})
+	ctx := context.Background()
 	if _, _, toast, handled := a.handleSettingsCallback(ctx, "dg:toggle"); !handled || !strings.Contains(toast, "off") {
 		t.Errorf("toggle: handled=%v toast=%q", handled, toast)
 	}
 	if enabled, _ := a.digestCfg(); enabled {
 		t.Error("digest still enabled after toggle")
 	}
-
-	// Hour wraps around midnight in both directions.
 	for range 10 {
 		a.handleSettingsCallback(ctx, "dg:hour:-1")
 	}
@@ -72,6 +116,15 @@ func TestDigestSettingsButtons(t *testing.T) {
 	a.handleSettingsCallback(ctx, "dg:hour:+1")
 	if _, hour := a.digestCfg(); hour != 0 {
 		t.Errorf("hour after +1 from 23: got %d, want 0", hour)
+	}
+	// Only the steps the old keyboard emitted are accepted.
+	for _, data := range []string{"dg:hour:+5", "dg:hour:-24", "dg:hour:x"} {
+		if _, _, toast, _ := a.handleSettingsCallback(ctx, data); toast != "bad action" {
+			t.Errorf("%s: toast %q", data, toast)
+		}
+	}
+	if _, hour := a.digestCfg(); hour != 0 {
+		t.Errorf("rejected steps moved the hour to %d", hour)
 	}
 }
 

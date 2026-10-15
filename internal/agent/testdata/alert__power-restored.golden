@@ -1,3 +1,4 @@
 power-restored
 --- keyboard ---
-[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:power-restored
+[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|power-restored  [🔕 8h] → ~1sz|8h|k|power-restored  [🔕 24h] → ~1sz|24h|k|power-restored

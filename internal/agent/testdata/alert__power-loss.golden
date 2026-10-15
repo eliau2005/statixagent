@@ -1,3 +1,4 @@
 power-loss
 --- keyboard ---
-[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:power-loss
+[🔋 Battery] → ~1o|bat  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|power-loss  [🔕 8h] → ~1sz|8h|k|power-loss  [🔕 24h] → ~1sz|24h|k|power-loss

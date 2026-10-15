@@ -8,11 +8,20 @@ import (
 	"strings"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // Handler answers one command. args holds the words after the command
-// ("/ssh history" → ["history"]). The returned string is HTML.
-type Handler func(ctx context.Context, args []string) string
+// ("/ssh history" → ["history"]). The reply is a view, HTML text and its
+// buttons, that the caller sends as a new message.
+type Handler func(ctx context.Context, args []string) tgui.View
+
+// Text adapts a handler whose reply is HTML text alone.
+func Text(h func(ctx context.Context, args []string) string) Handler {
+	return func(ctx context.Context, args []string) tgui.View {
+		return tgui.View{Text: h(ctx, args)}
+	}
+}
 
 // Router dispatches commands for exactly one allowed chat.
 type Router struct {
@@ -31,20 +40,20 @@ func (r *Router) Handle(cmd string, h Handler) {
 }
 
 // Dispatch processes one text update. It returns the reply, the resolved
-// command name (for keyboard selection), and true; or ("", "", false) when
-// the update should be ignored (wrong chat, not a command). Unknown
-// commands from the allowed chat get a help pointer.
-func (r *Router) Dispatch(ctx context.Context, u telegram.Update) (string, string, bool) {
+// command name, and true; or an empty view, "" and false when the update
+// should be ignored (wrong chat, not a command). Unknown commands from the
+// allowed chat get a help pointer.
+func (r *Router) Dispatch(ctx context.Context, u telegram.Update) (tgui.View, string, bool) {
 	if u.ChatID != r.allowedChat {
-		return "", "", false
+		return tgui.View{}, "", false
 	}
 	cmd, args, ok := Parse(u.Text)
 	if !ok {
-		return "", "", false
+		return tgui.View{}, "", false
 	}
 	reply, ok := r.Invoke(ctx, cmd, args)
 	if !ok {
-		return "Unknown command. Try /help", cmd, true
+		return tgui.View{Text: "Unknown command. Try /help"}, cmd, true
 	}
 	return reply, cmd, true
 }
@@ -63,13 +72,12 @@ func Parse(text string) (cmd string, args []string, ok bool) {
 	return strings.ToLower(cmd), fields[1:], true
 }
 
-// Invoke runs a command handler directly (used for keyboard callbacks,
-// which carry the command in callback data). It does NOT check the chat
+// Invoke runs a command handler directly. It does NOT check the chat
 // allowlist — the caller must.
-func (r *Router) Invoke(ctx context.Context, cmd string, args []string) (string, bool) {
+func (r *Router) Invoke(ctx context.Context, cmd string, args []string) (tgui.View, bool) {
 	h, ok := r.handlers[cmd]
 	if !ok {
-		return "", false
+		return tgui.View{}, false
 	}
 	return h(ctx, args), true
 }

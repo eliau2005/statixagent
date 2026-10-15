@@ -83,6 +83,21 @@ func TestDispatchOpenNew(t *testing.T) {
 	}
 }
 
+// Render is a typed command's view: unencoded, so the caller sends it as
+// a new message.
+func TestRegistryRender(t *testing.T) {
+	r := testRegistry()
+	v, ok := r.Render(context.Background(), OpenNew("cpu"))
+	if !ok || v.Text != "cpu: v cpu ^" || v.Rows[0][1].Call.Act != ActView {
+		t.Errorf("Render(o|cpu) = %+v, %v", v, ok)
+	}
+	for _, c := range []Call{Open("nope"), {Act: ActView}, {Act: "zz", Args: []string{"cpu"}}} {
+		if _, ok := r.Render(context.Background(), c); ok {
+			t.Errorf("Render(%+v) rendered", c)
+		}
+	}
+}
+
 func TestRegistryLookups(t *testing.T) {
 	r := testRegistry()
 	r.AddScreen(Screen{ID: "top", Parent: "home", Slow: true, Render: func(context.Context, Call) View { return View{} }})

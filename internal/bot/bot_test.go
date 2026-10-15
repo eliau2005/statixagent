@@ -14,13 +14,18 @@ import (
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 func TestRouterAllowlistAndDispatch(t *testing.T) {
 	r := NewRouter(42)
-	r.Handle("status", func(ctx context.Context, args []string) string { return "STATUS" })
-	r.Handle("ssh", func(ctx context.Context, args []string) string {
+	r.Handle("status", Text(func(ctx context.Context, args []string) string { return "STATUS" }))
+	r.Handle("ssh", Text(func(ctx context.Context, args []string) string {
 		return "SSH:" + strings.Join(args, ",")
+	}))
+	// A handler can reply with buttons.
+	r.Handle("menu", func(context.Context, []string) tgui.View {
+		return tgui.View{Text: "MENU", Rows: [][]tgui.Button{{{Label: "Home", Call: tgui.Open("home")}}}}
 	})
 
 	if _, _, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 999, Text: "/status"}); ok {
@@ -30,26 +35,30 @@ func TestRouterAllowlistAndDispatch(t *testing.T) {
 		t.Fatal("non-command text must be ignored")
 	}
 	reply, cmd, ok := r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/status"})
-	if !ok || reply != "STATUS" || cmd != "status" {
-		t.Fatalf("dispatch = %q, %q, %v", reply, cmd, ok)
+	if !ok || reply.Text != "STATUS" || reply.Rows != nil || cmd != "status" {
+		t.Fatalf("dispatch = %+v, %q, %v", reply, cmd, ok)
 	}
 	reply, _, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/ssh history extra"})
-	if reply != "SSH:history,extra" {
-		t.Fatalf("args = %q", reply)
+	if reply.Text != "SSH:history,extra" {
+		t.Fatalf("args = %q", reply.Text)
 	}
 	reply, cmd, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/STATUS@mybot"})
-	if reply != "STATUS" || cmd != "status" {
-		t.Fatalf("case/@bot form = %q, %q", reply, cmd)
+	if reply.Text != "STATUS" || cmd != "status" {
+		t.Fatalf("case/@bot form = %q, %q", reply.Text, cmd)
 	}
 	reply, _, ok = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/nope"})
-	if !ok || !strings.Contains(reply, "Unknown command") {
-		t.Fatalf("unknown = %q, %v", reply, ok)
+	if !ok || !strings.Contains(reply.Text, "Unknown command") {
+		t.Fatalf("unknown = %q, %v", reply.Text, ok)
+	}
+	reply, _, _ = r.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/menu"})
+	if reply.Text != "MENU" || len(reply.Rows) != 1 || reply.Rows[0][0].Call.Args[0] != "home" {
+		t.Fatalf("menu = %+v", reply)
 	}
 
-	// Invoke runs handlers directly for keyboard callbacks.
+	// Invoke runs handlers directly.
 	reply, ok = r.Invoke(context.Background(), "status", nil)
-	if !ok || reply != "STATUS" {
-		t.Fatalf("Invoke = %q, %v", reply, ok)
+	if !ok || reply.Text != "STATUS" {
+		t.Fatalf("Invoke = %q, %v", reply.Text, ok)
 	}
 	if _, ok := r.Invoke(context.Background(), "ghost", nil); ok {
 		t.Fatal("Invoke of unknown command must report false")

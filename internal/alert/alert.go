@@ -74,6 +74,21 @@ func (e *Engine) Snooze(key string, until time.Time) {
 	e.snoozedUntil[key] = until
 }
 
+// Unsnooze lifts a snooze on key; a key that is not snoozed is left as
+// it is.
+func (e *Engine) Unsnooze(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.snoozedUntil, key)
+}
+
+// SnoozedUntil reports until when key is silenced, if it is at now.
+func (e *Engine) SnoozedUntil(key string, now time.Time) (time.Time, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.snoozedUntil[key], e.snoozed(key, now)
+}
+
 // snoozed reports whether key is silenced at now. Callers hold e.mu.
 func (e *Engine) snoozed(key string, now time.Time) bool {
 	until, ok := e.snoozedUntil[key]

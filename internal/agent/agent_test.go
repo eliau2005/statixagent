@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -253,20 +255,20 @@ func TestBotCommandsThroughRouter(t *testing.T) {
 	a.sampleOnce(ctx)
 
 	reply, _, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/status"})
-	if !ok || !strings.Contains(reply, "testhost") {
-		t.Errorf("/status = %q", reply)
+	if !ok || !strings.Contains(reply.Text, "testhost") {
+		t.Errorf("/status = %q", reply.Text)
 	}
 	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/help"})
-	if !strings.Contains(reply, "/ssh history") || !strings.Contains(reply, "<b>Security</b>") {
-		t.Errorf("/help = %q", reply)
+	if !strings.Contains(reply.Text, "/ssh history") || !strings.Contains(reply.Text, "<b>Security</b>") {
+		t.Errorf("/help = %q", reply.Text)
 	}
 	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
-	if !strings.Contains(reply, "not configured") {
-		t.Errorf("/update without updater = %q", reply)
+	if !strings.Contains(reply.Text, "not configured") {
+		t.Errorf("/update without updater = %q", reply.Text)
 	}
 	reply, _, _ = a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/ssh history"})
-	if !strings.Contains(reply, "Nothing recorded") {
-		t.Errorf("/ssh history empty = %q", reply)
+	if !strings.Contains(reply.Text, "Nothing recorded") {
+		t.Errorf("/ssh history empty = %q", reply.Text)
 	}
 	if _, _, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 666, Text: "/status"}); ok {
 		t.Error("foreign chat must be ignored")
@@ -282,8 +284,8 @@ func TestUpdateCommandFlow(t *testing.T) {
 	ctx := context.Background()
 
 	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
-	if !strings.Contains(reply, "v1.2.0") || !strings.Contains(reply, "/update_confirm") {
-		t.Errorf("/update = %q", reply)
+	if !strings.Contains(reply.Text, "v1.2.0") || !strings.Contains(reply.Text, "/update_confirm") {
+		t.Errorf("/update = %q", reply.Text)
 	}
 	if applied {
 		t.Fatal("/update alone must not apply (MVP §7 confirmation rule)")
@@ -291,8 +293,8 @@ func TestUpdateCommandFlow(t *testing.T) {
 	// The legacy "/update confirm" form asks, like /update_confirm.
 	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update confirm"})
 	a.reply(ctx, cmd, reply)
-	if applied || !strings.Contains(reply, "Install the update?") {
-		t.Fatalf("/update confirm: applied=%v reply=%q", applied, reply)
+	if applied || !strings.Contains(reply.Text, "Install the update?") {
+		t.Fatalf("/update confirm: applied=%v reply=%q", applied, reply.Text)
 	}
 	yes := tokenData(lastKeyboard(send), tgui.ActYes)
 	if yes == "" {
@@ -359,7 +361,7 @@ func TestWatchManagement(t *testing.T) {
 	ctx := context.Background()
 	dispatch := func(text string) string {
 		reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: text})
-		return reply
+		return reply.Text
 	}
 
 	// Scan excludes the agent itself and numbers candidates.
@@ -437,7 +439,7 @@ func TestWatchRejectsInvalidUnitNames(t *testing.T) {
 	ctx := context.Background()
 	dispatch := func(text string) string {
 		reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: text})
-		return reply
+		return reply.Text
 	}
 
 	// Option-shaped names never reach the watch list (or systemctl).
@@ -473,11 +475,11 @@ func TestWatchWithoutConfigPath(t *testing.T) {
 	a := testAgent(send)
 	ctx := context.Background()
 	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/procs_add nginx"})
-	if !strings.Contains(reply, "not persisted") {
-		t.Errorf("no config path must warn: %q", reply)
+	if !strings.Contains(reply.Text, "not persisted") {
+		t.Errorf("no config path must warn: %q", reply.Text)
 	}
-	if !strings.Contains(reply, "1 processes") {
-		t.Errorf("in-memory change must still apply: %q", reply)
+	if !strings.Contains(reply.Text, "1 processes") {
+		t.Errorf("in-memory change must still apply: %q", reply.Text)
 	}
 }
 
@@ -492,8 +494,8 @@ func TestUpdateConfirmCommand(t *testing.T) {
 	ctx := context.Background()
 
 	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/update"})
-	if !strings.Contains(reply, "/update_confirm") {
-		t.Errorf("/update must advertise the tappable command: %q", reply)
+	if !strings.Contains(reply.Text, "/update_confirm") {
+		t.Errorf("/update must advertise the tappable command: %q", reply.Text)
 	}
 	a.src.OffsetPath = filepath.Join(t.TempDir(), "tg-offset") // handleUpdate saves the cursor
 	a.handleUpdate(ctx, telegram.Update{ChatID: 42, ChatType: "private", FromID: 42, Text: "/update_confirm"})
@@ -601,7 +603,7 @@ func TestReplyAttachesHomeKeyboard(t *testing.T) {
 func TestReplyPlainForNonViews(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
-	a.reply(context.Background(), "help", "HELP TEXT")
+	a.reply(context.Background(), "help", tgui.View{Text: "HELP TEXT"})
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	if send.keyboards[len(send.keyboards)-1] != nil {
@@ -819,60 +821,63 @@ func TestWatchButtons(t *testing.T) {
 	a.src.ListListeners = func() ([]int, error) { return []int{443}, nil }
 	ctx := context.Background()
 
-	// Typed scan carries ➕ buttons via the stashed keyboard.
+	// Typed scan replies with the scan screen and its ➕ buttons.
 	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/services_scan"})
 	a.reply(ctx, cmd, reply)
-	send.mu.Lock()
-	kb := send.keyboards[len(send.keyboards)-1]
-	send.mu.Unlock()
-	wantSA := watchIndexData("sa:", 0, "nginx.service")
-	if kb == nil || kb[0][0].Data != wantSA || !strings.Contains(kb[0][0].Text, "➕") {
+	kb := lastKeyboard(send)
+	wantWA := "~1wa|u|" + callbackDigest("nginx.service") + "|1"
+	if kb == nil || kb[0][0].Data != wantWA || !strings.Contains(kb[0][0].Text, "➕") {
 		t.Fatalf("scan keyboard = %+v", kb)
 	}
 
-	// Pressing ➕ adds the unit, persists, and re-renders the scan.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 5, Data: wantSA})
+	// Pressing ➕ adds the unit, persists, and re-renders the scan; a
+	// replay finds it watched and changes nothing.
+	press(a, "c1", wantWA)
 	saved, err := config.Load(cfgPath)
 	if err != nil || len(saved.Watch.Services) != 1 || saved.Watch.Services[0] != "nginx.service" {
-		t.Fatalf("after %s saved=%+v err=%v", wantSA, saved.Watch, err)
+		t.Fatalf("after %s saved=%+v err=%v", wantWA, saved.Watch, err)
 	}
 	if last := send.lastEdit(); !strings.Contains(last.html, "already watched") {
 		t.Errorf("re-rendered scan should show empty candidates: %q", last.html)
 	}
+	press(a, "c1r", wantWA)
+	if got := a.watchCopy().Services; len(got) != 1 {
+		t.Errorf("replayed ➕ changed the list: %v", got)
+	}
 
 	// Port add button.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 5, Data: "pa:443"})
+	press(a, "c2", "~1wa|p|443|1")
 	saved, _ = config.Load(cfgPath)
 	if len(saved.Watch.Ports) != 1 || saved.Watch.Ports[0].Port != 443 {
-		t.Fatalf("after pa:443 ports=%+v", saved.Watch.Ports)
+		t.Fatalf("after wa|p|443 ports=%+v", saved.Watch.Ports)
 	}
 
-	// Watching view lists both with 🗑 buttons.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c3", ChatID: 42, MessageID: 5, Data: "watching"})
+	// Watching lists both with 🗑 buttons carrying their IDs.
+	press(a, "c3", "~1v|wat")
 	last := send.lastEdit()
-	if !strings.Contains(last.html, "nginx.service") || !strings.Contains(last.html, "port 443") {
+	if !strings.Contains(last.html, "nginx.service") || !strings.Contains(last.html, "🔌 443") {
 		t.Errorf("watching view = %q", last.html)
 	}
-	flat := ""
-	for _, row := range last.kb {
-		for _, b := range row {
-			flat += b.Data + " "
-		}
-	}
-	wantSR := watchIndexData("sr:", 0, "nginx.service")
-	if !strings.Contains(flat, wantSR) || !strings.Contains(flat, "pr:443") {
+	wantWR := "~1wr|u|" + callbackDigest("nginx.service") + "|1"
+	if flat := dumpKeyboard(last.kb); !strings.Contains(flat, wantWR) || !strings.Contains(flat, "~1wr|p|443|1") {
 		t.Errorf("watching keyboard = %s", flat)
 	}
 
 	// 🗑 removes and persists.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c4", ChatID: 42, MessageID: 5, Data: wantSR})
-	a.handleCallback(ctx, &telegram.Callback{ID: "c5", ChatID: 42, MessageID: 5, Data: "pr:443"})
+	press(a, "c4", wantWR)
+	press(a, "c5", "~1wr|p|443|1")
 	saved, _ = config.Load(cfgPath)
 	if len(saved.Watch.Services) != 0 || len(saved.Watch.Ports) != 0 {
 		t.Errorf("after removals: %+v", saved.Watch)
 	}
 	if last := send.lastEdit(); !strings.Contains(last.html, "Nothing yet") {
 		t.Errorf("empty watching view = %q", last.html)
+	}
+	// The legacy buttons of older keyboards still add and remove.
+	press(a, "l1", "pa:8080")
+	press(a, "l2", "pr:8080")
+	if got := a.watchCopy().Ports; len(got) != 0 || !strings.HasPrefix(send.lastEdit().html, "👁 <b>Watching</b>") {
+		t.Errorf("legacy pa/pr: ports %v, view %q", got, send.lastEdit().html)
 	}
 }
 
@@ -924,19 +929,56 @@ func TestScanAddIdentity(t *testing.T) {
 	}
 }
 
+// A ➕ button names its unit by digest, resolved against a fresh scan:
+// it adds that unit even after the list shifted, and nothing when the
+// unit is gone.
+func TestScanAddByDigest(t *testing.T) {
+	cases := []struct {
+		name      string
+		unit      string
+		rescan    string // scan output before the tap, "" = unchanged
+		wantAdded string
+		wantToast string
+	}{
+		{"same list", "nginx.service", "", "nginx.service", "c:✅ Watching nginx.service (not persisted: no config path)"},
+		{"list shifted", "nginx.service", "redis.service loaded active running KV\nnginx.service loaded active running Web\n",
+			"nginx.service", "c:✅ Watching nginx.service (not persisted: no config path)"},
+		{"unit gone", "nginx.service", "cron.service loaded active running Jobs\n", "", "c:" + itemGoneToast},
+		{"never listed", "redis.service", "", "", "c:" + itemGoneToast},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			send := &fakeSender{}
+			a := testAgent(send)
+			runner := &scanRunner{listOutput: "nginx.service loaded active running Web\ncron.service loaded active running Jobs\n"}
+			a.src.Runner = runner
+			if tc.rescan != "" {
+				runner.listOutput = tc.rescan
+			}
+			press(a, "c", "~1wa|u|"+callbackDigest(tc.unit)+"|1")
+			if got := strings.Join(a.watchCopy().Services, ","); got != tc.wantAdded {
+				t.Errorf("watched services = %q, want %q", got, tc.wantAdded)
+			}
+			if !slices.Equal(send.answered, []string{tc.wantToast}) || !strings.HasPrefix(send.lastEdit().html, "🔎 ") {
+				t.Errorf("answered = %v, view %q", send.answered, send.lastEdit().html)
+			}
+		})
+	}
+}
+
 func TestWatchingCommand(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
 	ctx := context.Background()
 	reply, cmd, ok := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/watching"})
-	if !ok || !strings.Contains(reply, "Nothing yet") {
-		t.Fatalf("/watching = %q", reply)
+	if !ok || !strings.Contains(reply.Text, "Nothing yet") {
+		t.Fatalf("/watching = %q", reply.Text)
 	}
 	a.reply(ctx, cmd, reply)
 	send.mu.Lock()
 	defer send.mu.Unlock()
 	kb := send.keyboards[len(send.keyboards)-1]
-	if len(kb) < 2 || kb[len(kb)-2][1].Data != "scan_svc" || kb[len(kb)-1][1].Data != "~1v|home" {
+	if len(kb) < 2 || kb[len(kb)-2][0].Data != "~1v|scs" || kb[len(kb)-1][1].Data != "~1v|home" {
 		t.Errorf("watching keyboard = %+v", kb)
 	}
 }
@@ -951,11 +993,11 @@ func TestAlertActionButtons(t *testing.T) {
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || len(kb[0]) != 4 || kb[0][0].Data != "~1o|ses" || kb[0][1].Data != "~1o|fai" || kb[0][2].Data != "~1o|fw" {
+	if kb == nil || len(kb[0]) != 3 || kb[0][0].Data != "~1o|ses" || kb[0][1].Data != "~1o|fai" || kb[0][2].Data != "~1o|fw" {
 		t.Fatalf("ssh alert keyboard = %+v", kb)
 	}
-	if last := kb[0][len(kb[0])-1]; !strings.HasPrefix(last.Data, "snz:") {
-		t.Fatalf("alert keyboard missing snooze button: %+v", kb)
+	if last := kb[len(kb)-1]; len(last) != 3 || !strings.HasPrefix(last[0].Data, "~1sz|1h|") {
+		t.Fatalf("alert keyboard missing snooze row: %+v", kb)
 	}
 
 	// CPU threshold alert leads with the Top button (find the culprit),
@@ -1004,7 +1046,7 @@ func TestStartupHelloHasButtons(t *testing.T) {
 	for i, s := range send.sent {
 		if strings.Contains(s, "statix-agent started") {
 			kb := send.keyboards[i]
-			if kb == nil || kb[0][0].Data != "~1v|home" || kb[0][1].Data != "watching" {
+			if kb == nil || kb[0][0].Data != "~1v|home" || kb[0][1].Data != "~1v|wat" {
 				t.Errorf("hello keyboard = %+v", kb)
 			}
 			return
@@ -1020,21 +1062,22 @@ func TestSettingsButtons(t *testing.T) {
 	a.src.ConfigPath = cfgPath
 	ctx := context.Background()
 
-	// /settings shows thresholds with tune buttons.
+	// /settings shows thresholds with tune buttons carrying their targets.
 	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/settings"})
-	if !strings.Contains(reply, "Alert thresholds") || !strings.Contains(reply, "90%") {
-		t.Fatalf("/settings = %q", reply)
+	if !strings.Contains(reply.Text, "Alert thresholds") || !strings.Contains(reply.Text, "90%") {
+		t.Fatalf("/settings = %q", reply.Text)
 	}
 	a.reply(ctx, cmd, reply)
 	send.mu.Lock()
 	kb := send.keyboards[len(send.keyboards)-1]
 	send.mu.Unlock()
-	if kb == nil || kb[0][0].Data != "th:cpu:-5" || kb[0][2].Data != "th:cpu:+5" {
+	if kb == nil || kb[0][0].Data != "~1th|cpu|85" || kb[0][1].Data != "~1th|cpu" || kb[0][2].Data != "~1th|cpu|95" ||
+		kb[0][0].Text != "🖥 CPU −5" || kb[0][2].Text != "🖥 CPU +5" {
 		t.Fatalf("settings keyboard = %+v", kb)
 	}
 
-	// ➖ lowers CPU threshold, persists, re-renders.
-	a.handleCallback(ctx, &telegram.Callback{ID: "c1", ChatID: 42, MessageID: 4, Data: "th:cpu:-5"})
+	// −5 lowers the CPU threshold to 85, persists, re-renders.
+	press(a, "c1", kb[0][0].Data)
 	if got := a.thresholds().CPUPercent; got != 85 {
 		t.Errorf("cpu threshold = %.0f, want 85", got)
 	}
@@ -1042,13 +1085,17 @@ func TestSettingsButtons(t *testing.T) {
 	if err != nil || saved.Thresholds.CPUPercent != 85 {
 		t.Errorf("saved cpu threshold = %+v err=%v", saved.Thresholds, err)
 	}
-	if last := send.lastEdit(); !strings.Contains(last.html, "85%") {
-		t.Errorf("re-rendered settings = %q", last.html)
+	if last := send.lastEdit(); !strings.Contains(last.html, "85%") || last.kb[0][0].Data != "~1th|cpu|80" {
+		t.Errorf("re-rendered settings = %q\n%s", last.html, dumpKeyboard(last.kb))
+	}
+	if got := send.answered[len(send.answered)-1]; got != "c1:CPU alert → 85%" {
+		t.Errorf("answered %q", got)
 	}
 
-	// Clamping: battery cannot go below its floor.
-	for range 10 {
-		a.handleCallback(ctx, &telegram.Callback{ID: "c2", ChatID: 42, MessageID: 4, Data: "th:batt:-5"})
+	// Clamping: battery cannot go below its floor, pressing the −5 each
+	// fresh screen offers.
+	for i := range 10 {
+		press(a, fmt.Sprint("b", i), send.lastEdit().kb[4][0].Data)
 	}
 	if got := a.thresholds().BatteryPercent; got != 5 {
 		t.Errorf("battery threshold = %.0f, want clamped to 5", got)
@@ -1060,11 +1107,92 @@ func TestSettingsButtons(t *testing.T) {
 		t.Errorf("tuned threshold must fire at 87%%: %+v", als)
 	}
 
-	// noop button answers without editing.
+	// The value label explains the row without changing or editing it.
 	before := send.editCount()
-	a.handleCallback(ctx, &telegram.Callback{ID: "c3", ChatID: 42, MessageID: 4, Data: "noop"})
+	press(a, "l", kb[0][1].Data)
+	if send.editCount() != before || send.answered[len(send.answered)-1] != "l:Tap −5 or +5 to change the CPU alert." {
+		t.Errorf("value label: edits %d→%d, answered %q", before, send.editCount(), send.answered[len(send.answered)-1])
+	}
+
+	// The noop labels of older keyboards answer without editing.
+	press(a, "c3", "noop")
 	if send.editCount() != before {
 		t.Error("noop must not edit")
+	}
+}
+
+// A threshold button carries its target, so pressing it again (a double
+// tap, a replayed update, an old message) changes nothing.
+func TestThresholdReplayChangesNothing(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	cfgPath := filepath.Join(t.TempDir(), "config.toml")
+	a.src.ConfigPath = cfgPath
+	_, kb := a.settingsView()
+	down := kb[0][0].Data // CPU 90 → 85
+	press(a, "c1", down)
+	saved, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		press(a, fmt.Sprint("r", i), down)
+	}
+	if got := a.thresholds().CPUPercent; got != 85 {
+		t.Errorf("after replays cpu threshold = %.0f, want 85", got)
+	}
+	if again, err := os.Stat(cfgPath); err != nil || !again.ModTime().Equal(saved.ModTime()) {
+		t.Errorf("a replay rewrote the config: %v", err)
+	}
+	want := []string{"c1:CPU alert → 85%", "r0:CPU alert is already 85%", "r1:CPU alert is already 85%", "r2:CPU alert is already 85%"}
+	if !slices.Equal(send.answered, want) {
+		t.Errorf("answered = %v", send.answered)
+	}
+	// The old button of a value tuned since still sets what it says.
+	press(a, "up", "~1th|cpu|95")
+	press(a, "old", down)
+	if got := a.thresholds().CPUPercent; got != 85 {
+		t.Errorf("old button set %.0f, want its 85", got)
+	}
+}
+
+// Forged threshold targets are refused: never NaN, Inf, out of range or
+// in a form no button emits.
+func TestThresholdForgedTargets(t *testing.T) {
+	for _, data := range []string{"~1th|cpu|NaN", "~1th|cpu|Inf", "~1th|cpu|-Inf", "~1th|cpu|100", "~1th|cpu|49",
+		"~1th|cpu|085", "~1th|cpu|85.0", "~1th|cpu|-5", "~1th|batt|4", "~1th|temp|106", "~1th|nope|80", "~1th|nope",
+		"~1th", "~1th|cpu|85|1"} {
+		send := &fakeSender{}
+		a := testAgent(send)
+		before := a.thresholds()
+		press(a, "f", data)
+		if a.thresholds() != before || !slices.Equal(send.answered, []string{"f:" + outdatedToast}) || len(send.edits) != 0 {
+			t.Errorf("%s: answered %v, thresholds %+v", data, send.answered, a.thresholds())
+		}
+	}
+}
+
+// Thresholds change the bot's settings: a group viewer is refused.
+func TestThresholdNeedsAdmin(t *testing.T) {
+	send := &fakeSender{}
+	a, _ := authAgent(t, send, -100, 7)
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "v", ChatID: -100, ChatType: "supergroup", FromID: 5, MessageID: 3, Data: "~1th|cpu|85"})
+	if a.thresholds().CPUPercent != 90 || !slices.Equal(send.answered, []string{"v:" + adminOnlyToast}) {
+		t.Errorf("viewer tuned: answered %v", send.answered)
+	}
+}
+
+// Settings buttons of older versions carry a step; each press applies it.
+func TestSettingsLegacyStep(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	press(a, "c1", "th:cpu:-5")
+	press(a, "c2", "th:cpu:-5")
+	if got := a.thresholds().CPUPercent; got != 80 {
+		t.Errorf("cpu threshold = %.0f, want 80", got)
+	}
+	if !strings.HasPrefix(send.lastEdit().html, "⚙️ <b>Settings</b>") || send.lastEdit().kb[0][0].Data != "~1th|cpu|75" {
+		t.Errorf("legacy step re-rendered\n%s", dumpKeyboard(send.lastEdit().kb))
 	}
 }
 
@@ -1076,14 +1204,14 @@ func TestCPUTrendSparkline(t *testing.T) {
 	a.sampleOnce(ctx)
 	a.sampleOnce(ctx)
 	reply, _, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/cpu"})
-	if !strings.Contains(reply, "trend") {
-		t.Errorf("/cpu after 2 samples must show a trend line: %q", reply)
+	if !strings.Contains(reply.Text, "trend") {
+		t.Errorf("/cpu after 2 samples must show a trend line: %q", reply.Text)
 	}
 	// A fresh agent with <2 samples shows no trend.
 	b := testAgent(&fakeSender{})
 	reply, _, _ = b.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/cpu"})
-	if strings.Contains(reply, "trend") {
-		t.Errorf("no-history /cpu must omit trend: %q", reply)
+	if strings.Contains(reply.Text, "trend") {
+		t.Errorf("no-history /cpu must omit trend: %q", reply.Text)
 	}
 }
 
@@ -1151,8 +1279,8 @@ func TestFirewallFlow(t *testing.T) {
 
 	// /firewall shows the open state with a close button.
 	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/firewall"})
-	if !strings.Contains(reply, "🔓 <b>open</b>") {
-		t.Fatalf("/firewall = %q", reply)
+	if !strings.Contains(reply.Text, "🔓 <b>open</b>") {
+		t.Fatalf("/firewall = %q", reply.Text)
 	}
 	a.reply(ctx, cmd, reply)
 	send.mu.Lock()
@@ -1532,8 +1660,8 @@ func TestSSHKickFlow(t *testing.T) {
 
 	// /ssh lists sessions with one kick button per session plus nav rows.
 	reply, cmd, _ := a.router.Dispatch(ctx, telegram.Update{ChatID: 42, Text: "/ssh"})
-	if !strings.Contains(reply, "alice") || !strings.Contains(reply, "Active sessions") {
-		t.Fatalf("/ssh = %q", reply)
+	if !strings.Contains(reply.Text, "alice") || !strings.Contains(reply.Text, "Active sessions") {
+		t.Fatalf("/ssh = %q", reply.Text)
 	}
 	a.reply(ctx, cmd, reply)
 	send.mu.Lock()

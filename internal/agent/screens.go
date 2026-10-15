@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 
+	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/config"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/telegram"
@@ -14,10 +15,10 @@ import (
 
 // The bot's screens (docs/telegram-ux-redesign.md §3): Home, three
 // sections and the screens under them, each with the fixed footer. Every
-// navigation button is "~1" data, so it survives restarts; buttons that
-// change something still carry the legacy data their handlers decode
-// (thresholds, the digest, Watching, Live, trust on alerts) until those
-// move onto tgui, or open a confirm token through an ask act below.
+// navigation button is "~1" data, so it survives restarts. Buttons that
+// change the bot's settings are config acts carrying absolute values, and
+// host changes open a confirm token through an ask act, both below; Live
+// and trust on alerts still carry the legacy data their handlers decode.
 
 // Screen IDs. A screen that is a Back target ("^from") needs 1-3 letters.
 const (
@@ -44,6 +45,10 @@ const (
 	scrSettings = "set"
 	scrUpdate   = "upd"
 	scrHelp     = "hlp"
+	scrWatching = "wat"
+	// The scans open from Watching.
+	scrScanServices = "scs"
+	scrScanPorts    = "scp"
 )
 
 // commandScreens are the typed commands (bare, or /start's deep-link
@@ -54,7 +59,8 @@ var commandScreens = map[string]string{
 	"digest": scrDigest, "services": scrServices, "docker": scrDocker, "ssl": scrSSL,
 	"http": scrHTTP, "security": scrSecurity, "ssh": scrSessions, "ssh_history": scrHistory,
 	"ssh_fails": scrFailed, "firewall": scrFirewall, "trusted": scrTrusted,
-	"settings": scrSettings, "update": scrUpdate, "help": scrHelp,
+	"settings": scrSettings, "update": scrUpdate, "help": scrHelp, "watching": scrWatching,
+	"services_scan": scrScanServices, "ports_scan": scrScanPorts,
 }
 
 // pageSize is how many items a list screen shows; lists page, they never
@@ -103,7 +109,8 @@ func (a *Agent) buildScreens() *tgui.Registry {
 	// replaces it; its kinds hang off it.
 	leaf(scrServices, scrHome, true, func(ctx context.Context) string { return a.servicesReply(ctx) },
 		[]tgui.Button{{Label: "🐳 Docker", Call: tgui.Open(scrDocker)}, {Label: "📜 Certificates", Call: tgui.Open(scrSSL)}},
-		[]tgui.Button{{Label: "🌐 HTTP", Call: tgui.Open(scrHTTP)}, {Label: "👁 Watching", Legacy: "watching"}})
+		[]tgui.Button{{Label: "🌐 HTTP", Call: tgui.Open(scrHTTP)},
+			{Label: "👁 Watching", Call: tgui.Call{Act: tgui.ActView, Args: []string{scrWatching}, From: scrServices}}})
 	leaf(scrDocker, scrServices, true, a.dockerText)
 	leaf(scrSSL, scrServices, true, func(ctx context.Context) string { return a.sslView(ctx, nil) })
 	leaf(scrHTTP, scrServices, true, func(ctx context.Context) string { return a.httpView(ctx, nil) })
@@ -117,6 +124,11 @@ func (a *Agent) buildScreens() *tgui.Registry {
 
 	view(scrSettings, scrHome, false, a.settingsScreen)
 	view(scrUpdate, scrSettings, true, a.updateView)
+	// Watching opens from Settings and from Services, which passes itself
+	// as From; the scans list systemd units (slow) and listening ports.
+	view(scrWatching, scrSettings, false, a.watchingScreen)
+	view(scrScanServices, scrWatching, true, a.scanServicesScreen)
+	view(scrScanPorts, scrWatching, false, a.scanPortsScreen)
 	return r
 }
 
@@ -156,11 +168,20 @@ func encodeView(v tgui.View) (string, telegram.Keyboard) {
 	return v.Text, kb
 }
 
-// screenReply is a typed command's reply: screen id, with its keyboard.
-func (a *Agent) screenReply(ctx context.Context, id string) string {
-	text, kb := a.screen(ctx, tgui.Open(id))
-	a.stashKB(kb)
-	return text
+// screenReply is a typed command's reply: screen id, with its buttons,
+// which reply sends as a new message.
+func (a *Agent) screenReply(ctx context.Context, id string) tgui.View {
+	v, ok := a.ui.Render(ctx, tgui.Open(id))
+	if !ok {
+		log.Printf("agent: no screen %q", id)
+		return tgui.View{Text: renderFailedToast, Rows: [][]tgui.Button{{{Label: "🏠 Home", Call: tgui.Open(scrHome)}}}}
+	}
+	return v
+}
+
+// screenCommand is the handler of a typed command that opens screen id.
+func (a *Agent) screenCommand(id string) bot.Handler {
+	return func(ctx context.Context, _ []string) tgui.View { return a.screenReply(ctx, id) }
 }
 
 // deepLink resolves /start's payload to a screen: a screen ID or a
@@ -227,6 +248,37 @@ func (a *Agent) buildAsks() map[string]askAction {
 	}
 }
 
+// Config acts change the bot's own settings (ClassConfig): thresholds,
+// the digest, the watch lists and alert snoozes. Their buttons carry the
+// result, an absolute value or an item's stable ID, never a step or a
+// list index, so a replayed press changes nothing. Each validates its
+// arguments and shows its own outcome.
+const (
+	cfgThreshold = "th" // th|<key>|<target>, or th|<key> to explain the row
+	cfgDigest    = "dg" // dg|on, dg|off
+	cfgDigestAt  = "dh" // dh|<hour>, or dh to explain the row
+	cfgUnwatch   = "wr" // wr|<kind>|<id>|<page>
+	cfgWatch     = "wa" // wa|<kind>|<id>|<page>, from a scan
+	cfgSnooze    = "sz" // sz|<duration>|<key ref>
+	cfgUnsnooze  = "uz" // uz|<key ref>
+)
+
+// configAct runs one press of a config act, already authorized.
+type configAct func(ctx context.Context, cb *telegram.Callback, c tgui.Call)
+
+// buildActs registers the config acts.
+func (a *Agent) buildActs() map[string]configAct {
+	return map[string]configAct{
+		cfgThreshold: a.thresholdPress,
+		cfgDigest:    a.digestPress,
+		cfgDigestAt:  a.digestAtPress,
+		cfgUnwatch:   a.unwatchPress,
+		cfgWatch:     a.watchPress,
+		cfgSnooze:    a.snoozePress,
+		cfgUnsnooze:  a.unsnoozePress,
+	}
+}
+
 func isHex(s string) bool {
 	for _, c := range s {
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
@@ -283,6 +335,12 @@ func (a *Agent) handleCall(ctx context.Context, cb *telegram.Callback) {
 				return
 			}
 			a.showConfirm(ctx, cb, false, id, target, false, "")
+			return
+		}
+		if act, ok := a.acts[c.Act]; ok {
+			if gate(tgui.ClassConfig) {
+				act(ctx, cb, c)
+			}
 			return
 		}
 	}

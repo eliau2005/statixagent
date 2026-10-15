@@ -258,20 +258,20 @@ func (a *Agent) trustedScreen(_ context.Context, c tgui.Call) tgui.View {
 // registerTrustHandlers adds /trust and /untrust; /trusted opens the
 // Trusted IPs screen.
 func (a *Agent) registerTrustHandlers(r *bot.Router) {
-	r.Handle("trust", func(ctx context.Context, args []string) string {
+	r.Handle("trust", bot.Text(func(ctx context.Context, args []string) string {
 		p, errMsg := parseTrustArg("trust", args)
 		if errMsg != "" {
 			return errMsg
 		}
 		return a.trustAdd(p).html
-	})
-	r.Handle("untrust", func(ctx context.Context, args []string) string {
+	}))
+	r.Handle("untrust", bot.Text(func(ctx context.Context, args []string) string {
 		p, errMsg := parseTrustArg("untrust", args)
 		if errMsg != "" {
 			return errMsg
 		}
 		return a.trustRemove(p)
-	})
+	}))
 }
 
 // trustButton returns the "Trust this IP" row for a plain login alert, or
@@ -290,13 +290,9 @@ func (a *Agent) trustButton(ip string) []telegram.Button {
 }
 
 // loginKeyboard is the keyboard of a plain login alert: the usual SSH
-// actions plus the source row.
+// actions, the source row, then snooze.
 func (a *Agent) loginKeyboard(key, ip string) telegram.Keyboard {
-	kb := a.alertKeyboard(key)
-	if row := a.sourceRow(ip); row != nil {
-		kb = append(kb, row)
-	}
-	return kb
+	return a.alertKeyboard(key, a.sourceRow(ip))
 }
 
 // sourceRow is a login alert's row for its source: Trust this IP when
@@ -326,8 +322,7 @@ func (a *Agent) restoreLoginKeyboard(id int64, ip string, extra ...[]telegram.Bu
 		}
 		kb = a.loginKeyboard(key, ip)
 	} else {
-		kb = a.alertKeyboard("ssh-login")
-		kb[0] = slices.DeleteFunc(kb[0], func(b telegram.Button) bool { return strings.HasPrefix(b.Data, "snz:") })
+		kb = telegram.Keyboard{alertViewRow("ssh-login")}
 		if row := a.sourceRow(ip); row != nil {
 			kb = append(kb, row)
 		}

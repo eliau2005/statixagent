@@ -3,10 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/eliau2005/statixagent/internal/config"
+	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
 func TestWatchingShowsSSLAndHTTP(t *testing.T) {
@@ -16,24 +18,17 @@ func TestWatchingShowsSSLAndHTTP(t *testing.T) {
 	a.cfg.Watch.HTTPChecks = []config.HTTPCheck{{URL: "https://example.com/healthz", ExpectStatus: 200}}
 
 	text, kb := a.watchingView()
-	if !strings.Contains(text, "example.com") || !strings.Contains(text, "🔒") || !strings.Contains(text, "🌐") {
+	if !strings.Contains(text, "📜 example.com") || !strings.Contains(text, "🌐 https://example.com/healthz") {
 		t.Fatalf("watching view: %q", text)
 	}
-	var haveCR, haveHR bool
-	wantCR := watchIndexData("cr:", 0, "example.com")
-	wantHR := watchIndexData("hr:", 0, "https://example.com/healthz")
-	for _, row := range kb {
-		for _, b := range row {
-			if b.Data == wantCR {
-				haveCR = true
-			}
-			if b.Data == wantHR {
-				haveHR = true
-			}
+	flat := dumpKeyboard(kb)
+	for _, want := range []string{
+		"[🗑 example.com] → ~1wr|c|" + callbackDigest("example.com") + "|1",
+		"[🗑 example.com…] → ~1wr|h|" + callbackDigest("https://example.com/healthz") + "|1",
+	} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("missing %s in\n%s", want, flat)
 		}
-	}
-	if !haveCR || !haveHR {
-		t.Fatalf("missing remove buttons (cr=%v hr=%v): %+v", haveCR, haveHR, kb)
 	}
 }
 
@@ -92,24 +87,17 @@ func TestWatchingLongHostCallbackData(t *testing.T) {
 			}
 		}
 	}
-	var haveCR, haveSR bool
-	wantCR := watchIndexData("cr:", 0, longHost)
-	wantSR := watchIndexData("sr:", 0, "systemd-networkd-wait-online.service")
-	for _, row := range kb {
-		for _, b := range row {
-			if b.Data == wantCR {
-				haveCR = true
-			}
-			if b.Data == wantSR {
-				haveSR = true
-			}
+	flat := dumpKeyboard(kb)
+	for _, want := range []string{"~1wr|c|" + callbackDigest(longHost) + "|1", "~1wr|u|" + callbackDigest("systemd-networkd-wait-online.service") + "|1"} {
+		if !strings.Contains(flat, want) {
+			t.Errorf("expected %s in\n%s", want, flat)
 		}
-	}
-	if !haveCR || !haveSR {
-		t.Fatalf("expected fingerprinted callbacks in %+v", kb)
 	}
 }
 
+// A 🗑 button names its item by digest, so a list that shifted after the
+// screen was drawn still removes exactly that item; the index buttons of
+// older versions are refused instead.
 func TestWatchCallbackStaleAfterShift(t *testing.T) {
 	send := &fakeSender{}
 	a := testAgent(send)
@@ -127,14 +115,156 @@ func TestWatchCallbackStaleAfterShift(t *testing.T) {
 	if bData == "" {
 		t.Fatal("missing 🗑 b.example button")
 	}
+	legacy := watchIndexData("cr:", 1, "b.example")
 	// Remove a.example via manage path (shifts the list).
 	a.sslManage([]string{"remove", "a.example"})
-	_, _, toast, ok := a.handleWatchCallback(ctx, bData)
-	if !ok || toast != "stale list" {
-		t.Fatalf("shifted index must be stale, got ok=%v toast=%q", ok, toast)
+	if _, _, toast, ok := a.handleWatchCallback(ctx, legacy); !ok || toast != "stale list" {
+		t.Fatalf("shifted legacy index must be stale, got ok=%v toast=%q", ok, toast)
 	}
-	if got := a.watchCopy().SSLHosts; len(got) != 2 || got[0] != "b.example" || got[1] != "c.example" {
-		t.Fatalf("must not remove wrong host: %v", got)
+	press(a, "c1", bData)
+	if got := a.watchCopy().SSLHosts; len(got) != 1 || got[0] != "c.example" {
+		t.Fatalf("digest button removed the wrong host: %v", got)
+	}
+	// Pressed again, the item is gone: nothing changes.
+	press(a, "c2", bData)
+	if got := a.watchCopy().SSLHosts; len(got) != 1 || got[0] != "c.example" {
+		t.Fatalf("replay changed the list: %v", got)
+	}
+	if want := []string{"c1:🗑 Stopped watching b.example (not persisted: no config path)", "c2:" + itemGoneToast}; !slices.Equal(send.answered, want) {
+		t.Errorf("answered = %v", send.answered)
+	}
+}
+
+// 120 watched items page 8 at a time; every page's 🗑 buttons route,
+// and each removes exactly its own item from whatever page it is on.
+func TestWatchingPages120Items(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	for i := range 40 {
+		a.cfg.Watch.Services = append(a.cfg.Watch.Services, fmt.Sprintf("svc-%02d.service", i))
+		a.cfg.Watch.Processes = append(a.cfg.Watch.Processes, fmt.Sprintf("proc-%02d", i))
+		a.cfg.Watch.Ports = append(a.cfg.Watch.Ports, config.PortCheck{Port: 1000 + i})
+	}
+	var want []string
+	for _, it := range watchItems(a.watchCopy()) {
+		want = append(want, it.line())
+	}
+	if len(want) != 120 {
+		t.Fatalf("fixture has %d items", len(want))
+	}
+
+	// Walk the pages with Next, as a user would.
+	var seen []string
+	buttons := map[string]string{} // item line → its 🗑 data
+	press(a, "p1", "~1v|wat")
+	for page := 1; ; page++ {
+		e := send.lastEdit()
+		if !strings.Contains(e.html, fmt.Sprintf("120 items · %d/15", page)) {
+			t.Fatalf("page %d title: %q", page, e.html)
+		}
+		_, body, _ := strings.Cut(e.html, "<pre>")
+		body, _, _ = strings.Cut(body, "</pre>")
+		lines := strings.Split(body, "\n")
+		var rm []string
+		next := ""
+		for _, row := range e.kb {
+			for _, b := range row {
+				switch {
+				case strings.HasPrefix(b.Text, "🗑 "):
+					rm = append(rm, b.Data)
+				case b.Text == "Next ▶️":
+					next = b.Data
+				}
+			}
+		}
+		if len(lines) != pageSize || len(rm) != pageSize {
+			t.Fatalf("page %d lists %d items with %d 🗑 buttons", page, len(lines), len(rm))
+		}
+		for i, l := range lines {
+			seen = append(seen, l)
+			buttons[l] = rm[i]
+			if !strings.HasSuffix(rm[i], fmt.Sprintf("|%d", page)) {
+				t.Errorf("page %d button %q does not return to its page", page, rm[i])
+			}
+		}
+		if next == "" {
+			if page != 15 {
+				t.Fatalf("no Next on page %d", page)
+			}
+			break
+		}
+		press(a, fmt.Sprint("n", page), next)
+	}
+	if !slices.Equal(seen, want) {
+		t.Fatalf("pages listed %d items, not each once in order", len(seen))
+	}
+
+	// Remove one item from each of three pages, in an order that shifts
+	// the list under the buttons drawn before: each removes its own.
+	pressed := []string{want[5], want[60], want[119]}
+	for _, line := range pressed {
+		press(a, "rm", buttons[line])
+		if got := send.answered[len(send.answered)-1]; !strings.HasPrefix(got, "rm:🗑 Stopped watching") {
+			t.Errorf("%s: answered %q", line, got)
+		}
+	}
+	var left []string
+	for _, it := range watchItems(a.watchCopy()) {
+		left = append(left, it.line())
+	}
+	if gone := slices.DeleteFunc(slices.Clone(want), func(l string) bool { return slices.Contains(pressed, l) }); !slices.Equal(left, gone) {
+		t.Errorf("after removals %d items left, want %d without the three pressed", len(left), len(gone))
+	}
+	// The last removal was on page 15: 117 items still fill 15 pages.
+	if e := send.lastEdit(); !strings.Contains(e.html, "117 items · 15/15") {
+		t.Errorf("after removing from the last page: %q", e.html)
+	}
+}
+
+// Watching opened from Services keeps going Back there, through pages
+// and removals.
+func TestWatchingKeepsFrom(t *testing.T) {
+	send := &fakeSender{}
+	a := testAgent(send)
+	for i := range 10 {
+		a.cfg.Watch.Processes = append(a.cfg.Watch.Processes, fmt.Sprintf("p%d", i))
+	}
+	press(a, "c1", "~1v|wat^svc")
+	kb := send.lastEdit().kb
+	if got := dumpKeyboard(kb[len(kb)-1:]); got != "[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|wat^svc\n" {
+		t.Errorf("footer: %s", got)
+	}
+	press(a, "c2", kb[0][0].Data)
+	kb = send.lastEdit().kb
+	if kb[len(kb)-1][0].Data != "~1v|svc" || !strings.HasSuffix(kb[0][0].Data, "^svc") || len(a.watchCopy().Processes) != 9 {
+		t.Errorf("after removal:\n%s", dumpKeyboard(kb))
+	}
+}
+
+// Forged watch data is refused without changing anything.
+func TestWatchForged(t *testing.T) {
+	x := callbackDigest("x")
+	for _, data := range []string{"~1wr", "~1wr|u|nothex|1", "~1wr|u|" + x + "|0", "~1wr|u|" + x + "|01", "~1wr|z|" + x + "|1",
+		"~1wr|p|0|1", "~1wr|p|65536|1", "~1wr|p|022|1", "~1wr|p|22", "~1wa|x|" + x + "|1", "~1wa|p|70000|1",
+		"~1wa|u|ABCDEF0123456789|1", "~1wa|p|22|1|2"} {
+		send := &fakeSender{}
+		a := testAgent(send)
+		a.cfg.Watch.Ports = []config.PortCheck{{Port: 22}}
+		press(a, "f", data)
+		if !slices.Equal(send.answered, []string{"f:" + outdatedToast}) || len(send.edits) != 0 || len(a.watchCopy().Ports) != 1 {
+			t.Errorf("%s: answered %v", data, send.answered)
+		}
+	}
+}
+
+// Watch changes are the bot's settings: a group viewer is refused.
+func TestWatchNeedsAdmin(t *testing.T) {
+	send := &fakeSender{}
+	a, _ := authAgent(t, send, -100, 7)
+	a.cfg.Watch.Ports = []config.PortCheck{{Port: 22}}
+	a.handleCallback(context.Background(), &telegram.Callback{ID: "v", ChatID: -100, ChatType: "supergroup", FromID: 5, MessageID: 3, Data: "~1wr|p|22|1"})
+	if len(a.watchCopy().Ports) != 1 || !slices.Equal(send.answered, []string{"v:" + adminOnlyToast}) {
+		t.Errorf("viewer unwatched: answered %v", send.answered)
 	}
 }
 

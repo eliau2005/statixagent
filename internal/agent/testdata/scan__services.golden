@@ -1,10 +1,9 @@
-👁 <b>Running, not watched</b> — 2
-Tap ➕ to watch:
-<pre>  1  nginx.service
-     A high performance web server
-  2  cron.service
-     Regular background program pr…
-</pre>
+🔎 <b>Running, not watched</b> · 2 services
+Tap ➕ to watch, or /services_add &lt;number&gt;:
+<pre> 1 nginx.service
+   A high performance web server
+ 2 cron.service
+   Regular background program p…</pre>
 --- keyboard ---
-[➕ nginx] → sa:0:23376c0b9c578ed7  [➕ cron] → sa:1:5980609eecf3075a
-[👁 Watching] → watching  [🔎 Services] → scan_svc  [🔎 Ports] → scan_port
+[➕ nginx] → ~1wa|u|23376c0b9c578ed7|1  [➕ cron] → ~1wa|u|5980609eecf3075a|1
+[⬅️ Back] → ~1v|wat  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|scs

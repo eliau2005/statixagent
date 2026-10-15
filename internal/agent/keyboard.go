@@ -68,15 +68,25 @@ func alertViews(prefix string) []tgui.Button {
 // alertKeyboard maps an alert to one-tap context buttons. Views open in a
 // new message replying to the alert (Decision 1a), so the alert keeps its
 // text as a record; only snooze and trust touch it, and then only its
-// keyboard.
-func (a *Agent) alertKeyboard(key string) telegram.Keyboard {
+// keyboard. extra rows (a login's source) go above the snooze row.
+func (a *Agent) alertKeyboard(key string, extra ...[]telegram.Button) telegram.Keyboard {
+	kb := telegram.Keyboard{alertViewRow(key)}
+	for _, row := range extra {
+		if len(row) > 0 {
+			kb = append(kb, row)
+		}
+	}
+	return append(kb, a.snoozeRow(key))
+}
+
+// alertViewRow is the row of views an alert's key prefix calls for.
+func alertViewRow(key string) []telegram.Button {
 	prefix, _, _ := strings.Cut(key, ":")
 	var row []telegram.Button
 	for _, b := range alertViews(prefix) {
 		row = append(row, telegram.Button{Text: b.Label, Data: callData(b.Call)})
 	}
-	row = append(row, telegram.Button{Text: "🔕 1h", Data: a.snoozeCallbackData(key)})
-	return telegram.Keyboard{row}
+	return row
 }
 
 // pushAlert renders and sends an alert with its context buttons, returning
@@ -98,44 +108,20 @@ func (a *Agent) pushAlertKB(ctx context.Context, al alert.Alert, kb telegram.Key
 	return id, err
 }
 
-// stashKB lets a handler attach a custom keyboard to its pending reply.
-func (a *Agent) stashKB(kb telegram.Keyboard) {
-	a.mu.Lock()
-	a.pendingKB = kb
-	a.mu.Unlock()
-}
-
-func (a *Agent) popKB() telegram.Keyboard {
-	kb, _ := a.popPending()
-	return kb
-}
-
-// popPending takes the stashed keyboard and the nonce of the confirm
-// token it carries, if any.
-func (a *Agent) popPending() (telegram.Keyboard, string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	kb, nonce := a.pendingKB, a.pendingNonce
-	a.pendingKB, a.pendingNonce = nil, ""
-	return kb, nonce
-}
-
-// reply sends a command reply with the keyboard its handler stashed: a
-// screen's, for commands that open one. A confirm prompt's token is bound
-// to the message it went out in.
-func (a *Agent) reply(ctx context.Context, cmd, html string) {
-	chatID := a.cfg.Telegram.ChatID
-	kb, nonce := a.popPending()
-	if kb == nil {
-		a.push(ctx, html)
+// reply sends a typed command's view as a new message. A confirm
+// prompt's token is bound to the message it went out in.
+func (a *Agent) reply(ctx context.Context, cmd string, v tgui.View) {
+	if len(v.Rows) == 0 {
+		a.push(ctx, v.Text)
 		return
 	}
-	id, err := a.send.SendMessageKB(ctx, chatID, html, kb)
+	text, kb := encodeView(v)
+	id, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, text, kb)
 	if err != nil {
-		log.Printf("agent: reply: %v", err)
+		log.Printf("agent: reply to /%s: %v", cmd, err)
 		return
 	}
-	if nonce != "" {
+	if nonce := confirmNonce(v); nonce != "" {
 		a.tokens.Rebind(nonce, id)
 	}
 }
@@ -261,14 +247,15 @@ func (a *Agent) refuseCallback(ctx context.Context, cb *telegram.Callback, answe
 	}
 }
 
-// snoozeCallback snoozes the alert a 🔕 button names for an hour.
+// snoozeCallback snoozes the alert a 🔕 button of an older version
+// names for an hour.
 func (a *Agent) snoozeCallback(ctx context.Context, cb *telegram.Callback, _ bool) {
 	key, ok := a.resolveSnoozeKey(cb.Data)
 	if !ok {
-		a.answer(ctx, cb, "stale snooze")
+		a.answer(ctx, cb, staleSnoozeToast)
 		return
 	}
-	a.engine.Snooze(key, time.Now().Add(time.Hour))
+	a.engine.Snooze(key, a.now().Add(time.Hour))
 	a.answer(ctx, cb, "Snoozed for 1h")
 }
 
@@ -352,21 +339,10 @@ func callbackDigest(s string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// snoozeCallbackData keeps ordinary alert keys in callback_data so buttons
-// remain valid across restarts. Only oversized keys use the in-memory hash map.
-// Namespaces: snz:d:<key> (direct) and snz:h:<digest> (hashed) never collide.
-func (a *Agent) snoozeCallbackData(key string) string {
-	direct := "snz:d:" + key
-	if len(direct) <= 64 {
-		return direct
-	}
-	digest := callbackDigest(key)
-	a.mu.Lock()
-	a.snoozeKeys[digest] = key
-	a.mu.Unlock()
-	return "snz:h:" + digest
-}
-
+// resolveSnoozeKey reads the alert key of the snooze buttons of older
+// versions: snz:d:<key> and snz:h:<digest>, and before them snz:<key> and
+// snz:h<crc32>. The hashed forms resolve only while the process that sent
+// them runs.
 func (a *Agent) resolveSnoozeKey(data string) (string, bool) {
 	// New namespaced forms (preferred).
 	if key, ok := strings.CutPrefix(data, "snz:d:"); ok {

@@ -50,3 +50,23 @@ func TestSnoozeEvent(t *testing.T) {
 		t.Fatal("event after snooze expiry suppressed")
 	}
 }
+
+func TestUnsnooze(t *testing.T) {
+	e := New(time.Minute)
+	now := time.Now()
+	e.Snooze("cpu", now.Add(time.Hour))
+	if until, ok := e.SnoozedUntil("cpu", now); !ok || !until.Equal(now.Add(time.Hour)) {
+		t.Fatalf("SnoozedUntil = %v, %v", until, ok)
+	}
+	if _, ok := e.SnoozedUntil("cpu", now.Add(2*time.Hour)); ok {
+		t.Fatal("an expired snooze still reported")
+	}
+	e.Unsnooze("cpu")
+	e.Unsnooze("cpu") // twice: nothing left to lift
+	if _, ok := e.SnoozedUntil("cpu", now); ok {
+		t.Fatal("still snoozed after Unsnooze")
+	}
+	if al := e.Event("cpu", "CPU", "hot", Warning, now, 0); al == nil {
+		t.Fatal("unsnoozed key suppressed")
+	}
+}

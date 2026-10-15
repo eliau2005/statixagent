@@ -8,12 +8,12 @@ Battery alert  15%
 Daily digest   off · 07:00</pre>
 Alerts fire when a value crosses its threshold (battery: when below). Steps of 5.
 --- keyboard ---
-[🖥 CPU −5] → th:cpu:-5  [🖥 CPU 90%] → noop  [🖥 CPU +5] → th:cpu:+5
-[🧠 Memory −5] → th:mem:-5  [🧠 Memory 90%] → noop  [🧠 Memory +5] → th:mem:+5
-[💾 Disk −5] → th:disk:-5  [💾 Disk 85%] → noop  [💾 Disk +5] → th:disk:+5
-[🌡 Temp −5] → th:temp:-5  [🌡 Temp 105°C] → noop  [🌡 Temp +5] → th:temp:+5
-[🔋 Battery −5] → th:batt:-5  [🔋 Battery 15%] → noop  [🔋 Battery +5] → th:batt:+5
-[📰 Digest: off] → dg:toggle  [−1h] → dg:hour:-1  [07:00] → noop  [+1h] → dg:hour:+1
-[👁 Watching] → watching  [⬇️ Update] → ~1v|upd
-[🧹 Clear chat] → ~1cc  [❓ Help] → ~1v|hlp
+[🖥 CPU −5] → ~1th|cpu|85  [🖥 CPU 90%] → ~1th|cpu  [🖥 CPU +5] → ~1th|cpu|95
+[🧠 Memory −5] → ~1th|mem|85  [🧠 Memory 90%] → ~1th|mem  [🧠 Memory +5] → ~1th|mem|95
+[💾 Disk −5] → ~1th|disk|80  [💾 Disk 85%] → ~1th|disk  [💾 Disk +5] → ~1th|disk|90
+[🌡 Temp −5] → ~1th|temp|100  [🌡 Temp 105°C] → ~1th|temp  [🌡 Temp +5] → ~1th|temp|105
+[🔋 Battery −5] → ~1th|batt|10  [🔋 Battery 15%] → ~1th|batt  [🔋 Battery +5] → ~1th|batt|20
+[📰 Digest: off] → ~1dg|on  [−1h] → ~1dh|6  [07:00] → ~1dh  [+1h] → ~1dh|8
+[👁 Watching] → ~1v|wat  [⬇️ Update] → ~1v|upd  [🧹 Clear chat] → ~1cc
+[❓ Help] → ~1v|hlp
 [⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|set

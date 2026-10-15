@@ -1,0 +1,17 @@
+👁 <b>Watching</b> · 17 items · 2/3
+Tap 🗑 to stop watching:
+<pre>🔌 9003
+🔌 9004
+🔌 9005
+🔌 9006
+🔌 9007
+🔌 9008
+🔌 9009
+📜 example.com:8443</pre>
+--- keyboard ---
+[🗑 9003] → ~1wr|p|9003|2^svc  [🗑 9004] → ~1wr|p|9004|2^svc  [🗑 9005] → ~1wr|p|9005|2^svc
+[🗑 9006] → ~1wr|p|9006|2^svc  [🗑 9007] → ~1wr|p|9007|2^svc  [🗑 9008] → ~1wr|p|9008|2^svc
+[🗑 9009] → ~1wr|p|9009|2^svc  [🗑 example.com…] → ~1wr|c|e20821ad3d0279c3|2^svc
+[🔎 Scan services] → ~1v|scs  [🔎 Scan ports] → ~1v|scp
+[◀️ Prev] → ~1v|wat|1^svc  [2/3] → ~1v|wat|2^svc  [Next ▶️] → ~1v|wat|3^svc
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|wat|2^svc
