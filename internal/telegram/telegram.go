@@ -234,6 +234,10 @@ func (c *Client) callChat(ctx context.Context, chatID int64, method string, payl
 // deprecated disable_web_page_preview flag).
 var noPreview = map[string]any{"is_disabled": true}
 
+// maxMessageLen is Telegram's message text limit. It counts characters
+// after parsing; comparing raw bytes against it is stricter, so safe.
+const maxMessageLen = 4096
+
 // SendMessage sends an HTML-formatted message to a chat. Messages longer
 // than Telegram's 4096-char limit are split on line boundaries.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) error {
@@ -250,7 +254,7 @@ func (c *Client) SendMessageID(ctx context.Context, chatID int64, html string) (
 // SendMessageKB sends a message with an optional inline keyboard attached
 // to the last chunk, returning its message_id.
 func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, kb Keyboard) (int64, error) {
-	chunks := splitMessage(html, 4096)
+	chunks := splitMessage(html, maxMessageLen)
 	var lastID int64
 	for i, chunk := range chunks {
 		payload := map[string]any{
@@ -273,14 +277,29 @@ func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, k
 	return lastID, nil
 }
 
+// truncatedFooter marks an edit that FitEdit had to cut.
+const truncatedFooter = "\n… truncated"
+
+// FitEdit returns html cut to fit one message. An edit cannot be split
+// into several messages without breaking the one-message view, so text
+// over the limit keeps its head, cut by splitMessage's HTML-safe logic
+// (tags balanced, never mid-tag, mid-entity or mid-rune), plus a footer.
+func FitEdit(html string) string {
+	if len(html) <= maxMessageLen {
+		return html
+	}
+	return splitMessage(html, maxMessageLen-len(truncatedFooter))[0] + truncatedFooter
+}
+
 // EditMessageKB replaces a message's text and keyboard in place — the
-// mechanism behind button navigation and live views. Telegram rejects
-// edits that change nothing; that case is reported as success.
+// mechanism behind button navigation and live views. Text over the limit
+// is cut by FitEdit. Telegram rejects edits that change nothing; that case
+// is reported as success.
 func (c *Client) EditMessageKB(ctx context.Context, chatID, messageID int64, html string, kb Keyboard) error {
 	payload := map[string]any{
 		"chat_id":              chatID,
 		"message_id":           messageID,
-		"text":                 html,
+		"text":                 FitEdit(html),
 		"parse_mode":           "HTML",
 		"link_preview_options": noPreview,
 	}

@@ -36,6 +36,10 @@ type fakeSender struct {
 	cmds      []telegram.BotCommand
 	nextID    int64
 	markups   []markupEdit
+	// events logs sends, edits and answers in call order.
+	events []string
+	// editErr, when set, fails every EditMessageKB.
+	editErr error
 }
 
 // markupEdit is one keyboard-only edit (EditMessageMarkup).
@@ -56,6 +60,7 @@ func (f *fakeSender) SendMessageID(ctx context.Context, chatID int64, html strin
 func (f *fakeSender) SendMessageKB(_ context.Context, _ int64, html string, kb telegram.Keyboard) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.events = append(f.events, "send")
 	f.sent = append(f.sent, html)
 	f.keyboards = append(f.keyboards, kb)
 	f.nextID++
@@ -65,6 +70,10 @@ func (f *fakeSender) SendMessageKB(_ context.Context, _ int64, html string, kb t
 func (f *fakeSender) EditMessageKB(_ context.Context, _ int64, messageID int64, html string, kb telegram.Keyboard) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.events = append(f.events, "edit")
+	if f.editErr != nil {
+		return f.editErr
+	}
 	f.edits = append(f.edits, edit{messageID, html, kb})
 	return nil
 }
@@ -79,6 +88,7 @@ func (f *fakeSender) EditMessageMarkup(_ context.Context, _ int64, messageID int
 func (f *fakeSender) AnswerCallback(_ context.Context, callbackID, text string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.events = append(f.events, "answer")
 	f.answered = append(f.answered, callbackID+":"+text)
 	return nil
 }
@@ -1118,11 +1128,10 @@ func TestFirewallChangeFailureIsVisible(t *testing.T) {
 	if !strings.Contains(last.html, "ReadWritePaths=-/etc/ufw") {
 		t.Errorf("sandbox failure must include the fix command, got: %q", last.html)
 	}
-	// And the toast points at the message rather than carrying the detail.
-	send.mu.Lock()
-	defer send.mu.Unlock()
-	if len(send.answered) == 0 || !strings.Contains(send.answered[len(send.answered)-1], "see message") {
-		t.Errorf("toast = %v", send.answered)
+	// The press was acknowledged before ufw ran; the banner alone carries
+	// the failure, with no redundant toast line above it.
+	if out := slowOutcome(t, send, "c1"); strings.Contains(out, failedToast) {
+		t.Errorf("failure toast echoed into the message: %q", out)
 	}
 }
 
@@ -1459,11 +1468,8 @@ func TestSSHKickFlow(t *testing.T) {
 	if last := send.lastEdit(); !strings.Contains(last.html, "Active sessions") {
 		t.Errorf("after kick view = %q", last.html)
 	}
-	send.mu.Lock()
-	toast := send.answered[len(send.answered)-1]
-	send.mu.Unlock()
-	if !strings.Contains(toast, "disconnected") {
-		t.Errorf("toast = %q", toast)
+	if out := slowOutcome(t, send, "c2"); !strings.Contains(out, "alice disconnected") {
+		t.Errorf("kick outcome = %q", out)
 	}
 }
 
@@ -1543,11 +1549,17 @@ func TestSSHKickIdentity(t *testing.T) {
 			if killed != tc.wantKill {
 				t.Errorf("killed %q, want %q", killed, tc.wantKill)
 			}
-			send.mu.Lock()
-			toast := send.answered[len(send.answered)-1]
-			send.mu.Unlock()
-			if !strings.Contains(toast, tc.wantToast) {
-				t.Errorf("toast = %q, want %q", toast, tc.wantToast)
+			// A Yes press (skk:) is slow: answered first, outcome in the edit.
+			var feedback string
+			if strings.HasPrefix(tc.data, "skk:") {
+				feedback = slowOutcome(t, send, "c1")
+			} else {
+				send.mu.Lock()
+				feedback = send.answered[len(send.answered)-1]
+				send.mu.Unlock()
+			}
+			if !strings.Contains(feedback, tc.wantToast) {
+				t.Errorf("feedback = %q, want %q", feedback, tc.wantToast)
 			}
 			last := send.lastEdit()
 			if tc.wantYes != "" {
@@ -1586,11 +1598,8 @@ func TestSSHKickDoubleTap(t *testing.T) {
 	if len(runner.calls) != 1 || strings.Join(runner.calls[0], " ") != "pkill -KILL -t pts/0" {
 		t.Fatalf("runner calls = %v", runner.calls)
 	}
-	send.mu.Lock()
-	toast := send.answered[len(send.answered)-1]
-	send.mu.Unlock()
-	if !strings.Contains(toast, "Session changed, refreshed") {
-		t.Errorf("second tap toast = %q", toast)
+	if out := slowOutcome(t, send, "c2"); !strings.Contains(out, "Session changed, refreshed") {
+		t.Errorf("second tap outcome = %q", out)
 	}
 }
 
@@ -1642,10 +1651,8 @@ func TestSSHKickFailureIsVisible(t *testing.T) {
 	if !strings.Contains(last.html, "lacks permission") {
 		t.Errorf("permission failure must include the hint, got: %q", last.html)
 	}
-	send.mu.Lock()
-	defer send.mu.Unlock()
-	if len(send.answered) == 0 || !strings.Contains(send.answered[len(send.answered)-1], "see message") {
-		t.Errorf("toast = %v", send.answered)
+	if out := slowOutcome(t, send, "c1"); strings.Contains(out, failedToast) {
+		t.Errorf("failure toast echoed into the message: %q", out)
 	}
 }
 
@@ -1669,11 +1676,8 @@ func TestSSHKickAlreadyGone(t *testing.T) {
 	if last := send.lastEdit(); strings.Contains(last.html, "Disconnect failed") {
 		t.Errorf("vanished session is not a failure: %q", last.html)
 	}
-	send.mu.Lock()
-	toast := send.answered[len(send.answered)-1]
-	send.mu.Unlock()
-	if !strings.Contains(toast, "already gone") {
-		t.Errorf("toast = %q", toast)
+	if out := slowOutcome(t, send, "c1"); !strings.Contains(out, "already gone") {
+		t.Errorf("kick outcome = %q", out)
 	}
 }
 

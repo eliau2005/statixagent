@@ -338,7 +338,7 @@ func (a *Agent) applyAndRender(ctx context.Context, open bool) (string, telegram
 		if hint := sandboxHint(fail); hint != "" {
 			banner += hint + "\n"
 		}
-		return banner + text, kb, "failed — see message", true
+		return banner + text, kb, failedToast, true
 	}
 	return text, kb, okMsg, true
 }

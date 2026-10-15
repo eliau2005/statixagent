@@ -157,19 +157,43 @@ func (a *Agent) reply(ctx context.Context, cmd, html string) {
 	}
 }
 
+// failedToast is the toast of a slow action whose failure is already shown
+// as a banner in the edited message.
+const failedToast = "failed — see message"
+
+// editFailedToast tells the user why a fresh message appeared instead of
+// the pressed one changing.
+const editFailedToast = "Couldn't update; sent as new message"
+
+// slowCallback reports presses whose work can take seconds (ufw, pkill,
+// the Docker API, the updater) and the toast to answer them with before
+// that work starts, so the client spinner stops at once.
+func slowCallback(data string) (toast string, slow bool) {
+	switch {
+	case data == "fw_close", data == "fw_open", strings.HasPrefix(data, "skk:"):
+		return "Working…", true
+	case data == "docker":
+		return "", true
+	case data == "update_confirm":
+		return "Updating…", true
+	}
+	return "", false
+}
+
 // handleCallback routes a button press: the callback data is a command
-// name, executed and rendered into the message the button lives on.
+// name, executed and rendered into the message the button lives on. Every
+// press from the allowed chat is answered exactly once.
 func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	if cb.ChatID != a.cfg.Telegram.ChatID {
 		return // foreign chat: ignore entirely, do not even answer
 	}
 	if key, ok := a.resolveSnoozeKey(cb.Data); ok {
 		a.engine.Snooze(key, time.Now().Add(time.Hour))
-		a.send.AnswerCallback(ctx, cb.ID, "Snoozed for 1h")
+		a.answer(ctx, cb, "Snoozed for 1h")
 		return
 	}
 	if strings.HasPrefix(cb.Data, "snz:") {
-		a.send.AnswerCallback(ctx, cb.ID, "stale snooze")
+		a.answer(ctx, cb, "stale snooze")
 		return
 	}
 	if a.handleTrustCallback(ctx, cb) {
@@ -177,15 +201,14 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	}
 	switch cb.Data {
 	case "dismiss":
-		a.send.AnswerCallback(ctx, cb.ID, "")
-		a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, "Update postponed — /update any time.", nil)
+		a.finishCallback(ctx, cb, false, "Update postponed — /update any time.", nil, "")
 		return
 	case "live":
-		a.send.AnswerCallback(ctx, cb.ID, "Live mode active (tap Stop to exit)")
+		a.answer(ctx, cb, "Live mode active (tap Stop to exit)")
 		a.startLive(ctx, cb.ChatID, cb.MessageID)
 		return
 	case "live_stop":
-		a.send.AnswerCallback(ctx, cb.ID, "")
+		a.answer(ctx, cb, "")
 		if !a.stopLive(cb.MessageID) {
 			// No session on this message (agent restarted, or a newer
 			// session took over): restore Status instead of a dead end.
@@ -193,60 +216,66 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 		}
 		return
 	}
-	if text, kb, toast, handled := a.handleFirewallCallback(ctx, cb.Data); handled {
-		a.send.AnswerCallback(ctx, cb.ID, toast)
-		if text != "" {
-			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
-				log.Printf("agent: edit: %v", err)
-			}
-		}
-		return
+	toast, answered := slowCallback(cb.Data)
+	if answered {
+		a.answer(ctx, cb, toast)
 	}
-	if text, kb, toast, handled := a.handleSSHCallback(ctx, cb.Data); handled {
-		a.send.AnswerCallback(ctx, cb.ID, toast)
-		if text != "" {
-			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
-				log.Printf("agent: edit: %v", err)
-			}
-		}
-		return
+	handlers := []func(context.Context, string) (string, telegram.Keyboard, string, bool){
+		a.handleFirewallCallback, a.handleSSHCallback, a.handleSettingsCallback, a.handleWatchCallback,
 	}
-	if text, kb, toast, handled := a.handleSettingsCallback(ctx, cb.Data); handled {
-		a.send.AnswerCallback(ctx, cb.ID, toast)
-		if text != "" {
-			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
-				log.Printf("agent: edit: %v", err)
-			}
+	for _, h := range handlers {
+		if text, kb, toast, handled := h(ctx, cb.Data); handled {
+			a.finishCallback(ctx, cb, answered, text, kb, toast)
+			return
 		}
-		return
-	}
-	if text, kb, toast, handled := a.handleWatchCallback(ctx, cb.Data); handled {
-		a.send.AnswerCallback(ctx, cb.ID, toast)
-		if text != "" {
-			if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
-				log.Printf("agent: edit: %v", err)
-			}
-		}
-		return
 	}
 	reply, ok := a.router.Invoke(ctx, cb.Data, nil)
 	if !ok {
-		a.send.AnswerCallback(ctx, cb.ID, "unknown action")
+		if !answered {
+			a.answer(ctx, cb, "unknown action")
+		}
 		return
-	}
-	toast := ""
-	if cb.Data == "update_confirm" {
-		toast = "Updating…"
-	}
-	if err := a.send.AnswerCallback(ctx, cb.ID, toast); err != nil {
-		log.Printf("agent: answerCallback: %v", err)
 	}
 	var kb telegram.Keyboard
 	if navViews[cb.Data] {
 		kb = navKeyboard(cb.Data)
 	}
-	if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, reply, kb); err != nil {
-		log.Printf("agent: edit: %v", err)
+	a.finishCallback(ctx, cb, answered, reply, kb, "")
+}
+
+// finishCallback is the one edit path for button presses. It renders text
+// into the pressed message (the client fits it to Telegram's limit) and
+// answers the callback unless answered says that already happened. A fast
+// view is answered after the edit so a failed edit can say so; slow work
+// was answered before it ran, so its outcome toast becomes a line above
+// the view instead. A failed edit falls back to a new message: the press
+// is never silently lost.
+func (a *Agent) finishCallback(ctx context.Context, cb *telegram.Callback, answered bool, text string, kb telegram.Keyboard, toast string) {
+	if text != "" {
+		if answered && toast != "" && toast != failedToast {
+			text = esc(toast) + "\n" + text
+		}
+		// "Message is not modified" is already success in the client.
+		if err := a.send.EditMessageKB(ctx, cb.ChatID, cb.MessageID, text, kb); err != nil {
+			log.Printf("agent: edit failed, sending as new message: %v", err)
+			if _, err := a.send.SendMessageKB(ctx, cb.ChatID, text, kb); err != nil {
+				log.Printf("agent: edit fallback: %v", err)
+			}
+			if toast == "" {
+				toast = editFailedToast
+			}
+		}
+	}
+	if !answered {
+		a.answer(ctx, cb, toast)
+	}
+}
+
+// answer acknowledges a button press, stopping the client spinner; a
+// non-empty toast shows briefly.
+func (a *Agent) answer(ctx context.Context, cb *telegram.Callback, toast string) {
+	if err := a.send.AnswerCallback(ctx, cb.ID, toast); err != nil {
+		log.Printf("agent: answerCallback: %v", err)
 	}
 }
 

@@ -519,3 +519,62 @@ func TestEditMessageMarkup(t *testing.T) {
 		t.Errorf("nil keyboard sent %v", rows)
 	}
 }
+
+func TestFitEditShortUnchanged(t *testing.T) {
+	msg := "<b>CPU</b>\n<pre>load 0.1</pre>"
+	if got := FitEdit(msg); got != msg {
+		t.Errorf("FitEdit changed a short message: %q", got)
+	}
+	exact := strings.Repeat("x", maxMessageLen)
+	if got := FitEdit(exact); got != exact {
+		t.Error("FitEdit cut a message exactly at the limit")
+	}
+}
+
+func TestFitEditTruncatesBalanced(t *testing.T) {
+	// A 10 KB view: the cut lands inside <pre>, among entities and
+	// multi-byte runes, and must still parse.
+	row := "web &amp; db ✅ <b>up</b> 3h — 12.5%\n"
+	msg := "<b>Docker</b>\n<pre>" + strings.Repeat(row, 10240/len(row)+1) + "</pre>"
+	if len(msg) < 10240 {
+		t.Fatalf("fixture too short: %d", len(msg))
+	}
+	got := FitEdit(msg)
+	if len(got) > maxMessageLen {
+		t.Errorf("FitEdit length %d > %d", len(got), maxMessageLen)
+	}
+	if err := htmlBalanced(got); err != nil {
+		t.Errorf("FitEdit result not balanced: %v", err)
+	}
+	if !utf8.ValidString(got) {
+		t.Error("FitEdit cut mid-rune")
+	}
+	if !strings.HasSuffix(got, "</pre>\n… truncated") {
+		t.Errorf("want closed <pre> then the footer, got …%q", got[len(got)-40:])
+	}
+	if !strings.HasPrefix(msg, strings.TrimSuffix(got, "</pre>\n… truncated")) {
+		t.Error("FitEdit must keep the head of the message verbatim")
+	}
+}
+
+func TestEditMessageKBFitsText(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, `{"ok":true,"result":{}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+	msg := "<pre>" + strings.Repeat("0123456789\n", 1000) + "</pre>"
+	if err := c.EditMessageKB(context.Background(), 42, 7, msg, nil); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := got["text"].(string)
+	if len(text) > maxMessageLen || !strings.HasSuffix(text, "… truncated") {
+		t.Errorf("edit text len %d, tail %q", len(text), text[max(0, len(text)-20):])
+	}
+	if err := htmlBalanced(text); err != nil {
+		t.Errorf("edit text not balanced: %v", err)
+	}
+}

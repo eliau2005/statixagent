@@ -103,7 +103,7 @@ func (a *Agent) handleSSHCallback(ctx context.Context, data string) (string, tel
 		if errDetail != "" {
 			banner := "❌ <b>Disconnect failed</b>\n<pre>" + esc(errDetail) + "</pre>\n"
 			banner += kickSandboxHint(errDetail) + "\n"
-			return banner + text, kb, "failed — see message", true
+			return banner + text, kb, failedToast, true
 		}
 		return text, kb, okMsg, true
 	}
