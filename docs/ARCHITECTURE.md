@@ -193,6 +193,11 @@ goal:
   `/untrust` can only ever remove what the bot added. Like `known_keys`, it
   is rewritten atomically and fsynced, keeps lines it cannot parse, and is
   never overwritten when it could not be read.
+- **Telegram update cursor** (`tg-offset` next to the config) is saved,
+  atomically, before any button press or state-changing command runs, so a
+  restart does not replay it. Commands other than views that were sent more
+  than 30 s before the agent started are refused with a notice rather than
+  run late.
 
 If you are tempted to add a datastore, weigh it against this goal first — see
 [ROADMAP.md](../ROADMAP.md).

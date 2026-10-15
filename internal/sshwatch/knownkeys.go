@@ -163,7 +163,7 @@ func (k *KnownKeys) Len() int {
 	return len(k.keys)
 }
 
-// save rewrites the file (see writeStateFile), keeping unparseable lines.
+// save rewrites the file (see WriteStateFile), keeping unparseable lines.
 // Callers hold k.mu.
 func (k *KnownKeys) save() error {
 	if k.path == "" {
@@ -183,7 +183,7 @@ func (k *KnownKeys) save() error {
 	for _, l := range k.bad {
 		b.WriteString(l + "\n")
 	}
-	if err := writeStateFile(k.path, []byte(b.String())); err != nil {
+	if err := WriteStateFile(k.path, []byte(b.String())); err != nil {
 		return fmt.Errorf("known keys: %w", err)
 	}
 	return nil

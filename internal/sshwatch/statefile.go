@@ -6,12 +6,12 @@ import (
 	"path/filepath"
 )
 
-// writeStateFile replaces path with data atomically and owner-only. The
+// WriteStateFile replaces path with data atomically and owner-only. The
 // temp file is synced before the rename and the directory after it, so a
 // power loss leaves either the old file or the new one, never an empty one.
 // It backs the small state files kept next to the config (known_keys,
-// trusted_ips).
-func writeStateFile(path string, data []byte) error {
+// trusted_ips, tg-offset).
+func WriteStateFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
 	if err != nil {

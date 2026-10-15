@@ -24,6 +24,7 @@ type Update struct {
 	ID       int64 // update_id, used as the getUpdates offset cursor
 	ChatID   int64
 	Text     string
+	Date     time.Time // when a text message was sent; zero for callbacks
 	Callback *Callback
 }
 
@@ -263,6 +264,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 		UpdateID int64 `json:"update_id"`
 		Message  *struct {
 			Text string `json:"text"`
+			Date int64  `json:"date"`
 			Chat struct {
 				ID int64 `json:"id"`
 			} `json:"chat"`
@@ -288,6 +290,9 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 		case r.Message != nil:
 			u.ChatID = r.Message.Chat.ID
 			u.Text = r.Message.Text
+			if r.Message.Date > 0 {
+				u.Date = time.Unix(r.Message.Date, 0)
+			}
 		case r.CallbackQuery != nil && r.CallbackQuery.Message != nil:
 			u.Callback = &Callback{
 				ID:        r.CallbackQuery.ID,
