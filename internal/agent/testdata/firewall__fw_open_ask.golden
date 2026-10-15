@@ -1,0 +1,4 @@
+<b>Open SSH port 22?</b>
+Incoming SSH connections will be allowed.
+--- keyboard ---
+[✅ Yes, open it] → fw_open  [❌ Cancel] → firewall

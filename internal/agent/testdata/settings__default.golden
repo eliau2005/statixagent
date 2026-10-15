@@ -1,0 +1,21 @@
+⚙️ <b>Alert thresholds</b>
+Tune with ➖ / ➕ (steps of 5):
+<pre> CPU       90%
+ Memory    90%
+ Disk      85%
+ Temp      85°C
+ Battery   15%
+</pre>
+Alerts fire when a value crosses its threshold
+(battery: when below).
+
+📰 Daily digest <b>on</b> at 09:00 — tap the middle
+button to toggle, ➖/➕ to shift the hour.
+--- keyboard ---
+[➖] → th:cpu:-5  [🖥 CPU 90%] → noop  [➕] → th:cpu:+5
+[➖] → th:mem:-5  [🧠 Memory 90%] → noop  [➕] → th:mem:+5
+[➖] → th:disk:-5  [💾 Disk 85%] → noop  [➕] → th:disk:+5
+[➖] → th:temp:-5  [🌡 Temp 85°C] → noop  [➕] → th:temp:+5
+[➖] → th:batt:-5  [🔋 Battery 15%] → noop  [➕] → th:batt:+5
+[➖] → dg:hour:-1  [📰 on · 09:00] → dg:toggle  [➕] → dg:hour:+1
+[⬅️ Status] → status  [👁 Watching] → watching

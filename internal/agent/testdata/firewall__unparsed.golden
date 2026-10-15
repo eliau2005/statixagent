@@ -1,0 +1,5 @@
+🛡 <b>Firewall</b>
+<code>ufw status</code> returned output the agent could not read — the firewall state is <b>unknown</b>, so no changes are offered.
+<pre>&lt;not ufw &amp; friends&gt;</pre>
+--- keyboard ---
+[⬅️ Status] → status  [🔐 SSH] → ssh

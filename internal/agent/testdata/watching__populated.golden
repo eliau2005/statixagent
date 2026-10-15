@@ -1,0 +1,19 @@
+👁 <b>Watching</b>
+Tap 🗑 to stop watching:
+<pre> 🧩 nginx.service
+ 🧩 a-very-long-unit-name-for-truncation@instance.service
+ ⚙ postgres
+ 🔌 port 443 (&lt;https&gt;)
+ 🔌 port 8080
+ 🔒 example.com:8443
+ 🌐 https://example.com/health?check=…
+</pre>
+--- keyboard ---
+[🗑 nginx] → sr:0:23376c0b9c578ed7
+[🗑 a-very-long-unit-na…] → sr:1:9c7ceb18443b88fc
+[🗑 postgres] → xr:0:a942b37ccfaf5a81
+[🗑 port 443] → pr:443
+[🗑 port 8080] → pr:8080
+[🗑 example.com:8443] → cr:0:e20821ad3d0279c3
+[🗑 https://example.com…] → hr:0:3b624c863eb828e7
+[👁 Watching] → watching  [🔎 Services] → scan_svc  [🔎 Ports] → scan_port

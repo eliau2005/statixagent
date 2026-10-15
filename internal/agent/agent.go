@@ -207,6 +207,10 @@ type Agent struct {
 	// groupNoticeSent records that this process already told a group
 	// chat without admin_user_ids about it. Only botLoop touches it.
 	groupNoticeSent bool
+
+	// now is the clock for rendered durations; set once in New and
+	// overridden only by tests.
+	now func() time.Time
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -239,6 +243,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		snoozeKeys:   map[string]string{},
 		offset:       loadOffset(src.OffsetPath),
 		boot:         time.Now(),
+		now:          time.Now,
 	}
 	a.configTrusted = configPrefixes(cfg.SSH.TrustedIPs)
 	store, err := sshwatch.LoadTrustStore(src.TrustPath, config.ParseTrustedIP)

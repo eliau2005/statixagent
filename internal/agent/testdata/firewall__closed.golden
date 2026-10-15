@@ -1,0 +1,5 @@
+🛡 <b>Firewall</b>
+SSH port 22: 🔒 <b>closed</b> (rule 1: 22/tcp DENY Anywhere)
+--- keyboard ---
+[🔓 Open port 22] → fw_open_ask
+[⬅️ Status] → status  [🔐 SSH] → ssh

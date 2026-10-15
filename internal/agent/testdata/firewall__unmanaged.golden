@@ -1,0 +1,5 @@
+🛡 <b>Firewall</b>
+SSH port 22: no explicit rule (ufw default policy applies)
+--- keyboard ---
+[🔓 Open port 22] → fw_open_ask  [🔒 Close port 22] → fw_close_ask
+[⬅️ Status] → status  [🔐 SSH] → ssh

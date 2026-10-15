@@ -1,0 +1,5 @@
+🛡 <b>Firewall</b>
+<code>ufw</code> is installed but the agent could not query it:
+<pre>ERROR: You need to be root to run this script</pre>
+--- keyboard ---
+[⬅️ Status] → status  [🔐 SSH] → ssh

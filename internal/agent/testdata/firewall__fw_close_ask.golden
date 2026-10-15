@@ -1,0 +1,5 @@
+⚠️ <b>Close SSH port 22?</b>
+Active sessions stay up, but <b>new SSH connections will be refused</b>.
+This bot keeps working and can reopen the port.
+--- keyboard ---
+[✅ Yes, close it] → fw_close  [❌ Cancel] → firewall

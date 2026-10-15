@@ -1,0 +1,5 @@
+🛡 <b>Firewall</b>
+ufw is installed but <b>inactive</b> — all ports are open.
+Enable it on the server first: <code>ufw enable</code>
+--- keyboard ---
+[⬅️ Status] → status  [🔐 SSH] → ssh
