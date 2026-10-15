@@ -111,8 +111,10 @@ func (a *Agent) handleSettingsCallback(_ context.Context, data string) (string, 
 		if len(parts) != 3 {
 			return "", nil, "bad action", true
 		}
+		// Only the two steps the keyboard emits are accepted: forged data
+		// such as NaN or Inf would otherwise be saved and silence the alert.
 		delta, err := strconv.ParseFloat(parts[2], 64)
-		if err != nil {
+		if err != nil || (delta != -5 && delta != 5) {
 			return "", nil, "bad action", true
 		}
 		var toast string

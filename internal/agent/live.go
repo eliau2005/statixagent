@@ -33,6 +33,9 @@ func (a *Agent) startLive(ctx context.Context, chatID, messageID int64) {
 	}
 	liveCtx, cancel := context.WithCancel(ctx)
 	a.liveCancel = cancel
+	a.liveMsg = messageID
+	a.liveSeq++
+	seq := a.liveSeq
 	interval, duration := a.liveInterval, a.liveDuration
 	a.mu.Unlock()
 
@@ -41,16 +44,27 @@ func (a *Agent) startLive(ctx context.Context, chatID, messageID int64) {
 		safely("live", func() {
 			a.runLive(liveCtx, chatID, messageID, interval, duration)
 		})
+		// A session that hit its ceiling is over: a later Stop on that
+		// message must take the no-session path instead of doing nothing.
+		a.mu.Lock()
+		if a.liveSeq == seq {
+			a.liveCancel = nil
+		}
+		a.mu.Unlock()
 	}()
 }
 
-func (a *Agent) stopLive() {
+// stopLive cancels the session running on messageID, reporting whether
+// there was one; the session's own exit path then restores the view.
+func (a *Agent) stopLive(messageID int64) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.liveCancel != nil {
-		a.liveCancel()
-		a.liveCancel = nil
+	if a.liveCancel == nil || a.liveMsg != messageID {
+		return false
 	}
+	a.liveCancel()
+	a.liveCancel = nil
+	return true
 }
 
 func (a *Agent) runLive(ctx context.Context, chatID, messageID int64, interval, duration time.Duration) {

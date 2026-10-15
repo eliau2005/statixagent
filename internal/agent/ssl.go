@@ -34,10 +34,13 @@ func (a *Agent) sslView(ctx context.Context, args []string) string {
 	return bot.SSLCerts(a.src.CheckCerts(ctx, hosts))
 }
 
+// sslUsage is HTML: raw angle brackets would make Telegram reject the reply.
+const sslUsage = "Usage: /ssl add &lt;host[:port]&gt; · /ssl remove &lt;host&gt;"
+
 // sslManage handles "/ssl add <host>" and "/ssl remove <host>".
 func (a *Agent) sslManage(args []string) string {
 	if len(args) != 2 {
-		return "Usage: /ssl add <host[:port]> · /ssl remove <host>"
+		return sslUsage
 	}
 	verb, host := strings.ToLower(args[0]), args[1]
 	switch verb {
@@ -68,7 +71,7 @@ func (a *Agent) sslManage(args []string) string {
 		}
 		return "Removed " + esc(host) + a.persist(cfg)
 	}
-	return "Usage: /ssl add <host[:port]> · /ssl remove <host>"
+	return sslUsage
 }
 
 // sslLoop re-checks certificates twice a day; the first check runs at
