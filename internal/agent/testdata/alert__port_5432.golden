@@ -1,0 +1,4 @@
+port:5432
+--- keyboard ---
+[🔍 Open] → ~1o|prt
+[🔕 1h] → ~1sz|1h|k|port:5432  [🔕 8h] → ~1sz|8h|k|port:5432  [🔕 24h] → ~1sz|24h|k|port:5432

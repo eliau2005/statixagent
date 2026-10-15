@@ -155,6 +155,11 @@ Alerts arrive as push messages — you never have to ask for them:
 - Threshold crossings (CPU, RAM, disk, temperature, low battery).
 - Power loss, host reboot, new SSH login, brute-force burst, key-file change,
   certificate expiry, and container down / restart-loop events.
+- Watched units, ports, HTTP checks and processes, checked every minute: an
+  alert when one starts failing and a ✅ when it recovers, never while it stays
+  as it was. A failure already there when the agent starts is not repeated.
+  The alert's 🔍 Open shows the unit or list; with service actions on, a unit
+  alert also offers 🔁 Restart, which asks for confirmation first.
 
 Each alert carries **one-tap action buttons** for the obvious next step
 (jump to the relevant metric view, list SSH sessions, open the firewall

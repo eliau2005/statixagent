@@ -352,6 +352,10 @@ func (a *Agent) handleCall(ctx context.Context, cb *telegram.Callback) {
 				a.refuseCallback(ctx, cb, false)
 				return
 			}
+			if c.From == fromAlert {
+				a.showConfirmReply(ctx, cb, id, target)
+				return
+			}
 			a.showConfirm(ctx, cb, false, id, target, false, "")
 			return
 		}
