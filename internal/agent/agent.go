@@ -772,13 +772,13 @@ func (a *Agent) buildRouter() *bot.Router {
 		if len(args) == 0 {
 			return a.screenReply(ctx, scrSSL)
 		}
-		return tgui.View{Text: a.sslView(ctx, args)}
+		return tgui.View{Text: a.sslManage(args)}
 	})
 	r.Handle("http", func(ctx context.Context, args []string) tgui.View {
 		if len(args) == 0 {
 			return a.screenReply(ctx, scrHTTP)
 		}
-		return tgui.View{Text: a.httpView(ctx, args)}
+		return tgui.View{Text: a.httpManage(args)}
 	})
 	// /ping answers "can this server reach X, and how fast?" — the vantage
 	// point is the VPS itself, which is the question when debugging from
@@ -872,7 +872,7 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "digest", Description: "daily activity summary"},
 	{Command: "temp", Description: "temperatures and fans"},
 	{Command: "battery", Description: "battery state"},
-	{Command: "services", Description: "watched services status"},
+	{Command: "services", Description: "services hub: units, containers, checks"},
 	{Command: "docker", Description: "containers"},
 	{Command: "ssh", Description: "live SSH sessions (disconnect buttons)"},
 	{Command: "watching", Description: "manage everything watched (buttons)"},

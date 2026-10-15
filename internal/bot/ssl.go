@@ -2,43 +2,20 @@ package bot
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/eliau2005/statixagent/internal/netcheck"
 )
 
-// SSLCerts renders /ssl: failed checks first, then soonest expiry.
-func SSLCerts(sts []netcheck.CertStatus) string {
-	if len(sts) == 0 {
-		return "📜 No SSL hosts watched."
+// CertLeft is a certificate's line on the Certificates list: the days
+// left and the expiry date, "12d · Oct 27", or the check's error. An
+// expired certificate says so rather than making the reader decode
+// "-5d".
+func CertLeft(s netcheck.CertStatus) string {
+	switch {
+	case s.Err != "":
+		return s.Err
+	case s.DaysLeft < 0:
+		return "expired · " + s.NotAfter.Format("Jan 02")
 	}
-	sorted := append([]netcheck.CertStatus(nil), sts...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if (sorted[i].Err != "") != (sorted[j].Err != "") {
-			return sorted[i].Err != ""
-		}
-		return sorted[i].DaysLeft < sorted[j].DaysLeft
-	})
-	var L []string
-	for _, s := range sorted {
-		if s.Err != "" {
-			L = append(L, " ❌ "+s.Host, "    "+s.Err)
-			continue
-		}
-		icon := "✅"
-		switch {
-		case s.DaysLeft <= 3:
-			icon = "🚨"
-		case s.DaysLeft <= 21:
-			icon = "⚠️"
-		}
-		// A negative count is an already-expired cert; say so rather than
-		// making the reader decode "-5d".
-		left := fmt.Sprintf("%dd", s.DaysLeft)
-		if s.DaysLeft < 0 {
-			left = "expired"
-		}
-		L = append(L, " "+icon+" "+s.Host, "    "+left+" · "+s.NotAfter.Format("Jan 02 2006"))
-	}
-	return card("📜 <b>Certificates</b>", L)
+	return fmt.Sprintf("%dd · %s", s.DaysLeft, s.NotAfter.Format("Jan 02"))
 }

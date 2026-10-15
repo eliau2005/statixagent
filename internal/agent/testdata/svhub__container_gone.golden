@@ -1,0 +1,8 @@
+⚠️ Item gone, refreshed
+🐳 <b>Docker</b> · 2 containers · 1 down
+<pre>❌ web              exited(1)
+✅ api              up</pre>
+Tap a container for details
+--- keyboard ---
+[❌ web] → ~1v|cd|3f2a9b7c1d0e^dk  [✅ api] → ~1v|cd|9c8b7a6f5e4d^dk
+[⬅️ Back] → ~1v|dk  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|cd|0123456789ab^dk

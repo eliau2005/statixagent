@@ -49,6 +49,14 @@ const (
 	// The scans open from Watching.
 	scrScanServices = "scs"
 	scrScanPorts    = "scp"
+	// The services hub's other lists and its detail screens (svhub.go).
+	scrFailing      = "svf"
+	scrUnits        = "un"
+	scrUnitsWatched = "uw"
+	scrUnit         = "ud"
+	scrContainer    = "cd"
+	scrPorts        = "prt"
+	scrProcs        = "prc"
 )
 
 // commandScreens are the typed commands (bare, or /start's deep-link
@@ -105,15 +113,20 @@ func (a *Agent) buildScreens() *tgui.Registry {
 	leaf(scrTop, scrMetrics, true, a.topText)
 	leaf(scrDigest, scrMetrics, false, func(context.Context) string { return a.digestView(false) })
 
-	// Services is today's /services report until the services hub
-	// replaces it; its kinds hang off it.
-	leaf(scrServices, scrHome, true, func(ctx context.Context) string { return a.servicesReply(ctx) },
-		[]tgui.Button{{Label: "🐳 Docker", Call: tgui.Open(scrDocker)}, {Label: "📜 Certificates", Call: tgui.Open(scrSSL)}},
-		[]tgui.Button{{Label: "🌐 HTTP", Call: tgui.Open(scrHTTP)},
-			{Label: "👁 Watching", Call: tgui.Call{Act: tgui.ActView, Args: []string{scrWatching}, From: scrServices}}})
-	leaf(scrDocker, scrServices, true, a.dockerText)
-	leaf(scrSSL, scrServices, true, func(ctx context.Context) string { return a.sslView(ctx, nil) })
-	leaf(scrHTTP, scrServices, true, func(ctx context.Context) string { return a.httpView(ctx, nil) })
+	// The services hub, its lists and their detail screens (svhub.go).
+	// They read systemd, Docker or the network, so all but Processes are
+	// slow.
+	view(scrServices, scrHome, true, a.hubScreen)
+	view(scrFailing, scrServices, true, a.failingScreen)
+	view(scrUnits, scrServices, true, a.kindScreen(kindUnits))
+	view(scrUnitsWatched, scrServices, true, a.watchedUnitsScreen)
+	view(scrUnit, scrUnits, true, a.unitScreen)
+	view(scrDocker, scrServices, true, a.kindScreen(kindDocker))
+	view(scrContainer, scrDocker, true, a.containerScreen)
+	view(scrHTTP, scrServices, true, a.kindScreen(kindHTTP))
+	view(scrSSL, scrServices, true, a.kindScreen(kindCerts))
+	view(scrPorts, scrServices, true, a.kindScreen(kindPorts))
+	view(scrProcs, scrServices, false, a.kindScreen(kindProcs))
 
 	view(scrSecurity, scrHome, false, a.securityView)
 	view(scrSessions, scrSecurity, false, a.sessionsView)

@@ -1,0 +1,10 @@
+📜 <b>Certificates</b> · 3 certificates · 2 expiring
+<pre>❌ old.example
+   x509: &lt;expired&gt;
+⚠️ example.com
+   12d · Oct 27
+✅ api.example.com:8443
+   61d · Dec 15</pre>
+Add: <code>/ssl add host[:port]</code> · remove: <code>/ssl remove host</code>
+--- keyboard ---
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|ssl

@@ -1,0 +1,14 @@
+🧩 <b>Units</b> · 6 units · 3 failing
+<pre>❌ postgresql       failed
+❔ gone             not found
+⚠️ x&lt;evil&gt;&amp;         activating
+⭐ nginx            running
+✅ cron             running
+✅ ssh              running</pre>
+⭐ = watched · tap a unit for details
+--- keyboard ---
+[❌ postgresql] → ~1v|ud|9b6164c99187eff9^un  [❔ gone] → ~1v|ud|e083385225669820^un
+[⚠️ x<evil>&] → ~1v|ud|dc3a7e3deb256b85^un  [⭐ nginx] → ~1v|ud|23376c0b9c578ed7^un
+[✅ cron] → ~1v|ud|5980609eecf3075a^un  [✅ ssh] → ~1v|ud|7b7c1859ea047d55^un
+[⭐ Watched only] → ~1v|uw  [🔤 All units] → ~1v|un
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|un

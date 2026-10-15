@@ -1,0 +1,14 @@
+🧩 <b>Services</b> · 6 OK · 10 failing
+<pre>Units           6  ❌ 3
+Docker          2  ❌ 1
+HTTP            2  ❌ 2
+Certificates    3  ❌ 2
+Ports           1  ❌ 1
+Processes       2  ❌ 1</pre>
+--- keyboard ---
+[❌ Failing (10)] → ~1v|svf
+[🧩 Units] → ~1v|un  [🐳 Docker] → ~1v|dk
+[🌐 HTTP] → ~1v|htp  [📜 Certificates] → ~1v|ssl
+[🔌 Ports] → ~1v|prt  [🧵 Processes] → ~1v|prc
+[👁 Watching] → ~1v|wat^svc
+[⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|svc

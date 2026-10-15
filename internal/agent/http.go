@@ -1,33 +1,14 @@
 package agent
 
 import (
-	"context"
 	"strconv"
 	"strings"
 
-	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/config"
-	"github.com/eliau2005/statixagent/internal/services"
 )
 
-// httpView runs the watched HTTP checks on demand; with args it manages
-// the list ("/http add <url> [status]", "/http remove <url|number>").
-func (a *Agent) httpView(ctx context.Context, args []string) string {
-	if len(args) > 0 {
-		return a.httpManage(args)
-	}
-	checks := a.watchCopy().HTTPChecks
-	if len(checks) == 0 {
-		return "🌐 No HTTP checks yet.\nAdd one: <code>/http add https://example.com/healthz</code>"
-	}
-	specs := make([]services.HTTPSpec, len(checks))
-	for i, h := range checks {
-		specs[i] = services.HTTPSpec{URL: h.URL, ExpectStatus: h.ExpectStatus, Timeout: h.Timeout.Duration}
-	}
-	return bot.ServiceResults(services.CheckHTTP(ctx, httpClient, specs))
-}
-
-// httpManage handles "/http add" and "/http remove".
+// httpManage handles "/http add <url> [status]" and "/http remove
+// <url|number>"; a bare /http opens the HTTP checks list (svhub.go).
 func (a *Agent) httpManage(args []string) string {
 	const usage = "Usage: /http add &lt;url&gt; [expected status] · /http remove &lt;url or number&gt;"
 	if len(args) < 2 {
