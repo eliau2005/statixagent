@@ -17,30 +17,54 @@ import (
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 )
 
-// Firewall backend (docs/telegram-ux-redesign.md §5.2). Only ufw exists
-// today, and only the methods the dead-man switch (fwdeadman.go) needs
-// are here: read the state, snapshot it, apply a plan, take it back.
+// Firewall backends (docs/telegram-ux-redesign.md §5.2): ufw here and
+// firewalld (fwfirewalld.go), with only the methods the plans and the
+// dead-man switch (fwdeadman.go) need: read the state, snapshot it,
+// apply a plan, take it back. Both map their rules onto the ufw rule
+// model (fwufw.go), so one simulation and one SSH guard serve both.
 
 // FwBackend is a firewall the agent can change under a trial.
 type FwBackend interface {
 	Name() string
 	// Probe reads the current state.
 	Probe(ctx context.Context) ufwProbe
-	// Snapshot copies the rule files byte for byte, plus the status text,
-	// into dir.
+	// Added lists the user rules as specs (see fwChange), the ones a plan
+	// may delete by spec. The trace is set when listing failed.
+	Added(ctx context.Context) ([][]string, *cmdTrace)
+	// Snapshot copies the rules, plus the status text, into dir.
 	Snapshot(ctx context.Context, dir string) (fwSnap, error)
-	// Hash fingerprints the rule files as they are now.
-	Hash() (string, error)
-	// Apply runs every change in order, stopping at the first failure,
-	// then reloads. The trace is the last command run, for the audit log.
+	// Load reads a snapshot Snapshot wrote.
+	Load(dir string) (fwSnap, error)
+	// Hash fingerprints the rules as they are now.
+	Hash(ctx context.Context) (string, error)
+	// Commands is what Apply runs for p, one shell line each, for the
+	// confirm screen; an error when the backend cannot make a change.
+	Commands(p fwPlan) ([]string, error)
+	// Apply runs every change in order, stopping at the first failure.
+	// The trace is the last command run, for the audit log.
 	Apply(ctx context.Context, p fwPlan) (*cmdTrace, error)
 	// Revert applies the inverse of p, change by change and best effort,
-	// leaving rules p did not touch alone, then reloads.
+	// leaving rules p did not touch alone.
 	Revert(ctx context.Context, p fwPlan) error
 	// Commit makes p permanent on Keep.
 	Commit(ctx context.Context, p fwPlan) error
-	// Restore writes a snapshot's files back and reloads.
+	// Restore puts a snapshot's rules back.
 	Restore(ctx context.Context, s fwSnap) error
+	// ident is what a trial record keeps to reach the same backend from
+	// another process: the binary that answered, and the zone.
+	ident() (bin, zone string)
+}
+
+// fwNoter is a backend whose last Restore has something to tell the
+// user, such as a firewalld reload that dropped other tools' rules.
+type fwNoter interface{ takeNote() string }
+
+// restoreNote is what b's last Restore has to tell, or "".
+func restoreNote(b FwBackend) string {
+	if n, ok := b.(fwNoter); ok {
+		return n.takeNote()
+	}
+	return ""
 }
 
 // Plan operations.
@@ -53,7 +77,8 @@ const (
 
 // fwChange is one rule change. Spec is a ufw rule as `ufw show added`
 // prints it, without the leading "ufw": built from parsed values or read
-// back from ufw itself, never from user text.
+// back from the firewall itself, never from user text. firewalld turns
+// the same words into its own arguments (fwfirewalld.go).
 type fwChange struct {
 	Op   string   `json:"op"`
 	Spec []string `json:"spec"`
@@ -90,11 +115,15 @@ func (p fwPlan) inverse() fwPlan {
 	return inv
 }
 
-// fwSnap is a snapshot of the rule files.
+// fwSnap is a snapshot of the rules.
 type fwSnap struct {
-	Files  map[string][]byte // by base name; a file absent then is absent here
-	Status string            // `ufw status verbose` at snapshot time
+	Files  map[string][]byte // ufw: by base name; a file absent then is absent here
+	Status string            // `ufw status verbose` (firewalld: --list-all) at snapshot time
 	SHA    string
+	// fw is Status parsed into the rule model.
+	fw ufwStatus
+	// zone is firewalld's zone at snapshot time; nil for ufw.
+	zone *fwdZone
 	// Added is `ufw show added` at snapshot time, nil when it was not
 	// recorded: a restore then has no plan to undo by spec.
 	Added [][]string
@@ -150,7 +179,7 @@ func loadSnap(dir string) (fwSnap, error) {
 		return fwSnap{}, fmt.Errorf("snapshot %s has no user.rules", dir)
 	}
 	status, _ := os.ReadFile(filepath.Join(dir, snapStatusFile))
-	s := fwSnap{Files: files, Status: string(status), SHA: hashRuleFiles(files)}
+	s := fwSnap{Files: files, Status: string(status), SHA: hashRuleFiles(files), fw: parseUFWOutput(string(status))}
 	if added, err := os.ReadFile(filepath.Join(dir, snapAddedFile)); err == nil {
 		s.Added = parseShowAdded(string(added))
 		if s.Added == nil {
@@ -169,6 +198,8 @@ type ufwBackend struct {
 }
 
 func (b *ufwBackend) Name() string { return "ufw" }
+
+func (b *ufwBackend) ident() (string, string) { return b.bin, "" }
 
 func (b *ufwBackend) Probe(ctx context.Context) ufwProbe {
 	p := probeUFW(ctx, b.run)
@@ -209,6 +240,19 @@ func (b *ufwBackend) added(ctx context.Context) ([][]string, *cmdTrace) {
 	return parseShowAdded(t.out), nil
 }
 
+func (b *ufwBackend) Added(ctx context.Context) ([][]string, *cmdTrace) { return b.added(ctx) }
+
+func (b *ufwBackend) Load(dir string) (fwSnap, error) { return loadSnap(dir) }
+
+// Commands is the ufw command of each change, then the reload.
+func (b *ufwBackend) Commands(p fwPlan) ([]string, error) {
+	var lines []string
+	for _, c := range p {
+		lines = append(lines, "ufw "+specText(c.argv()))
+	}
+	return append(lines, "ufw reload"), nil
+}
+
 func (b *ufwBackend) Snapshot(ctx context.Context, dir string) (fwSnap, error) {
 	files, err := readRuleFiles(b.dir)
 	if err != nil {
@@ -232,7 +276,7 @@ func (b *ufwBackend) Snapshot(ctx context.Context, dir string) (fwSnap, error) {
 	if err := sshwatch.WriteStateFile(filepath.Join(dir, snapStatusFile), []byte(t.out)); err != nil {
 		return fwSnap{}, err
 	}
-	snap := fwSnap{Files: files, Status: t.out, SHA: hashRuleFiles(files)}
+	snap := fwSnap{Files: files, Status: t.out, SHA: hashRuleFiles(files), fw: parseUFWOutput(t.out)}
 	// The rule specs let a later restore of this snapshot be undone by
 	// spec. Without them the snapshot is still a rollback target.
 	if a := b.ufw(ctx, "show", "added"); a.err == nil {
@@ -246,7 +290,7 @@ func (b *ufwBackend) Snapshot(ctx context.Context, dir string) (fwSnap, error) {
 	return snap, nil
 }
 
-func (b *ufwBackend) Hash() (string, error) {
+func (b *ufwBackend) Hash(context.Context) (string, error) {
 	files, err := readRuleFiles(b.dir)
 	if err != nil {
 		return "", err
@@ -254,28 +298,38 @@ func (b *ufwBackend) Hash() (string, error) {
 	return hashRuleFiles(files), nil
 }
 
-// errUFW is a failed ufw command, with its own output for display.
-type errUFW struct{ t *cmdTrace }
+// traceCmd is a traced command as a user would type it: "ufw show added".
+func traceCmd(t *cmdTrace) string {
+	if len(t.argv) == 0 {
+		return ""
+	}
+	return strings.Join(append([]string{filepath.Base(t.argv[0])}, t.argv[1:]...), " ")
+}
 
-func (e errUFW) Error() string {
+// errFwCmd is a failed firewall command, with its own output for display.
+type errFwCmd struct{ t *cmdTrace }
+
+func (e errFwCmd) Error() string {
 	return strings.Join(e.t.argv, " ") + ": " + detail(e.t.out, e.t.err)
 }
 
+// Apply reloads after the changes.
 func (b *ufwBackend) Apply(ctx context.Context, p fwPlan) (*cmdTrace, error) {
 	for _, c := range p {
 		if t := b.ufw(ctx, c.argv()...); t.err != nil {
-			return t, errUFW{t}
+			return t, errFwCmd{t}
 		}
 	}
 	// Rule edits alone do not reliably reach the live tables on all
 	// setups (observed in the field).
 	t := b.ufw(ctx, "reload")
 	if t.err != nil {
-		return t, errUFW{t}
+		return t, errFwCmd{t}
 	}
 	return t, nil
 }
 
+// Revert reloads after the changes.
 func (b *ufwBackend) Revert(ctx context.Context, p fwPlan) error {
 	for _, c := range p.inverse() {
 		// Deleting a rule someone already removed, or adding one that
@@ -283,7 +337,7 @@ func (b *ufwBackend) Revert(ctx context.Context, p fwPlan) error {
 		b.ufw(ctx, c.argv()...)
 	}
 	if t := b.ufw(ctx, "reload"); t.err != nil {
-		return errUFW{t}
+		return errFwCmd{t}
 	}
 	return nil
 }
@@ -291,6 +345,7 @@ func (b *ufwBackend) Revert(ctx context.Context, p fwPlan) error {
 // Commit is a no-op: ufw rule changes are already persistent.
 func (b *ufwBackend) Commit(context.Context, fwPlan) error { return nil }
 
+// Restore writes the snapshot's files back and reloads.
 func (b *ufwBackend) Restore(ctx context.Context, s fwSnap) error {
 	for _, name := range ufwRuleFiles {
 		data, ok := s.Files[name]
@@ -302,7 +357,7 @@ func (b *ufwBackend) Restore(ctx context.Context, s fwSnap) error {
 		}
 	}
 	if t := b.ufw(ctx, "reload"); t.err != nil {
-		return errUFW{t}
+		return errFwCmd{t}
 	}
 	return nil
 }

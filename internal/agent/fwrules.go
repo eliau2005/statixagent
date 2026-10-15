@@ -17,9 +17,10 @@ import (
 	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
-// ufw management screens (docs/telegram-ux-redesign.md §3.8): the rule
-// list and detail, Open port and the presets, Restore previous, and the
-// typed /fw_open, /fw_allow and /fw_deny. They only read; every change
+// Firewall management screens (docs/telegram-ux-redesign.md §3.8), for
+// ufw and firewalld: the rule list and detail, Open port and the
+// presets, Restore previous (ufw only), and the typed /fw_open,
+// /fw_allow and /fw_deny. They only read; every change
 // they offer becomes a plan (fwplan.go) behind a confirm token, which
 // runs under the dead-man switch.
 
@@ -45,30 +46,37 @@ const (
 // actFwPlan is a planned rule change, as the audit log records it.
 const actFwPlan = "fw_plan"
 
-// fwNow is one fresh reading of ufw: the probe, the user rule specs, and
-// whether ufw keeps IPv6 rules.
+// fwNow is one fresh reading of the managed firewall: the backend, its
+// probe, the user rule specs, whether it keeps IPv6 rules, and whether
+// ufw and firewalld are both active (rules are then only listed).
 type fwNow struct {
-	p     ufwProbe
-	added [][]string
-	v6    bool
+	b        FwBackend
+	p        ufwProbe
+	added    [][]string
+	v6       bool
+	conflict bool
 }
 
-// readFw reads ufw for a screen or a plan; the string is why it cannot
-// (HTML), or "".
+// readFw reads the firewall for a screen or a plan; the string is why it
+// cannot (HTML), or "".
 func (a *Agent) readFw(ctx context.Context) (fwNow, string) {
 	if a.src.Runner == nil {
 		return fwNow{}, "Firewall control unavailable in this build."
 	}
-	b := a.fwBackend("")
-	p := b.Probe(ctx)
-	if f := probeRefusal(p); f != nil {
-		return fwNow{}, esc(f.display())
+	f := a.detectFw(ctx)
+	if f.b == nil || !f.p.manageable() {
+		return fwNow{}, esc(f.refusal().display())
 	}
-	added, t := b.added(ctx)
+	added, t := f.b.Added(ctx)
 	if t != nil {
 		return fwNow{}, "Could not list the rules:\n" + preBlock(detail(t.out, t.err))
 	}
-	return fwNow{p: p, added: added, v6: a.ufwIPv6()}, ""
+	return fwNow{b: f.b, p: f.p, added: added, v6: a.fwIPv6(f.b), conflict: f.conflict}, ""
+}
+
+// fwIPv6 reports whether b keeps IPv6 rules: firewalld always does.
+func (a *Agent) fwIPv6(b FwBackend) bool {
+	return b.Name() == fwKindFirewalld || a.ufwIPv6()
 }
 
 // ufwIPv6 reports whether ufw keeps IPv6 rules: IPV6= in
@@ -246,7 +254,13 @@ func (a *Agent) fwRuleScreen(ctx context.Context, c tgui.Call) tgui.View {
 	if c.Args[1] != fwGen(n.p.fw)[:6] {
 		text = "ℹ️ The rules changed since that list.\n" + text
 	}
-	if spec != nil {
+	fwd := n.b.Name() == fwKindFirewalld
+	switch {
+	case spec != nil && fwd:
+		if cmds, err := n.b.Commands(fwPlan{{Op: opDelete, Spec: spec}}); err == nil {
+			text += "\nRemoved by: <code>" + esc(strings.Join(cmds[:len(cmds)-1], "\n")) + "</code>"
+		}
+	case spec != nil:
 		text += "\nSpec: <code>ufw " + esc(specText(spec)) + "</code>"
 	}
 	ports := a.sshPorts(ctx)
@@ -254,8 +268,12 @@ func (a *Agent) fwRuleScreen(ctx context.Context, c tgui.Call) tgui.View {
 	switch {
 	case row.Dir != "in":
 		return tgui.View{Text: text + "\nOutgoing rules are changed from a shell only."}
+	case spec == nil && fwd:
+		return tgui.View{Text: text + "\n" + esc(fwdNoSpec)}
 	case spec == nil:
 		return tgui.View{Text: text + "\n<code>ufw show added</code> does not list this rule, so it is deleted from a shell only."}
+	case n.conflict:
+		return tgui.View{Text: text}
 	}
 	return tgui.View{Text: text, Rows: [][]tgui.Button{{{Label: "🗑 Delete rule", Call: tgui.Call{Act: askFwDelete, Args: []string{c.Args[2]}}, Style: "danger"}}}}
 }
@@ -369,6 +387,8 @@ func (a *Agent) planFor(ctx context.Context, actor, chat, msg int64, build func(
 	switch {
 	case why != "":
 		return note("🛡 " + why)
+	case n.conflict:
+		return note("🛡 " + esc(upperFirst(fwConflictText)) + ".")
 	case !a.fwReady():
 		return note("🛡 The firewall rollback switch is not set up in this build, so the agent will not change rules.")
 	case a.FwTrialPending():
@@ -383,6 +403,12 @@ func (a *Agent) planFor(ctx context.Context, actor, chat, msg int64, build func(
 	case err != nil:
 		return note("⚠️ " + esc(upperFirst(err.Error())))
 	}
+	cmds := a.restoreCommands(built.restore)
+	if built.restore == "" {
+		if cmds, err = n.b.Commands(built.plan); err != nil {
+			return note("⚠️ " + esc(upperFirst(err.Error())))
+		}
+	}
 	ports := a.sshPorts(ctx)
 	peers := a.adminPeers(ctx, ports)
 	if reason := sshGuard(n.p.fw, built.after, ports, peers); reason != "" {
@@ -394,8 +420,8 @@ func (a *Agent) planFor(ctx context.Context, actor, chat, msg int64, build func(
 		log.Printf("agent: %v", err)
 		return note(mintFailedToast)
 	}
-	req := &fwPlanReq{id: id, title: built.title, plan: built.plan, restore: built.restore, base: fwGen(n.p.fw),
-		after: built.after, diff: diffRows(n.p.fw, built.after), actor: actor, expires: a.now().Add(fwPlanTTL)}
+	req := &fwPlanReq{id: id, title: built.title, backend: n.b.Name(), plan: built.plan, cmds: cmds, restore: built.restore,
+		base: fwGen(n.p.fw), after: built.after, diff: diffRows(n.p.fw, built.after), actor: actor, expires: a.now().Add(fwPlanTTL)}
 	req.check = sshCheck(n.p.fw, built.after, ports, peers, a.trustedHosts(peers))
 	in := tgui.Intent{Action: actFwPlan, Target: id, ActorID: actor, ChatID: chat, MessageID: msg}
 	if req.nonce, err = a.mintTokenTTL(in, fwPlanTTL); err != nil {
@@ -451,25 +477,22 @@ func (a *Agent) planView(req *fwPlanReq, cmds bool) tgui.View {
 		"Trial: auto-rollback in " + mmss(n) + " unless you tap Keep.\n" + pre(req.diff) + "\n" + req.check
 	toggle := tgui.Button{Label: "🔍 Show commands", Call: tgui.Call{Act: askFwCmds, Args: []string{req.id}}}
 	if cmds {
-		text += "\nCommands:\n" + pre(a.planCommands(req))
+		text += "\nCommands:\n" + pre(req.cmds)
 		toggle = tgui.Button{Label: "🔍 Hide commands", Call: tgui.Call{Act: askFwCmds, Args: []string{req.id, "h"}}}
 	}
 	yes := "✅ Apply (" + trialLabel(int(n.Seconds())) + " trial)"
 	return tgui.View{Text: text, Rows: [][]tgui.Button{a.confirmRow(yes, req.nonce), {toggle}}}
 }
 
-// planCommands is what Apply runs, exactly.
-func (a *Agent) planCommands(req *fwPlanReq) []string {
-	var lines []string
-	if req.restore != "" {
-		lines = append(lines, "from snapshot "+req.restore+":")
-		for _, f := range ufwRuleFiles {
-			lines = append(lines, "write "+filepath.Join(a.src.UFWDir, f))
-		}
-	} else {
-		for _, c := range req.plan {
-			lines = append(lines, "ufw "+specText(c.argv()))
-		}
+// restoreCommands is what restoring ufw snapshot id runs, exactly; nil
+// for no snapshot.
+func (a *Agent) restoreCommands(id string) []string {
+	if id == "" {
+		return nil
+	}
+	lines := []string{"from snapshot " + id + ":"}
+	for _, f := range ufwRuleFiles {
+		lines = append(lines, "write "+filepath.Join(a.src.UFWDir, f))
 	}
 	return append(lines, "ufw reload")
 }
@@ -509,6 +532,8 @@ func deleteBuild(id string) func(fwNow) (fwBuilt, error) {
 		switch {
 		case row.Dir != "in":
 			return fwBuilt{title: title}, errRefuse("Outgoing rules are not changed from the bot.")
+		case spec == nil && n.b.Name() == fwKindFirewalld:
+			return fwBuilt{title: title}, errUsage(fwdNoSpec)
 		case spec == nil:
 			return fwBuilt{title: title}, errUsage("ufw show added does not list this rule, so it is deleted from a shell only.")
 		}
@@ -523,6 +548,9 @@ func deleteBuild(id string) func(fwNow) (fwBuilt, error) {
 // restoreBuild plans restoring snapshot id.
 func (a *Agent) restoreBuild(id string) func(fwNow) (fwBuilt, error) {
 	return func(n fwNow) (fwBuilt, error) {
+		if n.b.Name() != fwKindUFW {
+			return fwBuilt{}, errUsage("restoring a snapshot is offered for ufw only. On firewalld, a reload brings back the permanent rules.")
+		}
 		i := slices.IndexFunc(a.restoreChoices(), func(s fwSnapInfo) bool { return s.id == id })
 		if i < 0 {
 			return fwBuilt{}, errUsage("this snapshot is gone. Open ↩️ Restore previous again.")
@@ -689,15 +717,15 @@ func (a *Agent) runPlan(ctx context.Context, id string) actionResult {
 			text: "⌛ This planned change has expired. Plan it again.", kb: fwBackKB()}
 	}
 	job := fwJob{action: actFwPlan, target: req.title, what: req.title,
-		prepare: func(ctx context.Context, b *ufwBackend, p ufwProbe) fwPrep {
-			if fwGen(p.fw) != req.base {
+		prepare: func(ctx context.Context, b FwBackend, p ufwProbe) fwPrep {
+			if b.Name() != req.backend || fwGen(p.fw) != req.base {
 				return fwPrep{refused: &actionResult{drift: true, driftToast: "The rules changed",
 					text: "⚠️ The rules changed since this change was planned, so nothing was changed. Plan it again.", kb: fwBackKB()}}
 			}
 			after := req.after
 			if req.restore == "" {
-				after = simulate(p.fw, req.plan, a.ufwIPv6())
-			} else if _, err := loadSnap(filepath.Join(a.src.FwDir, req.restore)); err != nil {
+				after = simulate(p.fw, req.plan, a.fwIPv6(b))
+			} else if _, err := b.Load(filepath.Join(a.src.FwDir, req.restore)); err != nil {
 				return fwPrep{fail: &fwFailure{reason: "the snapshot could not be read, so nothing was changed: " + err.Error()}}
 			}
 			ports := a.sshPorts(ctx)
@@ -709,18 +737,18 @@ func (a *Agent) runPlan(ctx context.Context, id string) actionResult {
 		},
 		verify: func(ctx context.Context, before, after ufwProbe) *fwFailure {
 			if !after.manageable() {
-				return &fwFailure{reason: "ufw accepted the change, but the agent could not read the rules back"}
+				return &fwFailure{reason: "the firewall accepted the change, but the agent could not read the rules back"}
 			}
 			ports := a.sshPorts(ctx)
 			if why := sshGuard(before.fw, after.fw, ports, a.adminPeers(ctx, ports)); why != "" {
-				return &fwFailure{reason: "ufw applied the change, but the rules read back fail the SSH check: " + why}
+				return &fwFailure{reason: "the firewall applied the change, but the rules read back fail the SSH check: " + why}
 			}
 			return nil
 		},
 	}
 	if req.restore != "" {
-		job.apply = func(ctx context.Context, b *ufwBackend) (*cmdTrace, error) {
-			snap, err := loadSnap(filepath.Join(a.src.FwDir, req.restore))
+		job.apply = func(ctx context.Context, b FwBackend) (*cmdTrace, error) {
+			snap, err := b.Load(filepath.Join(a.src.FwDir, req.restore))
 			if err != nil {
 				return nil, err
 			}

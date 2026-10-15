@@ -147,24 +147,27 @@ func (a *Agent) firewallScreen(ctx context.Context, _ tgui.Call) tgui.View {
 	if a.src.Runner == nil {
 		return tgui.View{Text: "🛡 Firewall control unavailable in this build."}
 	}
-	return a.firewallFor(ctx, a.probeUFW(ctx))
+	return a.firewallFor(ctx, a.detectFw(ctx))
 }
 
-// renderFirewall renders an already-taken probe as the 🛡 screen, so a
-// change can be verified and displayed from the same reading.
-func (a *Agent) renderFirewall(ctx context.Context, p ufwProbe) (string, telegram.Keyboard) {
-	v := a.firewallFor(ctx, p)
-	v.Rows = append(v.Rows, a.ui.Footer(scrFirewall, tgui.Open(scrFirewall)))
-	return encodeView(v)
-}
-
-// firewallFor renders probe p. Rule-changing buttons appear only in the
-// states the agent can actually act on: open, closed, and
-// active-but-unmanaged. They open a confirm screen; the token on its Yes
-// is what changes the rules.
-func (a *Agent) firewallFor(ctx context.Context, p ufwProbe) tgui.View {
+// firewallFor renders what detection found. Rule-changing buttons appear
+// only in the states the agent can actually act on: ufw or firewalld
+// with port 22 open, closed, or active-but-unmanaged, and no conflict.
+// They open a confirm screen; the token on its Yes is what changes the
+// rules.
+func (a *Agent) firewallFor(ctx context.Context, f fwFound) tgui.View {
 	open := tgui.Button{Label: "🔓 Open port 22", Call: tgui.Call{Act: askFwOpen}}
 	closeBtn := tgui.Button{Label: "🔒 Close port 22", Call: tgui.Call{Act: askFwClose}, Style: "danger"}
+	p := f.ufw
+	switch {
+	case f.kind == fwKindNft || f.kind == fwKindIptables:
+		return readOnlyFwView(f)
+	case f.kind == fwKindFirewalld && !f.p.manageable():
+		return tgui.View{Text: "🛡 <b>Firewall</b> · firewalld\n" + esc(upperFirst(firewalldRefusal(f.p).display())) +
+			"\n" + preBlock(f.p.detail())}
+	case f.b != nil:
+		p = f.p
+	}
 	switch p.state {
 	case fwMissing:
 		return tgui.View{Text: "🛡 <b>Firewall</b>\n" +
@@ -183,18 +186,29 @@ func (a *Agent) firewallFor(ctx context.Context, p ufwProbe) tgui.View {
 	}
 	// The rules and the ways to change them (fwrules.go), then port 22.
 	// Closing SSH is offered only when the owner opted in (Decision 15).
-	row := []tgui.Button{{Label: "↩️ Restore previous", Call: tgui.Open(scrFwRestore)}}
+	// Restoring a snapshot is ufw's: firewalld's own way back is its
+	// permanent configuration.
+	rules := tgui.Button{Label: "📋 Rules", Call: tgui.Open(scrFwRules)}
+	if f.conflict {
+		return tgui.View{Text: a.firewallState(ctx, f) + "\n⚠️ " + esc(upperFirst(fwConflictText)) + ".",
+			Rows: [][]tgui.Button{{rules}}}
+	}
+	var row []tgui.Button
+	if f.kind == fwKindUFW {
+		row = append(row, tgui.Button{Label: "↩️ Restore previous", Call: tgui.Open(scrFwRestore)})
+	}
 	if p.state != fwOpen {
 		row = append(row, open)
 	}
 	if p.state != fwClosed && a.cfg.Firewall.AllowCloseSSH {
 		row = append(row, closeBtn)
 	}
-	return tgui.View{Text: a.firewallState(ctx, p), Rows: [][]tgui.Button{
-		{{Label: "📋 Rules", Call: tgui.Open(scrFwRules)}, {Label: "➕ Open port", Call: tgui.Open(scrFwAdd)},
-			{Label: "🧱 Presets", Call: tgui.Open(scrFwPresets)}},
-		row,
-	}}
+	rows := [][]tgui.Button{{rules, {Label: "➕ Open port", Call: tgui.Open(scrFwAdd)},
+		{Label: "🧱 Presets", Call: tgui.Open(scrFwPresets)}}}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	return tgui.View{Text: a.firewallState(ctx, f), Rows: rows}
 }
 
 // firewallSummary is the one-line firewall state of the Security screen.
@@ -202,7 +216,24 @@ func (a *Agent) firewallSummary(ctx context.Context) string {
 	if a.src.Runner == nil {
 		return "unavailable"
 	}
-	switch a.probeUFW(ctx).state {
+	f := a.detectFw(ctx)
+	switch {
+	case f.conflict:
+		return "ufw + firewalld conflict"
+	case f.kind == fwKindNft || f.kind == fwKindIptables:
+		return f.kind + " (read-only)"
+	case f.kind == fwKindFirewalld:
+		switch f.p.state {
+		case fwOpen:
+			return "firewalld · SSH open"
+		case fwClosed:
+			return "firewalld · SSH closed"
+		case fwUnmanaged:
+			return "firewalld · SSH by target"
+		}
+		return "firewalld unreadable"
+	}
+	switch f.ufw.state {
 	case fwMissing:
 		return "no ufw"
 	case fwUnusable:
@@ -225,12 +256,19 @@ const closeSSHOff = "⛔ <b>Closing the SSH port from Telegram is turned off.</b
 	"Close it from a shell, or set <code>allow_close_ssh = true</code> under <code>[firewall]</code> " +
 	"in the agent's config.toml and restart the agent."
 
-// firewallState describes an active ufw: the first-match verdict for port
-// 22 (the port the buttons act on), any other port sshd accepts on, and
-// Docker-published ports, which bypass ufw's INPUT rules altogether.
-func (a *Agent) firewallState(ctx context.Context, p ufwProbe) string {
+// firewallState describes an active ufw or firewalld: the first-match
+// verdict for port 22 (the port the buttons act on), any other port sshd
+// accepts on, and Docker-published ports, which bypass the firewall's
+// INPUT rules altogether.
+func (a *Agent) firewallState(ctx context.Context, f fwFound) string {
+	p := f.p
 	var b strings.Builder
-	b.WriteString("🛡 <b>Firewall</b> · ufw active\n")
+	if fwd, ok := f.b.(*firewalldBackend); ok {
+		b.WriteString("🛡 <b>Firewall</b> · firewalld · zone <b>" + esc(fwd.zone) + "</b>\n" +
+			"Changes go to the running rules; Keep makes them permanent.\n")
+	} else {
+		b.WriteString("🛡 <b>Firewall</b> · ufw active\n")
+	}
 	if p.fw.policy != "" {
 		b.WriteString("Default incoming policy: <b>" + esc(p.fw.policy) + "</b>\n")
 	}
@@ -270,7 +308,7 @@ func (a *Agent) firewallState(ctx context.Context, p ufwProbe) string {
 		}
 	}
 	fmt.Fprintf(&b, "\nRules: %d (v4 %d · v6 %d)", len(p.fw.rules), len(p.fw.rules)-v6, v6)
-	if w := a.dockerPortsWarning(ctx); w != "" {
+	if w := a.dockerPortsWarning(ctx, f.kind); w != "" {
 		b.WriteString("\n" + w)
 	}
 	return b.String()
@@ -317,9 +355,10 @@ func ruleRef(r fwRule) string {
 }
 
 // dockerPortsWarning names the ports Docker publishes. They are forwarded
-// before ufw's INPUT chain sees them, so ufw rules — including a DENY shown
-// above — do not apply. Empty when Docker is not monitored or unreachable.
-func (a *Agent) dockerPortsWarning(ctx context.Context) string {
+// before the INPUT chain of fw (ufw or firewalld) sees them, so its rules
+// — including a DENY shown above — do not apply. Empty when Docker is not
+// monitored or unreachable.
+func (a *Agent) dockerPortsWarning(ctx context.Context, fw string) string {
 	if a.src.Docker == nil || !a.cfg.Monitors.Docker {
 		return ""
 	}
@@ -335,7 +374,7 @@ func (a *Agent) dockerPortsWarning(ctx context.Context) string {
 		}
 		names = append(names, esc(fmt.Sprintf("%d/%s (%s)", p.Port, p.Proto, p.Container)))
 	}
-	return "⚠️ Docker publishes " + strings.Join(names, ", ") + " — ufw does not filter these."
+	return "⚠️ Docker publishes " + strings.Join(names, ", ") + " — " + fw + " does not filter these."
 }
 
 // ufwInstallHint names the package-manager command for this host's distro,
@@ -392,7 +431,7 @@ func verifySSHPort(p ufwProbe, open bool) *fwFailure {
 		want, word = fwOpen, "open"
 	}
 	if !p.manageable() {
-		return &fwFailure{reason: "ufw accepted the change, but the agent could not read the rules back to confirm port 22 is " + word}
+		return &fwFailure{reason: "the firewall accepted the change, but the agent could not read the rules back to confirm port 22 is " + word}
 	}
 	for _, v6 := range []bool{false, true} {
 		if v6 && !p.fw.hasV6() {
@@ -406,7 +445,7 @@ func verifySSHPort(p ufwProbe, open bool) *fwFailure {
 		if v6 {
 			family = " for IPv6"
 		}
-		reason := "ufw accepted the change, but port 22 is not " + word + family
+		reason := "the firewall accepted the change, but port 22 is not " + word + family
 		if v.rule != nil {
 			reason += ": rule " + strconv.Itoa(v.rule.Num) + " (" + v.rule.Raw + ") matches first"
 		} else {

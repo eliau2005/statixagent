@@ -635,7 +635,11 @@ func specText(args []string) string {
 type fwPlanReq struct {
 	id    string
 	title string // "Open 8080/tcp", plain text
-	plan  fwPlan
+	// backend is the firewall the plan was made for; it runs on no other.
+	backend string
+	plan    fwPlan
+	// cmds is what Apply runs, exactly, for Show commands.
+	cmds []string
 	// restore is the snapshot a restore writes back; plan then only
 	// undoes it by spec.
 	restore string
