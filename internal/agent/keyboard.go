@@ -182,10 +182,21 @@ func slowCallback(data string) (toast string, slow bool) {
 
 // handleCallback routes a button press: the callback data is a command
 // name, executed and rendered into the message the button lives on. Every
-// press from the allowed chat is answered exactly once.
+// press that authorize does not ignore is answered exactly once.
 func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
-	if cb.ChatID != a.cfg.Telegram.ChatID {
-		return // foreign chat: ignore entirely, do not even answer
+	// Foreign chats and impostors are ignored entirely, not even answered.
+	// A press counts as a view only for the navigation views.
+	v := a.authorize(ctx, sender{chatID: cb.ChatID, fromID: cb.FromID, chatType: cb.ChatType}, navViews[cb.Data])
+	if v == ignored {
+		return
+	}
+	if cb.Inaccessible {
+		a.answer(ctx, cb, inaccessibleToast)
+		return
+	}
+	if v == adminOnly {
+		a.answer(ctx, cb, adminOnlyToast)
+		return
 	}
 	if key, ok := a.resolveSnoozeKey(cb.Data); ok {
 		a.engine.Snooze(key, time.Now().Add(time.Hour))

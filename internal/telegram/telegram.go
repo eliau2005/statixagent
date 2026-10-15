@@ -26,6 +26,17 @@ type Update struct {
 	Text     string
 	Date     time.Time // when a text message was sent; zero for callbacks
 	Callback *Callback
+
+	// Sender identity of a text message, for authorization.
+	FromID   int64  // from.id; zero when Telegram sent no user
+	ChatType string // chat.type: private, group, supergroup or channel
+	// Forwarded is set for forwarded and automatically forwarded
+	// messages: their text was written by someone else, earlier.
+	Forwarded bool
+	ViaBot    bool // sent through an inline bot
+	// SenderChat is set when the message was sent on behalf of a chat
+	// (an anonymous group admin or a channel), so from is not a person.
+	SenderChat bool
 }
 
 // Callback is an inline-keyboard button press.
@@ -34,6 +45,12 @@ type Callback struct {
 	ChatID    int64
 	MessageID int64 // the message carrying the keyboard
 	Data      string
+	FromID    int64  // from.id: the user who pressed the button
+	ChatType  string // chat.type of the message carrying the keyboard
+	// Inaccessible is set when Telegram no longer gives the bot the
+	// message (too old or deleted): there is nothing to edit, and with no
+	// message at all the chat is unknown too (ChatID is zero).
+	Inaccessible bool
 }
 
 // Button is one inline-keyboard button; Data is sent back on press.
@@ -380,23 +397,36 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 		"timeout":         int(timeout.Seconds()),
 		"allowed_updates": []string{"message", "callback_query"},
 	}
+	type chat struct {
+		ID   int64  `json:"id"`
+		Type string `json:"type"`
+	}
+	type user struct {
+		ID int64 `json:"id"`
+	}
 	var raw []struct {
 		UpdateID int64 `json:"update_id"`
 		Message  *struct {
-			Text string `json:"text"`
-			Date int64  `json:"date"`
-			Chat struct {
-				ID int64 `json:"id"`
-			} `json:"chat"`
+			Text       string          `json:"text"`
+			Date       int64           `json:"date"`
+			Chat       chat            `json:"chat"`
+			From       *user           `json:"from"`
+			SenderChat *chat           `json:"sender_chat"`
+			ViaBot     *user           `json:"via_bot"`
+			Origin     json.RawMessage `json:"forward_origin"`
+			// forward_date is the pre-7.0 marker, kept for older servers.
+			ForwardDate   int64 `json:"forward_date"`
+			AutoForwarded bool  `json:"is_automatic_forward"`
 		} `json:"message"`
 		CallbackQuery *struct {
 			ID      string `json:"id"`
 			Data    string `json:"data"`
+			From    user   `json:"from"`
 			Message *struct {
 				MessageID int64 `json:"message_id"`
-				Chat      struct {
-					ID int64 `json:"id"`
-				} `json:"chat"`
+				// Date is 0 for an InaccessibleMessage.
+				Date int64 `json:"date"`
+				Chat chat  `json:"chat"`
 			} `json:"message"`
 		} `json:"callback_query"`
 	}
@@ -408,23 +438,47 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout time.Dura
 		u := Update{ID: r.UpdateID}
 		switch {
 		case r.Message != nil:
-			u.ChatID = r.Message.Chat.ID
-			u.Text = r.Message.Text
-			if r.Message.Date > 0 {
-				u.Date = time.Unix(r.Message.Date, 0)
+			m := r.Message
+			u.ChatID = m.Chat.ID
+			u.ChatType = chatType(m.Chat.Type)
+			u.Text = m.Text
+			if m.Date > 0 {
+				u.Date = time.Unix(m.Date, 0)
 			}
-		case r.CallbackQuery != nil && r.CallbackQuery.Message != nil:
+			if m.From != nil {
+				u.FromID = m.From.ID
+			}
+			u.Forwarded = len(m.Origin) > 0 && string(m.Origin) != "null" ||
+				m.ForwardDate != 0 || m.AutoForwarded
+			u.ViaBot = m.ViaBot != nil
+			u.SenderChat = m.SenderChat != nil
+		case r.CallbackQuery != nil:
+			q := r.CallbackQuery
 			u.Callback = &Callback{
-				ID:        r.CallbackQuery.ID,
-				Data:      r.CallbackQuery.Data,
-				ChatID:    r.CallbackQuery.Message.Chat.ID,
-				MessageID: r.CallbackQuery.Message.MessageID,
+				ID:           q.ID,
+				Data:         q.Data,
+				FromID:       q.From.ID,
+				Inaccessible: q.Message == nil || q.Message.Date == 0,
+			}
+			if q.Message != nil {
+				u.Callback.ChatID = q.Message.Chat.ID
+				u.Callback.ChatType = chatType(q.Message.Chat.Type)
+				u.Callback.MessageID = q.Message.MessageID
 			}
 			u.ChatID = u.Callback.ChatID
 		}
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// chatType returns chat.type, or "unknown" when Telegram sent none, so a
+// parsed update never carries the empty type of one built in code.
+func chatType(t string) string {
+	if t == "" {
+		return "unknown"
+	}
+	return t
 }
 
 // maxCallbackData is Telegram's hard limit on inline-button callback_data.

@@ -38,6 +38,11 @@ type Config struct {
 type Telegram struct {
 	Token  string `toml:"token"`
 	ChatID int64  `toml:"chat_id"`
+	// AdminUserIDs, when chat_id is a group, are the Telegram user IDs
+	// allowed to do more than view (commands that change state, and any
+	// button that is not navigation). Empty keeps every member an admin,
+	// with a one-time warning; private chats ignore it.
+	AdminUserIDs []int64 `toml:"admin_user_ids,omitempty"`
 }
 
 // Monitors toggles whole categories on/off.
@@ -275,6 +280,11 @@ func (c Config) Validate() error {
 	}
 	if c.Telegram.ChatID == 0 {
 		errs = append(errs, errors.New("telegram.chat_id is required"))
+	}
+	for i, id := range c.Telegram.AdminUserIDs {
+		if id <= 0 {
+			errs = append(errs, fmt.Errorf("telegram.admin_user_ids[%d] %d is not a user ID", i, id))
+		}
 	}
 	if c.SampleInterval.Duration < time.Second {
 		errs = append(errs, fmt.Errorf("sample_interval %s is below 1s", c.SampleInterval))
