@@ -118,8 +118,9 @@ service). Its outward actions are deliberately narrow:
   only where it is already installed — the agent never installs a package, and
   `/firewall` states that it cannot manage this host's firewall rather than
   acting through a different backend.
-- **Writes** only its config file, its binary (on update), and its start-count
-  state file.
+- **Writes** only its config file, its binary (on update), its start-count
+  state file, and — only when `ssh.trusted_ips` is set — its list of known
+  SSH key fingerprints (`known_keys`, next to the config, `0600`).
 - **Network:** talks to the Telegram Bot API, to GitHub (release checks), and to
   the geo-IP lookup service for SSH source IPs; performs outbound TCP connects
   for `/ping`, port checks, and TLS certificate expiry checks.

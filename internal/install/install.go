@@ -45,9 +45,23 @@ type Result struct {
 }
 
 // Install performs all steps. It is idempotent: re-running overwrites the
-// binary, config, and unit.
+// binary, config, and unit, keeping the existing config's [ssh] table.
 func Install(ctx context.Context, o Options) (Result, error) {
 	var res Result
+
+	// The wizard does not ask about the [ssh] table, so on a re-install the
+	// existing file's settings (hand-edited trusted_ips) are kept rather
+	// than reset. An unreadable existing file stops the install before
+	// anything is touched, instead of silently discarding them.
+	cfgPath := filepath.Join(o.Prefix, ConfigPath)
+	cfg := o.Config
+	if len(cfg.SSH.TrustedIPs) == 0 {
+		prev, err := config.LoadSSH(cfgPath)
+		if err != nil {
+			return res, fmt.Errorf("install: existing config %s: %w (fix it or move it aside, then re-run)", cfgPath, err)
+		}
+		cfg.SSH = prev
+	}
 
 	// 1. Binary.
 	dstBin := filepath.Join(o.Prefix, BinDir, BinName)
@@ -57,8 +71,7 @@ func Install(ctx context.Context, o Options) (Result, error) {
 	res.BinaryPath = dstBin
 
 	// 2. Config (Save enforces 0600 and creates the directory).
-	cfgPath := filepath.Join(o.Prefix, ConfigPath)
-	if err := config.Save(cfgPath, o.Config); err != nil {
+	if err := config.Save(cfgPath, cfg); err != nil {
 		return res, fmt.Errorf("install: config: %w", err)
 	}
 	res.ConfigPath = cfgPath

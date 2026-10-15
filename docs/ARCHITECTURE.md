@@ -143,6 +143,13 @@ stream of messages:
 - **Event alerts** — power loss, reboot, new SSH login, brute-force burst,
   key change, cert expiry, container down / restart-loop — which have no
   threshold and use the cooldown/dedupe machinery only.
+- **Trusted SSH sources** — `ssh.trusted_ips` (addresses or CIDR ranges,
+  parsed once with `net/netip` when the config is decoded; `/0` ranges are
+  rejected) suppresses only the non-root login alert, and only while the
+  brute-force detector holds no recent failures for that source and the key
+  (if any) is already known for that user. The event
+  is still recorded in history and the digest, and failed attempts from
+  those sources still feed the brute-force detector.
 
 ## Update pipeline
 
@@ -174,6 +181,11 @@ goal:
   buffers and is lost on restart.
 - **Update state** is a small start-count file next to the config, used only by
   the rollback guard.
+- **Known SSH keys** (`known_keys` next to the config, only when
+  `ssh.trusted_ips` is set) lists the user + fingerprint pairs seen in key
+  logins. It is rewritten atomically and fsynced when a new pair appears, and
+  lines it cannot parse are kept, so a trusted source logging in with a new
+  key alerts once and not on every restart.
 
 If you are tempted to add a datastore, weigh it against this goal first — see
 [ROADMAP.md](../ROADMAP.md).

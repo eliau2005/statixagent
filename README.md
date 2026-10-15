@@ -86,6 +86,53 @@ SSH visibility is a first-class feature, not an afterthought:
 - **`authorized_keys` change alerts** — the agent hashes root's and every home
   user's key files and alerts when one changes.
 
+#### Trusted IPs
+
+If you log in often from a known address, list it in the config to stop the
+per-login alert for it. Entries can be single IPv4/IPv6 addresses or CIDR
+ranges:
+
+```toml
+[ssh]
+trusted_ips = ["203.0.113.7", "198.51.100.0/24", "2001:db8:42::/48"]
+```
+
+The list is empty by default, which keeps the alert-on-every-login behavior.
+Invalid entries stop the agent at startup with an error naming the entry, and
+so do ranges that would trust everything (`0.0.0.0/0`, `::/0`) or IPv4-mapped
+ranges shorter than `/96`.
+
+A suppressed login still appears in `/ssh history` and the daily digest; only
+the push is skipped. Some logins from a trusted address still alert:
+
+- **root** logins always raise the `ROOT SSH login` alert;
+- a key login with a key that user has never logged in with before raises a
+  `SSH login with new key` alert (once per user and key; see below);
+- a login from an address that failed to authenticate within the last two
+  minutes alerts as usual, since a success right after failures is worth a
+  look;
+- failed attempts are never exempt, so a burst of failures from a trusted
+  address still raises the brute-force alert.
+
+To recognise new keys, the agent remembers the user and SHA256 fingerprint of
+key logins in `/etc/statix-agent/known_keys` (`0600`, one `user fingerprint`
+per line). The file is only used when `trusted_ips` is set. Keys from logins
+that alert anyway (untrusted sources, root) are learned straight away; a new
+key from a trusted source is learned only once its alert has been delivered,
+so a snoozed or undelivered alert fires again on the next login. SSH history is
+not kept across restarts, so there is nothing to learn from on the first
+start: after upgrading, the first key login per user and key from a trusted
+address alerts once, and later ones stay quiet. Deleting the file resets this.
+Unreadable lines are skipped with a log message and kept in the file.
+Password and keyboard-interactive logins carry no fingerprint and stay
+suppressed from trusted addresses.
+
+The source must be logged as an IP address: if sshd logs hostnames
+(`UseDNS yes`), the trusted list cannot match and the agent logs why. Edit
+`/etc/statix-agent/config.toml` and restart the service
+(`systemctl restart statix-agent`) to apply changes; re-running the installer
+keeps the existing `[ssh]` settings.
+
 ### Alerts and remediation
 
 Alerts arrive as push messages — you never have to ask for them:
@@ -263,7 +310,8 @@ The decentralized design has deliberate costs:
   servers is not seen as one pattern.
 - **No aggregated view** — an "all servers" query means asking each bot.
 - **History is in memory** — a restart loses SSH/alert history; there is no
-  database, by design.
+  database, by design. Only the small list of known SSH key fingerprints is
+  kept on disk, and only when `ssh.trusted_ips` is set.
 
 ## Roadmap
 

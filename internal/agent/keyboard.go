@@ -64,7 +64,7 @@ func (a *Agent) alertKeyboard(key string) telegram.Keyboard {
 	prefix, _, _ := strings.Cut(key, ":")
 	var row []telegram.Button
 	switch prefix {
-	case "ssh-login", "ssh-brute", "keys":
+	case "ssh-login", "ssh-newkey", "ssh-brute", "keys":
 		row = []telegram.Button{
 			{Text: "👥 Sessions", Data: "ssh"},
 			{Text: "🚫 Fails", Data: "ssh_fails"},
@@ -99,13 +99,16 @@ func (a *Agent) alertKeyboard(key string) telegram.Keyboard {
 	return telegram.Keyboard{row}
 }
 
-// pushAlert renders and sends an alert with its context buttons.
-func (a *Agent) pushAlert(ctx context.Context, al alert.Alert) {
+// pushAlert renders and sends an alert with its context buttons, returning
+// the send error (already logged) for callers that act on delivery.
+func (a *Agent) pushAlert(ctx context.Context, al alert.Alert) error {
 	a.noteAlert(al)
 	html := bot.AlertMsg(a.src.Hostname, al)
-	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, a.alertKeyboard(al.Key)); err != nil {
+	_, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, a.alertKeyboard(al.Key))
+	if err != nil {
 		log.Printf("agent: alert push failed: %v", err)
 	}
+	return err
 }
 
 // stashKB lets a handler attach a custom keyboard to its pending reply.
