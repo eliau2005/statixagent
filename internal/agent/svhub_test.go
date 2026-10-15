@@ -79,6 +79,10 @@ type fakeEngine struct {
 	cts      []map[string]any
 	inspect  map[string]string
 	requests []string
+	// posts records the actions (svaction.go), answered 204; logs is
+	// every container's log output.
+	posts []string
+	logs  string
 }
 
 func (f *fakeEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +90,11 @@ func (f *fakeEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, r.URL.RequestURI())
 	switch {
+	case r.Method == http.MethodPost:
+		f.posts = append(f.posts, r.URL.RequestURI())
+		w.WriteHeader(http.StatusNoContent)
+	case strings.HasSuffix(r.URL.Path, "/logs"):
+		fmt.Fprint(w, f.logs)
 	case r.URL.Path == "/containers/json":
 		json.NewEncoder(w).Encode(f.cts)
 	case strings.HasSuffix(r.URL.Path, "/stats"):

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -358,5 +359,32 @@ func TestFirewallConfig(t *testing.T) {
 	}
 	if !got.Firewall.AllowCloseSSH || got.Firewall.TrialSeconds != DefaultTrialSeconds {
 		t.Errorf("loaded firewall = %+v", got.Firewall)
+	}
+}
+
+func TestActions(t *testing.T) {
+	if d := Default().Actions; d.Enabled || len(d.Allow) != 0 {
+		t.Errorf("default actions = %+v, want off with no allow list", d)
+	}
+	c := validConfig()
+	c.Actions.Allow = []string{"nginx", "postgresql.service", "web_1", "getty@tty1.service", "-host", "", "a b", "x;y"}
+	err := c.Validate()
+	for i := range 8 {
+		reported := err != nil && strings.Contains(err.Error(), fmt.Sprintf("actions.allow[%d]", i))
+		if reported != (i >= 4) {
+			t.Errorf("Validate = %v: entry %d reported = %v", err, i, reported)
+		}
+	}
+
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[telegram]\ntoken = \"t\"\nchat_id = 1\n[actions]\nenabled = true\nallow = [\"nginx\", \"web\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if want := (Actions{Enabled: true, Allow: []string{"nginx", "web"}}); !reflect.DeepEqual(got.Actions, want) {
+		t.Errorf("actions = %+v, want %+v", got.Actions, want)
 	}
 }

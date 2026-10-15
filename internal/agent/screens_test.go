@@ -380,6 +380,9 @@ func TestCallHomeToCPUAndBack(t *testing.T) {
 // Every screen is reachable by button from Home.
 func TestEveryScreenReachable(t *testing.T) {
 	a := screenAgent(t, &fakeSender{})
+	// The logs screens open from the first unit and container listed,
+	// once service actions allow them.
+	a.cfg.Actions = config.Actions{Enabled: true, Allow: []string{"postgresql", "web"}}
 	seen := map[string]bool{scrHome: true}
 	queue := []tgui.Call{tgui.Open(scrHome)}
 	for len(queue) > 0 {
@@ -607,7 +610,8 @@ func TestUntrustFlow(t *testing.T) {
 
 // The ask acts never act themselves and are refused to group viewers.
 func TestAskActsOnlyAsk(t *testing.T) {
-	for _, data := range []string{"~1fc", "~1fo", "~1up", "~1cc", "~1kk|0123456789abcdef", "~1ut|203.0.113.4"} {
+	for _, data := range []string{"~1fc", "~1fo", "~1up", "~1cc", "~1kk|0123456789abcdef", "~1ut|203.0.113.4",
+		"~1ua|restart|0123456789abcdef", "~1ca|stop|0123456789ab"} {
 		send := &fakeSender{}
 		a, _ := authAgent(t, send, -100, 7)
 		var ran []string

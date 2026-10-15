@@ -227,6 +227,10 @@ func buildSources(ctx context.Context, cfg config.Config, cfgPath string) agent.
 	if cfg.Monitors.Docker {
 		if _, err := os.Stat("/var/run/docker.sock"); err == nil {
 			src.Docker = dockermon.NewUnixSocket("/var/run/docker.sock")
+			// Service actions must never stop the agent's own container.
+			cgroup, _ := os.ReadFile("/proc/self/cgroup")
+			mounts, _ := os.ReadFile("/proc/self/mountinfo")
+			src.SelfContainer = dockermon.SelfID(string(cgroup), string(mounts))
 		}
 	}
 	return src

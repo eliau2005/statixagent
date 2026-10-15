@@ -1,0 +1,5 @@
+⚠️ <b>Restart postgresql.service?</b>
+Active connections will drop.
+Expires in 2 min.
+--- keyboard ---
+[✅ Yes, restart] → ~1y|<token> (danger)  [❌ Cancel] → ~1n|<token>

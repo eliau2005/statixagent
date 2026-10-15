@@ -1,0 +1,10 @@
+📄 <b>Logs · postgresql.service</b>
+<pre>2026-10-15T14:03:00+0000 web-01
+    postgres[412]: FATAL:
+    &lt;could not&gt; bind &amp; listen
+2026-10-15T14:03:01+0000 web-01
+    systemd[1]: postgresql.servi
+    ce: Failed with result
+    'exit-code'.</pre>
+--- keyboard ---
+[⬅️ Back] → ~1v|ud|9b6164c99187eff9^uw  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|ul|9b6164c99187eff9^uw
