@@ -33,9 +33,10 @@ import (
 //  2. an in-process timer, for hosts without systemd-run;
 //  3. reconciliation at startup, which covers a reboot.
 //
-// The trial lives on disk in <FwDir>/current.json, next to a byte-for-byte
-// snapshot of the rule files in <FwDir>/<id>/. Rollback is idempotent: the
-// hash of the rule files says whether it already happened.
+// The trial lives on disk in <FwDir>/current.json, next to a snapshot of
+// the rules in <FwDir>/<id>/: ufw's rule files byte for byte, or
+// firewalld's zone. Rollback is idempotent: the hash of the rules says
+// whether it already happened.
 
 // Trial button actions, as the audit log records them.
 const (
@@ -70,6 +71,7 @@ type fwTrialRecord struct {
 	ID       string    `json:"id"`
 	Backend  string    `json:"backend"`
 	Bin      string    `json:"bin,omitempty"`
+	Zone     string    `json:"zone,omitempty"` // firewalld's zone
 	Action   string    `json:"action"`
 	Deadline time.Time `json:"deadline"`
 	PreSHA   string    `json:"pre_sha"`
@@ -114,6 +116,14 @@ func (a *Agent) fwReady() bool {
 
 func (a *Agent) fwBackend(bin string) *ufwBackend {
 	return &ufwBackend{run: a.src.Runner, dir: a.src.UFWDir, bin: bin}
+}
+
+// trialBackend is the backend trial rec changed, as it recorded it.
+func (a *Agent) trialBackend(rec fwTrialRecord) FwBackend {
+	if rec.Backend == fwKindFirewalld {
+		return &firewalldBackend{run: a.src.Runner, bin: rec.Bin, zone: rec.Zone}
+	}
+	return a.fwBackend(rec.Bin)
 }
 
 // trialWindow is N, the configured trial length.
@@ -266,10 +276,10 @@ func (a *Agent) runFirewallTrial(ctx context.Context, open bool) actionResult {
 		return actionResult{refused: true, driftToast: "Closing SSH is turned off", text: closeSSHOff, kb: fwBackKB()}
 	}
 	job := fwJob{action: actFwClose, target: "port " + sshPort, what: "port 22 closed", evidence: !open,
-		prepare: func(ctx context.Context, b *ufwBackend, p ufwProbe) fwPrep {
-			added, t := b.added(ctx)
+		prepare: func(ctx context.Context, b FwBackend, p ufwProbe) fwPrep {
+			added, t := b.Added(ctx)
 			if t != nil {
-				return fwPrep{fail: &fwFailure{cmd: "ufw show added", out: t.out, err: t.err}, trace: t}
+				return fwPrep{fail: &fwFailure{cmd: traceCmd(t), out: t.out, err: t.err}, trace: t}
 			}
 			return fwPrep{plan: sshPortPlan(added, p.fw, open)}
 		},
@@ -292,10 +302,10 @@ type fwJob struct {
 	evidence bool
 	// prepare builds the plan from a fresh reading, under the trial lock;
 	// it may refuse instead (nothing has changed yet).
-	prepare func(ctx context.Context, b *ufwBackend, p ufwProbe) fwPrep
+	prepare func(ctx context.Context, b FwBackend, p ufwProbe) fwPrep
 	// apply, when set, makes the change instead of applying the plan (a
 	// snapshot restore); the plan is then only what undoes it by spec.
-	apply func(ctx context.Context, b *ufwBackend) (*cmdTrace, error)
+	apply func(ctx context.Context, b FwBackend) (*cmdTrace, error)
 	// verify checks a fresh reading after the change; a failure rolls
 	// it back at once.
 	verify func(ctx context.Context, before, after ufwProbe) *fwFailure
@@ -314,10 +324,11 @@ type fwPrep struct {
 // from a confirmed press (confirmPress puts the press in ctx).
 func (a *Agent) runTrial(ctx context.Context, job fwJob) actionResult {
 	res := actionResult{target: job.target}
+	isUFW := true // the sandbox hint fixes ufw's file writes only
 	fail := func(f *fwFailure, trace *cmdTrace, extra string) actionResult {
 		text, kb := a.firewallView(ctx)
 		banner := "❌ <b>Change failed</b>\n<pre>" + esc(f.display()) + "</pre>\n"
-		if hint := sandboxHint(f); hint != "" {
+		if hint := sandboxHint(f); hint != "" && isUFW {
 			banner += hint + "\n"
 		}
 		res.what, res.trace = "Firewall change failed", trace
@@ -340,11 +351,12 @@ func (a *Agent) runTrial(ctx context.Context, job fwJob) actionResult {
 	}
 	a.pruneSnapshots("")
 
-	b := a.fwBackend("")
-	p := b.Probe(ctx)
-	if f := probeRefusal(p); f != nil {
+	found := a.detectFw(ctx)
+	if f := found.refusal(); f != nil {
 		return fail(f, nil, "")
 	}
+	b, p := found.b, found.p
+	isUFW = b.Name() == fwKindUFW
 	prep := job.prepare(ctx, b, p)
 	switch {
 	case prep.refused != nil:
@@ -371,7 +383,8 @@ func (a *Agent) runTrial(ctx context.Context, job fwJob) actionResult {
 	in := intentFrom(ctx)
 	n := a.trialWindow()
 	start := a.now()
-	rec := fwTrialRecord{ID: id, Backend: b.Name(), Bin: b.bin, Action: job.action, What: job.what, Deadline: start.Add(n),
+	bin, zone := b.ident()
+	rec := fwTrialRecord{ID: id, Backend: b.Name(), Bin: bin, Zone: zone, Action: job.action, What: job.what, Deadline: start.Add(n),
 		PreSHA: snap.SHA, ChatID: in.ChatID, MsgID: in.MessageID, ActorID: in.ActorID, Plan: plan, Evidence: job.evidence}
 	if err := saveTrial(a.src.FwDir, rec); err != nil {
 		os.RemoveAll(snapDir)
@@ -404,7 +417,7 @@ func (a *Agent) runTrial(ctx context.Context, job fwJob) actionResult {
 		trace, applyErr = b.Apply(ctx, plan)
 	}
 	a.fwStep("apply")
-	if post, err := b.Hash(); err == nil {
+	if post, err := b.Hash(ctx); err == nil {
 		rec.PostSHA = post
 		if err := saveTrial(a.src.FwDir, rec); err != nil {
 			log.Printf("agent: firewall trial %s: %v", id, err) // an empty post_sha restores the snapshot
@@ -414,9 +427,9 @@ func (a *Agent) runTrial(ctx context.Context, job fwJob) actionResult {
 	if applyErr != nil {
 		out := a.rollbackLocked(ctx, rec)
 		f := &fwFailure{reason: applyErr.Error()}
-		var ue errUFW
-		if errors.As(applyErr, &ue) {
-			f = &fwFailure{cmd: "ufw " + strings.Join(ue.t.argv[1:], " "), out: ue.t.out, err: ue.t.err}
+		var ce errFwCmd
+		if errors.As(applyErr, &ce) {
+			f = &fwFailure{cmd: traceCmd(ce.t), out: ce.t.out, err: ce.t.err}
 		}
 		return fail(f, trace, out.text+"\n")
 	}
@@ -593,12 +606,12 @@ func (a *Agent) countdownTick(id string) {
 // current.json is removed last, and kept when the rollback failed, so a
 // restart tries again.
 func (a *Agent) rollbackLocked(ctx context.Context, rec fwTrialRecord) fwOutcome {
-	b := a.fwBackend(rec.Bin)
-	snap, err := loadSnap(filepath.Join(a.src.FwDir, rec.ID))
+	b := a.trialBackend(rec)
+	snap, err := b.Load(filepath.Join(a.src.FwDir, rec.ID))
 	if err != nil {
 		return fwOutcome{text: "❌ <b>Rollback failed</b>: the snapshot could not be read: " + esc(err.Error())}
 	}
-	cur, herr := b.Hash()
+	cur, herr := b.Hash(ctx)
 	var out fwOutcome
 	switch {
 	case herr == nil && cur == rec.PreSHA:
@@ -610,6 +623,9 @@ func (a *Agent) rollbackLocked(ctx context.Context, rec fwTrialRecord) fwOutcome
 			out = fwOutcome{text: "❌ <b>Rollback failed</b>\n<pre>" + esc(truncate(err.Error(), 300)) + "</pre>"}
 		} else {
 			out = fwOutcome{ok: true, text: "↩️ <b>Rolled back</b> at " + a.now().UTC().Format("15:04:05") + " UTC"}
+			if note := restoreNote(b); note != "" {
+				out.text += "\n" + esc(note)
+			}
 		}
 	}
 	if !out.ok {
@@ -636,15 +652,23 @@ func (a *Agent) revertForeign(ctx context.Context, b FwBackend, rec fwTrialRecor
 			return fwOutcome{text: "❌ <b>Rollback failed</b>: " + esc(why) + ", and restoring the snapshot failed:\n<pre>" +
 				esc(truncate(err.Error(), 300)) + "</pre>"}
 		}
-		return fwOutcome{ok: true, text: "↩️ <b>Rolled back from the snapshot</b>\n" +
+		how := "restored byte for byte"
+		if b.Name() != fwKindUFW {
+			how = "restored"
+		}
+		text := "↩️ <b>Rolled back from the snapshot</b>\n" +
 			"⚠️ The rules were changed on the server during the trial. Undoing only the trial's own changes " +
-			"left SSH at risk (" + esc(why) + "), so the snapshot was restored byte for byte and those changes were lost:\n" +
-			ruleDiff(p.out, snap.Status) + "\nSnapshot " + rec.ID + " is kept for 24 h."}
+			"left SSH at risk (" + esc(why) + "), so the snapshot was " + how + " and those changes were lost:\n" +
+			ruleDiff(p.fw, snap.fw) + "\nSnapshot " + rec.ID + " is kept for 24 h."
+		if note := restoreNote(b); note != "" {
+			text += "\n" + esc(note)
+		}
+		return fwOutcome{ok: true, text: text}
 	}
 	return fwOutcome{ok: true, text: "↩️ <b>Rolled back the trial's own changes</b>\n" +
 		"⚠️ The rules were changed on the server during the trial, so the snapshot was not restored; " +
 		"those changes were kept. Differences from before the trial:\n" +
-		ruleDiff(snap.Status, p.out) + "\nSnapshot " + rec.ID + " is kept for 24 h."}
+		ruleDiff(snap.fw, p.fw) + "\nSnapshot " + rec.ID + " is kept for 24 h."}
 }
 
 // lockoutRisk re-runs the SSH guard on the state after a partial
@@ -665,7 +689,7 @@ func (a *Agent) lockoutRisk(ctx context.Context, p ufwProbe, snap fwSnap, revert
 			return fmt.Sprintf("SSH port %d would block %s", c.local.Port(), peer)
 		}
 	}
-	pre := parseUFWOutput(snap.Status)
+	pre := snap.fw
 	for _, port := range ports {
 		for _, v6 := range []bool{false, true} {
 			if v6 && !pre.hasV6() {
@@ -685,10 +709,10 @@ func reachable(v portVerdict) bool {
 }
 
 // ruleDiff renders the rows only in from as "−" and only in to as "+".
-func ruleDiff(from, to string) string {
-	rows := func(s string) []string {
+func ruleDiff(from, to ufwStatus) string {
+	rows := func(s ufwStatus) []string {
 		var out []string
-		for _, r := range parseUFWOutput(s).rules {
+		for _, r := range s.rules {
 			out = append(out, r.Raw)
 		}
 		return out
@@ -796,7 +820,7 @@ func (a *Agent) keepTrial(ctx context.Context, id string) actionResult {
 				"Open a new SSH session first, then tap Keep.", kb: kb}
 	}
 	a.stopLayer1(ctx, rec)
-	if err := a.fwBackend(rec.Bin).Commit(ctx, rec.Plan); err != nil {
+	if err := a.trialBackend(rec).Commit(ctx, rec.Plan); err != nil {
 		return actionResult{target: "trial " + id, what: "Keep failed", text: "❌ " + esc(err.Error()), kb: fwBackKB()}
 	}
 	if err := removeTrial(a.src.FwDir); err != nil {

@@ -1350,8 +1350,10 @@ func TestFirewallMissingUFW(t *testing.T) {
 		t.Errorf("raw exec error leaked into the view: %q", text)
 	}
 	assertNoFirewallActions(t, kb)
-	// Every candidate path is probed before declaring the binary missing.
-	if len(runner.calls) != len(ufwPaths) {
+	// Every candidate path is probed before declaring the binary missing;
+	// then the other firewalls are looked for, each once per path.
+	want := len(ufwPaths) + len(firewalldPaths) + len(nftPaths) + len(iptablesPaths)
+	if len(runner.calls) != want || !slices.Equal(runner.calls[len(ufwPaths)-1], []string{ufwPaths[len(ufwPaths)-1], "status"}) {
 		t.Errorf("probe calls = %v, want one per candidate path", runner.calls)
 	}
 }
@@ -1379,7 +1381,7 @@ func TestFirewallMissingUFWBlocksChange(t *testing.T) {
 		t.Errorf("systemd hint must not fire on a missing binary: %q", last.html)
 	}
 	for _, c := range runner.calls {
-		if len(c) < 2 || c[1] != "status" {
+		if probe := strings.Join(c[1:], " "); probe != "status" && probe != "--state" && probe != "list ruleset" && probe != "-S" {
 			t.Errorf("no rule change may run without ufw: %v", runner.calls)
 		}
 	}
