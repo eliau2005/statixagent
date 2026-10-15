@@ -219,7 +219,8 @@ func TestRetryOnceOn429(t *testing.T) {
 	}{
 		{"getUpdates", func(c *Client) error { _, err := c.GetUpdates(ctx, 0, time.Second); return err }},
 		{"deleteMessages", func(c *Client) error { return c.DeleteMessages(ctx, 42, []int64{1}) }},
-		{"setMyCommands", func(c *Client) error { return c.SetMyCommands(ctx, []BotCommand{{Command: "status"}}) }},
+		{"setMyCommands", func(c *Client) error { return c.SetMyCommands(ctx, []BotCommand{{Command: "status"}}, ChatScope(42)) }},
+		{"deleteMyCommands", func(c *Client) error { return c.DeleteMyCommands(ctx, DefaultScope) }},
 	}
 	for _, tc := range notRetried {
 		t.Run(tc.method, func(t *testing.T) {

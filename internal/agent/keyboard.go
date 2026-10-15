@@ -19,7 +19,9 @@ import (
 // navViews are the commands reachable from the navigation keyboard. A reply
 // to any of them carries the keyboard, and pressing a button edits the same
 // message into the chosen view — the chat stays a single live dashboard
-// instead of a scroll of stale reports.
+// instead of a scroll of stale reports. It is also the allowlist of router
+// commands a button may run: callback data is never handed to the router
+// otherwise, so forged data cannot reach a command meant to be typed.
 var navViews = map[string]bool{
 	"status": true, "cpu": true, "mem": true, "disk": true, "net": true,
 	"temp": true, "battery": true, "services": true, "docker": true, "ssh": true,
@@ -52,11 +54,36 @@ func navKeyboard(active string) telegram.Keyboard {
 	return kb
 }
 
-// updateKeyboard is attached to "new version available" messages.
+// Confirm buttons of the update and clear-chat prompts. Each Yes press is
+// authorized again on its own, like any other button.
+const (
+	cbUpdateYes = "upd_yes"
+	cbClearYes  = "clr_yes"
+	cbClearNo   = "clr_no"
+)
+
+// updateKeyboard is attached to "new version available" messages: the
+// offer itself is the confirm, so Install runs the update.
 func updateKeyboard() telegram.Keyboard {
 	return telegram.Keyboard{{
-		{Text: "⬇️ Install now", Data: "update_confirm"},
+		{Text: "⬇️ Install now", Data: cbUpdateYes},
 		{Text: "Later", Data: "dismiss"},
+	}}
+}
+
+// updateConfirmKeyboard answers a typed /update_confirm.
+func updateConfirmKeyboard() telegram.Keyboard {
+	return telegram.Keyboard{{
+		{Text: "✅ Yes, install", Data: cbUpdateYes},
+		{Text: "❌ Cancel", Data: "dismiss"},
+	}}
+}
+
+// clearConfirmKeyboard answers a typed /clear_chat.
+func clearConfirmKeyboard() telegram.Keyboard {
+	return telegram.Keyboard{{
+		{Text: "✅ Yes, clear", Data: cbClearYes},
+		{Text: "❌ Cancel", Data: cbClearNo},
 	}}
 }
 
@@ -165,6 +192,10 @@ const failedToast = "failed — see message"
 // the pressed one changing.
 const editFailedToast = "Couldn't update; sent as new message"
 
+// outdatedToast answers a press whose data no current button emits: a
+// button from an older version, or forged data such as a bare clear_chat.
+const outdatedToast = "This button is outdated. Send /status for a fresh view."
+
 // slowCallback reports presses whose work can take seconds (ufw, pkill,
 // the Docker API, the updater) and the toast to answer them with before
 // that work starts, so the client spinner stops at once.
@@ -174,8 +205,10 @@ func slowCallback(data string) (toast string, slow bool) {
 		return "Working…", true
 	case data == "docker":
 		return "", true
-	case data == "update_confirm":
+	case data == cbUpdateYes:
 		return "Updating…", true
+	case data == cbClearYes:
+		return "Clearing…", true
 	}
 	return "", false
 }
@@ -233,6 +266,7 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	}
 	handlers := []func(context.Context, string) (string, telegram.Keyboard, string, bool){
 		a.handleFirewallCallback, a.handleSSHCallback, a.handleSettingsCallback, a.handleWatchCallback,
+		a.handleConfirmCallback,
 	}
 	for _, h := range handlers {
 		if text, kb, toast, handled := h(ctx, cb.Data); handled {
@@ -240,18 +274,37 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 			return
 		}
 	}
-	reply, ok := a.router.Invoke(ctx, cb.Data, nil)
+	// Only the views a button emits reach the router; anything else,
+	// including the old update_confirm and a forged clear_chat, is refused.
+	reply, ok := "", navViews[cb.Data]
+	if ok {
+		reply, ok = a.router.Invoke(ctx, cb.Data, nil)
+	}
 	if !ok {
+		log.Printf("agent: refusing callback data of %d bytes that no button emits", len(cb.Data))
 		if !answered {
-			a.answer(ctx, cb, "unknown action")
+			a.answer(ctx, cb, outdatedToast)
 		}
 		return
 	}
-	var kb telegram.Keyboard
-	if navViews[cb.Data] {
-		kb = navKeyboard(cb.Data)
+	a.finishCallback(ctx, cb, answered, reply, navKeyboard(cb.Data), "")
+}
+
+// handleConfirmCallback runs the Yes and Cancel buttons of the update and
+// clear-chat prompts.
+func (a *Agent) handleConfirmCallback(ctx context.Context, data string) (string, telegram.Keyboard, string, bool) {
+	switch data {
+	case cbUpdateYes:
+		return a.applyUpdate(ctx), nil, "", true
+	case cbClearYes:
+		// The sweep deletes the prompt too, so the outcome is a new
+		// message rather than an edit.
+		a.push(ctx, a.clearChat(ctx))
+		return "", nil, "", true
+	case cbClearNo:
+		return "Chat left as it is.", nil, "", true
 	}
-	a.finishCallback(ctx, cb, answered, reply, kb, "")
+	return "", nil, "", false
 }
 
 // finishCallback is the one edit path for button presses. It renders text

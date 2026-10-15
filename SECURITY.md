@@ -62,7 +62,8 @@ compromised Telegram account, or a compromised release-signing key.
   (read-only commands and navigation buttons). Without it, every member keeps
   full control and the bot warns once per start.
 - State-changing actions require an explicit, separate confirmation:
-  - `/update` only *checks*; installing requires `/update_confirm`.
+  - `/update` only *checks*; installing requires `/update_confirm` and a
+    tap on its Yes button. `/clear_chat` asks the same way.
   - `/firewall` presents a mandatory confirmation screen before changing a rule.
   - SSH session disconnect buttons open a confirmation screen before the kick.
   - The **🤝 Trust this IP** button on a plain SSH login alert opens a

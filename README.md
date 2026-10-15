@@ -201,8 +201,8 @@ inline keyboard so you can navigate by tapping instead of typing.
 | `/watching` | everything watched, managed with buttons |
 | `/settings` | alert thresholds and digest schedule, tuned with buttons |
 | `/services_scan` `/ports_scan` | discover candidates to watch |
-| `/update` | check for a new release · `/update_confirm` installs it |
-| `/clear_chat` | delete recent messages |
+| `/update` | check for a new release · `/update_confirm` asks, then installs it |
+| `/clear_chat` | delete recent messages (asks first) |
 | `/help` | grouped command reference |
 
 The Live button animates the latest regular sampler snapshot. It does not take
@@ -234,7 +234,9 @@ Full details are in [SECURITY.md](SECURITY.md).
 - The bot token lives in `/etc/statix-agent/config.toml`, written atomically
   with `0600` permissions.
 - Commands are accepted only from the configured chat ID; state-changing
-  actions (`/update_confirm`, `/firewall`) require an explicit confirmation.
+  actions (`/update_confirm`, `/clear_chat`, `/firewall`) require an explicit
+  confirmation. The command menu is shown in that chat only. Buttons can only
+  run what the bot's own keyboards emit; any other callback data is refused.
   In a private chat the sender must be the chat's own user. Forwarded
   messages, messages sent via an inline bot and messages sent on behalf of a
   chat (anonymous group admins, channels) are ignored.

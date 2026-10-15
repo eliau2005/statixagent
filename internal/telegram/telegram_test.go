@@ -53,7 +53,8 @@ func TestTransportErrorRedactsToken(t *testing.T) {
 		{"editMessageReplyMarkup", func() error { return c.EditMessageMarkup(ctx, 42, 1, nil) }},
 		{"answerCallbackQuery", func() error { return c.AnswerCallback(ctx, "cb", "ok") }},
 		{"deleteMessages", func() error { return c.DeleteMessages(ctx, 42, []int64{1}) }},
-		{"setMyCommands", func() error { return c.SetMyCommands(ctx, []BotCommand{{Command: "status"}}) }},
+		{"setMyCommands", func() error { return c.SetMyCommands(ctx, []BotCommand{{Command: "status"}}, ChatScope(42)) }},
+		{"deleteMyCommands", func() error { return c.DeleteMyCommands(ctx, DefaultScope) }},
 		{"getUpdates", func() error { _, err := c.GetUpdates(ctx, 0, time.Second); return err }},
 	}
 	for _, tc := range calls {
@@ -312,7 +313,7 @@ func TestSetMyCommands(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
-	err := c.SetMyCommands(context.Background(), []BotCommand{{Command: "status", Description: "dashboard"}})
+	err := c.SetMyCommands(context.Background(), []BotCommand{{Command: "status", Description: "dashboard"}}, ChatScope(-100))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,6 +321,30 @@ func TestSetMyCommands(t *testing.T) {
 	first := cmds[0].(map[string]any)
 	if first["command"] != "status" || first["description"] != "dashboard" {
 		t.Errorf("payload = %+v", got)
+	}
+	scope, _ := got["scope"].(map[string]any)
+	if scope["type"] != "chat" || scope["chat_id"] != float64(-100) {
+		t.Errorf("scope = %+v", got["scope"])
+	}
+}
+
+func TestDeleteMyCommandsDefaultScope(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/deleteMyCommands" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, `{"ok":true,"result":true}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+	if err := c.DeleteMyCommands(context.Background(), DefaultScope); err != nil {
+		t.Fatal(err)
+	}
+	scope, _ := got["scope"].(map[string]any)
+	if len(scope) != 1 || scope["type"] != "default" {
+		t.Errorf("scope = %+v, want only type default", got["scope"])
 	}
 }
 

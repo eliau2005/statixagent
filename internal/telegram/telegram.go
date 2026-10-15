@@ -384,9 +384,30 @@ type BotCommand struct {
 	Description string `json:"description"`
 }
 
-// SetMyCommands registers the command menu shown by Telegram clients.
-func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand) error {
-	return c.call(ctx, "setMyCommands", map[string]any{"commands": commands}, nil)
+// CommandScope selects which chats see a command menu (BotCommandScope).
+type CommandScope struct {
+	Type   string `json:"type"`
+	ChatID int64  `json:"chat_id,omitempty"`
+}
+
+// DefaultScope is the menu every chat without a narrower scope sees.
+var DefaultScope = CommandScope{Type: "default"}
+
+// ChatScope is the menu of one chat only.
+func ChatScope(chatID int64) CommandScope {
+	return CommandScope{Type: "chat", ChatID: chatID}
+}
+
+// SetMyCommands registers the command menu shown by Telegram clients in
+// the given scope.
+func (c *Client) SetMyCommands(ctx context.Context, commands []BotCommand, scope CommandScope) error {
+	return c.call(ctx, "setMyCommands", map[string]any{"commands": commands, "scope": scope}, nil)
+}
+
+// DeleteMyCommands removes the command menu of the given scope, so clients
+// fall back to a broader one (none, for the default scope).
+func (c *Client) DeleteMyCommands(ctx context.Context, scope CommandScope) error {
+	return c.call(ctx, "deleteMyCommands", map[string]any{"scope": scope}, nil)
 }
 
 // GetUpdates long-polls for new messages and button presses after offset.

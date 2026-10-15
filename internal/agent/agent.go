@@ -37,7 +37,8 @@ type Sender interface {
 	EditMessageMarkup(ctx context.Context, chatID, messageID int64, kb telegram.Keyboard) error
 	AnswerCallback(ctx context.Context, callbackID, text string) error
 	DeleteMessages(ctx context.Context, chatID int64, ids []int64) error
-	SetMyCommands(ctx context.Context, commands []telegram.BotCommand) error
+	SetMyCommands(ctx context.Context, commands []telegram.BotCommand, scope telegram.CommandScope) error
+	DeleteMyCommands(ctx context.Context, scope telegram.CommandScope) error
 }
 
 // Updates is the inbound Telegram surface; *telegram.Client implements it.
@@ -282,9 +283,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.src.Docker != nil && a.cfg.Monitors.Docker {
 		loop("docker", a.dockerLoop)
 	}
-	if err := a.send.SetMyCommands(ctx, commandMenu); err != nil {
-		log.Printf("agent: setMyCommands: %v", err)
-	}
+	a.registerCommands(ctx)
 	hello := fmt.Sprintf("✅ <b>statix-agent started</b> on %s", a.src.Hostname)
 	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, hello, telegram.Keyboard{{
 		{Text: "📊 Status", Data: "status"},
@@ -856,21 +855,12 @@ func (a *Agent) buildRouter() *bot.Router {
 	// Direct aliases for alert action buttons (callback data is one token).
 	r.Handle("ssh_history", func(ctx context.Context, _ []string) string { return a.sshHistoryView() })
 	r.Handle("ssh_fails", func(ctx context.Context, _ []string) string { return a.sshFailsView() })
-	applyUpdate := func(ctx context.Context) string {
-		if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
-			return "Self-update is not configured in this build."
-		}
-		if err := a.src.UpdateApply(ctx); err != nil {
-			return "Update failed: " + esc(err.Error())
-		}
-		return "Updating — the agent will restart."
-	}
 	r.Handle("update", func(ctx context.Context, args []string) string {
 		if a.src.UpdateCheck == nil {
 			return "Self-update is not configured in this build."
 		}
 		if len(args) > 0 && strings.EqualFold(args[0], "confirm") {
-			return applyUpdate(ctx) // legacy "/update confirm" form
+			return a.updatePrompt() // legacy "/update confirm" form
 		}
 		ver, available, err := a.src.UpdateCheck(ctx)
 		if err != nil {
@@ -881,27 +871,56 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		return "New version available: <b>" + esc(ver) + "</b>\nTap /update_confirm to install."
 	})
+	// Typed /update_confirm and /clear_chat only ask: the action runs from
+	// the Yes button, which goes through authorize again when pressed.
 	r.Handle("update_confirm", func(ctx context.Context, _ []string) string {
-		return applyUpdate(ctx)
+		return a.updatePrompt()
 	})
 	r.Handle("clear_chat", func(ctx context.Context, _ []string) string {
-		chatID := a.cfg.Telegram.ChatID
-		anchor, err := a.send.SendMessageID(ctx, chatID, "🧹")
-		if err != nil {
-			return "Could not clear: " + esc(err.Error())
-		}
-		ids := make([]int64, 0, 301)
-		for id := anchor; id > anchor-301 && id > 0; id-- {
-			ids = append(ids, id)
-		}
-		if err := a.send.DeleteMessages(ctx, chatID, ids); err != nil {
-			return "Could not clear: " + esc(err.Error())
-		}
-		return "🧹 cleared"
+		a.stashKB(clearConfirmKeyboard())
+		return "🧹 <b>Delete recent messages?</b>\nThe last 300 messages in this chat are deleted (Telegram only allows it for messages under 48 hours old)."
 	})
 	a.registerWatchHandlers(r)
 	a.registerTrustHandlers(r)
 	return r
+}
+
+// updatePrompt asks before installing an update; the Yes button runs it.
+func (a *Agent) updatePrompt() string {
+	if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
+		return "Self-update is not configured in this build."
+	}
+	a.stashKB(updateConfirmKeyboard())
+	return "⬇️ <b>Install the update?</b>\nThe agent will restart."
+}
+
+// applyUpdate installs the update; the agent restarts on success.
+func (a *Agent) applyUpdate(ctx context.Context) string {
+	if a.src.UpdateCheck == nil || a.src.UpdateApply == nil {
+		return "Self-update is not configured in this build."
+	}
+	if err := a.src.UpdateApply(ctx); err != nil {
+		return "Update failed: " + esc(err.Error())
+	}
+	return "Updating — the agent will restart."
+}
+
+// clearChat deletes the last 300 messages of the chat: it sends an anchor
+// to learn the newest message ID and sweeps back from it.
+func (a *Agent) clearChat(ctx context.Context) string {
+	chatID := a.cfg.Telegram.ChatID
+	anchor, err := a.send.SendMessageID(ctx, chatID, "🧹")
+	if err != nil {
+		return "Could not clear: " + esc(err.Error())
+	}
+	ids := make([]int64, 0, 301)
+	for id := anchor; id > anchor-301 && id > 0; id-- {
+		ids = append(ids, id)
+	}
+	if err := a.send.DeleteMessages(ctx, chatID, ids); err != nil {
+		return "Could not clear: " + esc(err.Error())
+	}
+	return "🧹 cleared"
 }
 
 // fmtLatency renders a dial time at a precision that matches its size.
@@ -915,8 +934,23 @@ func fmtLatency(d time.Duration) string {
 	return fmt.Sprintf("%.1fs", d.Seconds())
 }
 
+// registerCommands shows the command menu in the allowed chat only. The
+// chat scope is set first, so a failure never leaves the owner without a
+// menu; only then is the default scope, visible to anyone who opens the
+// bot, deleted. Failures are logged: the menu is a convenience.
+func (a *Agent) registerCommands(ctx context.Context) {
+	if err := a.send.SetMyCommands(ctx, commandMenu, telegram.ChatScope(a.cfg.Telegram.ChatID)); err != nil {
+		log.Printf("agent: setMyCommands: %v", err)
+		return
+	}
+	if err := a.send.DeleteMyCommands(ctx, telegram.DefaultScope); err != nil {
+		log.Printf("agent: deleteMyCommands: %v", err)
+	}
+}
+
 // commandMenu is registered with Telegram so clients show autocomplete and
-// tappable commands.
+// tappable commands. It leaves out /update_confirm: installing starts from
+// /update, and a menu tap should never be one step from an action.
 var commandMenu = []telegram.BotCommand{
 	{Command: "status", Description: "full dashboard"},
 	{Command: "cpu", Description: "CPU usage per core"},
@@ -942,7 +976,6 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "services_scan", Description: "find running services to watch"},
 	{Command: "ports_scan", Description: "find listening ports to watch"},
 	{Command: "update", Description: "check for a new version"},
-	{Command: "update_confirm", Description: "install the update"},
 	{Command: "clear_chat", Description: "delete recent messages"},
 	{Command: "help", Description: "all commands"},
 }
