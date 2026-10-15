@@ -250,7 +250,7 @@ func TestGoldenTrustKeyboards(t *testing.T) {
 	}
 
 	// Each press edits only the keyboard; the golden pins the markup it sets.
-	press := func(name string, msgID int64, data string) {
+	tap := func(name string, msgID int64, data string) {
 		t.Helper()
 		before := len(send.markups)
 		a.handleTrustCallback(ctx, &telegram.Callback{ID: "c", ChatID: 42, MessageID: msgID, Data: data})
@@ -260,12 +260,12 @@ func TestGoldenTrustKeyboards(t *testing.T) {
 		checkGolden(t, "trust__"+name, data, send.markups[len(send.markups)-1].kb)
 	}
 	a.rememberTrustAlert(7, "ssh-login:alice@203.0.113.9")
-	press("ask", 7, cbTrust+"203.0.113.9")
-	press("invalid", 7, cbTrust+"203.0.113.009")
-	press("cancel_known", 7, cbTrustCancel+"203.0.113.9")
-	press("cancel_after_restart", 8, cbTrustCancel+"203.0.113.9")
-	press("confirm", 7, cbTrustConfirm+"203.0.113.9")
-	press("ask_already_trusted", 7, cbTrust+"203.0.113.9")
+	tap("ask", 7, cbTrust+"203.0.113.9")
+	tap("invalid", 7, cbTrust+"203.0.113.009")
+	tap("cancel_known", 7, cbTrustCancel+"203.0.113.9")
+	tap("cancel_after_restart", 8, cbTrustCancel+"203.0.113.9")
+	tap("confirm", 7, cbTrustConfirm+"203.0.113.9")
+	tap("ask_already_trusted", 7, cbTrust+"203.0.113.9")
 
 	checkGolden(t, "trust__login_trusted", "203.0.113.9", a.loginKeyboard("ssh-login:alice@203.0.113.9", "203.0.113.9"))
 }

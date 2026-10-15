@@ -26,6 +26,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
 	"github.com/eliau2005/statixagent/internal/telegram"
+	"github.com/eliau2005/statixagent/internal/tgui"
 )
 
 // Sender is the outbound Telegram surface; *telegram.Client implements it.
@@ -118,6 +119,9 @@ type Agent struct {
 	keys   *sshwatch.KeysWatcher
 	geo    *sshwatch.GeoResolver
 	router *bot.Router
+	// ui holds the tgui screens; callback data starting with "~" is
+	// dispatched through it (see handleCall).
+	ui *tgui.Registry
 
 	// trusted is the merged matcher for ssh.trusted_ips (configTrusted,
 	// static) and the bot-managed trustStore; non-root logins from these
@@ -253,6 +257,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	a.trustStore = store
 	a.rebuildTrust()
 	a.router = a.buildRouter()
+	a.ui = a.buildScreens()
 	return a
 }
 
