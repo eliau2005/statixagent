@@ -25,9 +25,9 @@ func validTTY(tty string) bool {
 	return ttyPattern.MatchString(tty)
 }
 
-// sshSessionsView renders the 👥 screen. The rendered list is snapshotted
-// under a.mu so sk:/skk: callbacks resolve indexes against exactly what the
-// user saw (same pattern as lastServiceScan).
+// sshSessionsView renders the 👥 screen. Kick buttons carry the index plus
+// an identity fingerprint, and sk:/skk: re-resolve them against a fresh
+// Sessions() call, so a shifted list can never retarget a kick.
 func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard) {
 	if a.src.Sessions == nil {
 		return "Session listing unavailable.", navKeyboard("ssh")
@@ -40,10 +40,6 @@ func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard)
 	for _, s := range sessions {
 		geo[s.Host] = a.geo.Lookup(ctx, s.Host)
 	}
-	a.mu.Lock()
-	a.lastSessions = append([]sshwatch.Session(nil), sessions...)
-	a.mu.Unlock()
-
 	var kb telegram.Keyboard
 	if a.src.Runner != nil {
 		for i, s := range sessions {
@@ -52,7 +48,7 @@ func (a *Agent) sshSessionsView(ctx context.Context) (string, telegram.Keyboard)
 			}
 			kb = append(kb, []telegram.Button{{
 				Text: "🚫 Kick " + truncate(s.User+" "+s.TTY, 24),
-				Data: "sk:" + strconv.Itoa(i+1),
+				Data: sessionCallbackData("sk:", i+1, s),
 			}})
 		}
 	}
@@ -69,27 +65,38 @@ func (a *Agent) handleSSHCallback(ctx context.Context, data string) (string, tel
 		return text, kb, "", true
 
 	case strings.HasPrefix(data, "sk:"):
-		idx := strings.TrimPrefix(data, "sk:")
-		s, ok := a.sessionByIndex(idx)
+		n, fp, ok := parseSessionData(strings.TrimPrefix(data, "sk:"))
+		if !ok || fp == "" {
+			// Legacy sk:<n> or garbage: an index alone names no session.
+			text, kb := a.sshSessionsView(ctx)
+			return text, kb, "List refreshed", true
+		}
+		s, ok := a.sessionByIdentity(n, fp)
 		if !ok {
 			text, kb := a.sshSessionsView(ctx)
-			return text, kb, "list changed — refreshed", true
+			return text, kb, "Session changed, refreshed", true
 		}
-		return "⚠️ <b>Disconnect SSH session?</b>\n" +
-				"<b>" + esc(s.User) + "</b> on <code>" + esc(s.TTY) + "</code> from " + esc(s.Host) +
-				" — connected " + bot.Dur(time.Since(s.Since)) + "\n" +
-				"All processes on this terminal get SIGKILL.\n" +
-				"⚠️ If this is <b>your own session</b>, your shell will be cut off. " +
-				"The bot keeps running and you can reconnect (unless port 22 is closed).",
-			telegram.Keyboard{
-				{{Text: "✅ Yes, disconnect", Data: "skk:" + idx}, {Text: "❌ Cancel", Data: "ssh"}},
-			}, "", true
+		text, kb := kickConfirm(n, s)
+		return text, kb, "", true
 
 	case strings.HasPrefix(data, "skk:"):
-		s, ok := a.sessionByIndex(strings.TrimPrefix(data, "skk:"))
+		n, fp, ok := parseSessionData(strings.TrimPrefix(data, "skk:"))
+		if ok && fp == "" {
+			// Legacy skk:<n> from an old keyboard: re-prompt for whatever
+			// sits at that index now, bound to its identity. Never execute.
+			if s, found := a.sessionAt(n); found {
+				text, kb := kickConfirm(n, s)
+				return text, kb, "Please confirm again", true
+			}
+			ok = false
+		}
+		var s sshwatch.Session
+		if ok {
+			s, ok = a.sessionByIdentity(n, fp)
+		}
 		if !ok {
 			text, kb := a.sshSessionsView(ctx)
-			return text, kb, "list changed — refreshed", true
+			return text, kb, "Session changed, refreshed", true
 		}
 		okMsg, errDetail := a.kickSession(ctx, s)
 		text, kb := a.sshSessionsView(ctx)
@@ -103,16 +110,73 @@ func (a *Agent) handleSSHCallback(ctx context.Context, data string) (string, tel
 	return "", nil, "", false
 }
 
-// sessionByIndex resolves a 1-based index against the last rendered list;
-// the world may have changed since the buttons were drawn.
-func (a *Agent) sessionByIndex(arg string) (sshwatch.Session, bool) {
-	n, err := strconv.Atoi(arg)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if err != nil || n < 1 || n > len(a.lastSessions) {
+// kickConfirm renders the disconnect confirmation for session s at 1-based
+// index n; the Yes button is bound to s's identity, not just its position.
+func kickConfirm(n int, s sshwatch.Session) (string, telegram.Keyboard) {
+	return "⚠️ <b>Disconnect SSH session?</b>\n" +
+			"<b>" + esc(s.User) + "</b> on <code>" + esc(s.TTY) + "</code> from " + esc(s.Host) +
+			" — connected " + bot.Dur(time.Since(s.Since)) + "\n" +
+			"All processes on this terminal get SIGKILL.\n" +
+			"⚠️ If this is <b>your own session</b>, your shell will be cut off. " +
+			"The bot keeps running and you can reconnect (unless port 22 is closed).",
+		telegram.Keyboard{
+			{{Text: "✅ Yes, disconnect", Data: sessionCallbackData("skk:", n, s)}, {Text: "❌ Cancel", Data: "ssh"}},
+		}
+}
+
+// sessionFingerprint identifies one login: a later session on the same tty
+// differs at least in start time, so a stale button cannot reach it.
+func sessionFingerprint(s sshwatch.Session) string {
+	return callbackDigest(s.User + "|" + s.TTY + "|" + s.Host + "|" + strconv.FormatInt(s.Since.Unix(), 10))
+}
+
+// sessionCallbackData encodes <prefix><n>:<fp16>; at most ~25 bytes.
+func sessionCallbackData(prefix string, n int, s sshwatch.Session) string {
+	return prefix + strconv.Itoa(n) + ":" + sessionFingerprint(s)
+}
+
+// parseSessionData splits "<n>:<fp16>", or the legacy bare "<n>" with an
+// empty fp.
+func parseSessionData(arg string) (int, string, bool) {
+	idx, fp, hasFP := strings.Cut(arg, ":")
+	n, err := strconv.Atoi(idx)
+	if err != nil || n < 1 {
+		return 0, "", false
+	}
+	if !hasFP {
+		return n, "", true
+	}
+	if len(fp) != 16 {
+		return 0, "", false
+	}
+	for _, c := range fp {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return 0, "", false
+		}
+	}
+	return n, fp, true
+}
+
+// sessionAt reads a fresh listing and returns its 1-based nth session.
+func (a *Agent) sessionAt(n int) (sshwatch.Session, bool) {
+	if a.src.Sessions == nil {
 		return sshwatch.Session{}, false
 	}
-	return a.lastSessions[n-1], true
+	sessions, err := a.src.Sessions()
+	if err != nil || n < 1 || n > len(sessions) {
+		return sshwatch.Session{}, false
+	}
+	return sessions[n-1], true
+}
+
+// sessionByIdentity re-reads the live sessions and returns the nth one only
+// if it is still the login the button was drawn for.
+func (a *Agent) sessionByIdentity(n int, fp string) (sshwatch.Session, bool) {
+	s, ok := a.sessionAt(n)
+	if !ok || sessionFingerprint(s) != fp {
+		return sshwatch.Session{}, false
+	}
+	return s, true
 }
 
 // kickSession sends SIGKILL to every process on the session's terminal.

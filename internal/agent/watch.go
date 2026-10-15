@@ -147,7 +147,7 @@ func (a *Agent) servicesScanView(ctx context.Context) (string, telegram.Keyboard
 		}
 		row = append(row, telegram.Button{
 			Text: "➕ " + truncate(strings.TrimSuffix(u.name, ".service"), 18),
-			Data: fmt.Sprintf("sa:%d", i+1),
+			Data: watchIndexData("sa:", i, u.name),
 		})
 		if len(row) == 2 {
 			kb = append(kb, row)
@@ -556,11 +556,18 @@ func (a *Agent) handleWatchCallback(ctx context.Context, data string) (string, t
 		return text, kb, "", true
 
 	case strings.HasPrefix(data, "sa:"):
+		// sa:<i>:<fp16> binds the button to the unit name. Legacy sa:<n>
+		// carries only a position, so it just rescans.
+		i, fp, ok := parseWatchIndexData(data, "sa:")
+		if !ok {
+			text, kb := a.servicesScanView(ctx)
+			return text, kb, "List refreshed", true
+		}
 		a.mu.Lock()
 		scan := append([]string(nil), a.lastServiceScan...)
 		a.mu.Unlock()
-		name := resolveByIndex(strings.TrimPrefix(data, "sa:"), scan)
-		if name == "" {
+		name, ok := matchWatchItem(scan, i, fp, len(fp) == 16)
+		if !ok {
 			text, kb := a.servicesScanView(ctx)
 			return text, kb, "stale list — rescanned", true
 		}

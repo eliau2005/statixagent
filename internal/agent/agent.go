@@ -138,11 +138,6 @@ type Agent struct {
 	lastServiceScan []string
 	lastPortScan    []int
 
-	// lastSessions is the SSH session list as last rendered, so sk:/skk:
-	// kick callbacks resolve indexes against what the user saw. Guarded
-	// by mu.
-	lastSessions []sshwatch.Session
-
 	// Live-mode session state (live.go). Guarded by mu; intervals are set
 	// once in New and overridden only by tests. liveDuration serves as a
 	// safety ceiling (default 1h).
