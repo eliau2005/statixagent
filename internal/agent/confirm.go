@@ -102,29 +102,35 @@ func (a *Agent) buildConfirms() map[string]confirmAction {
 	}
 }
 
-// confirmKeyboard is the Yes/Cancel row of a confirm screen. Yes is red,
-// as decoration: its label already says what it does.
-func confirmKeyboard(yesLabel, yes, no string) telegram.Keyboard {
-	return telegram.Keyboard{{{Text: yesLabel, Data: yes, Style: "danger"}, {Text: "❌ Cancel", Data: no}}}
+// confirmRow is the Yes/Cancel row of a confirm screen for nonce. Yes
+// is red, as decoration: its label already says what it does.
+func (a *Agent) confirmRow(yesLabel, nonce string) []tgui.Button {
+	return []tgui.Button{{Label: yesLabel, Call: a.tokens.Yes(nonce), Style: "danger"}, {Label: "❌ Cancel", Call: tgui.No(nonce)}}
+}
+
+// mintToken stores a token for in, audited as requested, and returns its
+// nonce.
+func (a *Agent) mintToken(in tgui.Intent) (string, error) {
+	nonce, err := a.tokens.Mint(in)
+	if err != nil {
+		return "", err
+	}
+	a.writeAudit(auditRecord{Phase: phaseRequested, Action: in.Action, Target: in.Target,
+		ActorID: in.ActorID, ChatID: in.ChatID, MessageID: in.MessageID, NonceHash: nonceHash(nonce)})
+	return nonce, nil
 }
 
 // mintConfirm stores a token for in and returns its keyboard and nonce.
 func (a *Agent) mintConfirm(in tgui.Intent, yesLabel string) (telegram.Keyboard, string, error) {
-	nonce, err := a.tokens.Mint(in)
+	nonce, err := a.mintToken(in)
 	if err != nil {
 		return nil, "", err
 	}
-	yes, err := tgui.Encode(a.tokens.Yes(nonce))
+	kb, err := tgui.View{Rows: [][]tgui.Button{a.confirmRow(yesLabel, nonce)}}.Keyboard()
 	if err != nil {
 		return nil, "", err
 	}
-	no, err := tgui.Encode(tgui.No(nonce))
-	if err != nil {
-		return nil, "", err
-	}
-	a.writeAudit(auditRecord{Phase: phaseRequested, Action: in.Action, Target: in.Target,
-		ActorID: in.ActorID, ChatID: in.ChatID, MessageID: in.MessageID, NonceHash: nonceHash(nonce)})
-	return confirmKeyboard(yesLabel, yes, no), nonce, nil
+	return kb, nonce, nil
 }
 
 // showConfirm edits action id's confirm screen for target into the
@@ -151,23 +157,34 @@ func (a *Agent) showConfirm(ctx context.Context, cb *telegram.Callback, answered
 }
 
 // typedConfirm is showConfirm for a typed command: the prompt is the
-// reply, and its token is bound to the message once reply has sent it.
-func (a *Agent) typedConfirm(ctx context.Context, id, target string) string {
+// reply, and reply binds its token to the message once it is sent. The
+// typed confirms (update, clear chat) fall back to text alone when the
+// action is unavailable.
+func (a *Agent) typedConfirm(ctx context.Context, id, target string) tgui.View {
 	p := a.confirms[id].prompt(ctx, target, false)
 	if p.yes == "" {
-		a.stashKB(p.kb)
-		return p.text
+		return tgui.View{Text: p.text}
 	}
 	in := tgui.Intent{Action: id, Target: target, ActorID: actorFrom(ctx), ChatID: a.cfg.Telegram.ChatID}
-	kb, nonce, err := a.mintConfirm(in, p.yes)
+	nonce, err := a.mintToken(in)
 	if err != nil {
 		log.Printf("agent: %v", err)
-		return mintFailedToast
+		return tgui.View{Text: mintFailedToast}
 	}
-	a.mu.Lock()
-	a.pendingKB, a.pendingNonce = kb, nonce
-	a.mu.Unlock()
-	return p.text
+	return tgui.View{Text: p.text, Rows: [][]tgui.Button{a.confirmRow(p.yes, nonce)}}
+}
+
+// confirmNonce is the nonce of the confirm token v's Yes button carries,
+// or "".
+func confirmNonce(v tgui.View) string {
+	for _, row := range v.Rows {
+		for _, b := range row {
+			if b.Call.Act == tgui.ActYes && len(b.Call.Args) == 1 {
+				return tgui.Nonce(b.Call.Args[0])
+			}
+		}
+	}
+	return ""
 }
 
 type actorKey struct{}

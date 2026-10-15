@@ -1,3 +1,4 @@
 temp
 --- keyboard ---
-[🌡 Temp] → ~1o|tmp  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:temp
+[🌡 Temp] → ~1o|tmp  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|temp  [🔕 8h] → ~1sz|8h|k|temp  [🔕 24h] → ~1sz|24h|k|temp

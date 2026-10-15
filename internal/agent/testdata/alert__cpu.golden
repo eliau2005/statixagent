@@ -1,3 +1,4 @@
 cpu
 --- keyboard ---
-[🔝 Top] → ~1o|top  [🖥 CPU] → ~1o|cpu  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:cpu
+[🔝 Top] → ~1o|top  [🖥 CPU] → ~1o|cpu  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|cpu  [🔕 8h] → ~1sz|8h|k|cpu  [🔕 24h] → ~1sz|24h|k|cpu

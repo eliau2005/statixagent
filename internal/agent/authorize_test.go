@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
@@ -48,7 +49,7 @@ func TestAuthorizeIgnoresRelayedCommands(t *testing.T) {
 	send := &fakeSender{}
 	a, _ := authAgent(t, send, 42)
 	ran := 0
-	a.router.Handle("update_confirm", func(context.Context, []string) string { ran++; return "installing" })
+	a.router.Handle("update_confirm", bot.Text(func(context.Context, []string) string { ran++; return "installing" }))
 
 	base := telegram.Update{ChatID: 42, ChatType: "private", FromID: 42, Text: "/update_confirm"}
 	for name, mod := range map[string]func(*telegram.Update){

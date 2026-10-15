@@ -117,19 +117,28 @@ func (r *Registry) target(c Call) string {
 	return act.Screen
 }
 
-// Show renders the screen c opens. A press of ActOpen renders as ActView,
-// so the buttons of the new message act on it in place.
+// Render builds the view of the screen c opens, for a typed command's
+// reply; ok is false when c names no registered screen. A press of
+// ActOpen renders as ActView, so the buttons of the new message act on
+// it in place.
+func (r *Registry) Render(ctx context.Context, c Call) (View, bool) {
+	s, ok := r.screens[r.target(c)]
+	if !ok {
+		return View{}, false
+	}
+	if c.Act == ActOpen {
+		c.Act = ActView
+	}
+	return s.Render(ctx, c), true
+}
+
+// Show renders the screen c opens, its keyboard encoded.
 func (r *Registry) Show(ctx context.Context, c Call) (Result, error) {
-	id := r.target(c)
-	s, ok := r.screens[id]
+	v, ok := r.Render(ctx, c)
 	if !ok {
 		return Result{Outcome: Outdated, Call: c}, nil
 	}
-	render := c
-	if c.Act == ActOpen {
-		render.Act = ActView
-	}
-	v := s.Render(ctx, render)
+	id := r.target(c)
 	kb, err := v.Keyboard()
 	if err != nil {
 		return Result{Call: c}, fmt.Errorf("screen %q: %w", id, err)

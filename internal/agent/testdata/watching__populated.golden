@@ -1,20 +1,17 @@
-👁 <b>Watching</b>
+👁 <b>Watching</b> · 7 items
 Tap 🗑 to stop watching:
-<pre> 🧩 nginx.service
- 🧩 a-very-long-unit-name-for-truncation@instance.service
- ⚙ postgres
- 🔌 port 443 (&lt;https&gt;)
- 🔌 port 8080
- 🔒 example.com:8443
- 🌐 https://example.com/health?check=…
-</pre>
+<pre>🧩 nginx.service
+🧩 a-very-long-unit-name-for-tru
+    ncation@instance.service
+🧵 postgres
+🔌 443 (&lt;https&gt;)
+🔌 8080
+📜 example.com:8443
+🌐 https://example.com/health?ch
+    eck=1&amp;verbose=true</pre>
 --- keyboard ---
-[🗑 nginx] → sr:0:23376c0b9c578ed7
-[🗑 a-very-long-unit-na…] → sr:1:9c7ceb18443b88fc
-[🗑 postgres] → xr:0:a942b37ccfaf5a81
-[🗑 port 443] → pr:443
-[🗑 port 8080] → pr:8080
-[🗑 example.com:8443] → cr:0:e20821ad3d0279c3
-[🗑 https://example.com…] → hr:0:3b624c863eb828e7
-[👁 Watching] → watching  [🔎 Services] → scan_svc  [🔎 Ports] → scan_port
-[⬅️ Back] → ~1v|set  [🏠 Home] → ~1v|home
+[🗑 nginx] → ~1wr|u|23376c0b9c578ed7|1  [🗑 a-very-long…] → ~1wr|u|9c7ceb18443b88fc|1  [🗑 postgres] → ~1wr|x|a942b37ccfaf5a81|1
+[🗑 443] → ~1wr|p|443|1  [🗑 8080] → ~1wr|p|8080|1  [🗑 example.com…] → ~1wr|c|e20821ad3d0279c3|1
+[🗑 example.com…] → ~1wr|h|3b624c863eb828e7|1
+[🔎 Scan services] → ~1v|scs  [🔎 Scan ports] → ~1v|scp
+[⬅️ Back] → ~1v|set  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|wat

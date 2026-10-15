@@ -1,3 +1,4 @@
 mem
 --- keyboard ---
-[🔝 Top] → ~1o|top  [🧠 Memory] → ~1o|mem  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:mem
+[🔝 Top] → ~1o|top  [🧠 Memory] → ~1o|mem  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|mem  [🔕 8h] → ~1sz|8h|k|mem  [🔕 24h] → ~1sz|24h|k|mem

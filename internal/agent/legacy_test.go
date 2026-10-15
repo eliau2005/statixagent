@@ -2,10 +2,17 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
+
+// watchIndexData is the data of the watch buttons of older versions: a
+// list index bound to the item's fingerprint.
+func watchIndexData(prefix string, i int, item string) string {
+	return fmt.Sprintf("%s%d:%s", prefix, i, callbackDigest(item))
+}
 
 // TestLegacyRuleClaims pins which legacy rule claims every callback datum
 // the other tests press, plus the forged and outdated ones they refuse,
@@ -23,8 +30,8 @@ func TestLegacyRuleClaims(t *testing.T) {
 		{"snz:h", "snooze"},
 		{"snz:cpu", "snooze"},
 		{"snz:", "snooze"},
-		{a.snoozeCallbackData("mem"), "snooze"},
-		{a.snoozeCallbackData("a-very-long-alert-key-that-needs-the-hashed-snooze-form-to-fit-in-64-bytes"), "snooze"},
+		{"snz:d:mem", "snooze"},
+		{"snz:h:" + callbackDigest("a-very-long-alert-key-that-needs-the-hashed-snooze-form-to-fit-in-64-bytes"), "snooze"},
 		// Trust: tipk: and tipc: before tip:.
 		{"tip:10.0.0.7", "trust"},
 		{"tip:10.0.0.0/8", "trust"},

@@ -1,22 +1,15 @@
-👁 <b>Listening, not watched</b> — 14
-Tap ➕ to watch:
-<pre>  1  port 80
-  2  port 443
-  3  port 3000
-  4  port 3001
-  5  port 3002
-  6  port 3003
-  7  port 3004
-  8  port 3005
-  9  port 3006
- 10  port 3007
- 11  port 3008
- 12  port 3009
- … 2 more — /ports_add &lt;port&gt;
-</pre>
+🔎 <b>Listening, not watched</b> · 14 ports · 1/2
+Tap ➕ to watch, or /ports_add &lt;number&gt;:
+<pre> 1 port 80
+ 2 port 443
+ 3 port 3000
+ 4 port 3001
+ 5 port 3002
+ 6 port 3003
+ 7 port 3004
+ 8 port 3005</pre>
 --- keyboard ---
-[➕ 80] → pa:80  [➕ 443] → pa:443  [➕ 3000] → pa:3000
-[➕ 3001] → pa:3001  [➕ 3002] → pa:3002  [➕ 3003] → pa:3003
-[➕ 3004] → pa:3004  [➕ 3005] → pa:3005  [➕ 3006] → pa:3006
-[➕ 3007] → pa:3007  [➕ 3008] → pa:3008  [➕ 3009] → pa:3009
-[👁 Watching] → watching  [🔎 Services] → scan_svc  [🔎 Ports] → scan_port
+[➕ 80] → ~1wa|p|80|1  [➕ 443] → ~1wa|p|443|1  [➕ 3000] → ~1wa|p|3000|1  [➕ 3001] → ~1wa|p|3001|1
+[➕ 3002] → ~1wa|p|3002|1  [➕ 3003] → ~1wa|p|3003|1  [➕ 3004] → ~1wa|p|3004|1  [➕ 3005] → ~1wa|p|3005|1
+[1/2] → ~1v|scp|1  [Next ▶️] → ~1v|scp|2
+[⬅️ Back] → ~1v|wat  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|scp

@@ -135,6 +135,8 @@ type Agent struct {
 	confirms map[string]confirmAction
 	// asks are the "~1" acts that open a confirm screen (screens.go).
 	asks map[string]askAction
+	// acts are the "~1" acts that change the bot's settings (screens.go).
+	acts map[string]configAct
 	// audit records every step of those actions; nil writes nothing.
 	audit *auditLog
 
@@ -175,16 +177,9 @@ type Agent struct {
 	liveInterval time.Duration
 	liveDuration time.Duration
 
-	// pendingKB is set by a handler that wants a custom keyboard on its
-	// reply and consumed by reply(). Safe because updates are processed
-	// sequentially. Guarded by mu.
-	pendingKB telegram.Keyboard
-	// pendingNonce is the confirm token pendingKB carries, bound to the
-	// reply's message once it is sent. Guarded by mu.
-	pendingNonce string
-
-	// snoozeKeys maps truncated SHA-256 digest → alert key for snz:h:<digest> callbacks.
-	// Guarded by mu.
+	// snoozeKeys maps truncated SHA-256 digest → alert key for snooze
+	// buttons whose key is too long to carry (sz|…|h|<digest>, and the
+	// older snz:h:<digest>). Guarded by mu.
 	snoozeKeys map[string]string
 
 	// trend is a ring of recent usage points for sparklines. Guarded by mu.
@@ -281,6 +276,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 	a.tokens = tgui.NewTokens(func() time.Time { return a.now() }, rand.Reader)
 	a.confirms = a.buildConfirms()
 	a.asks = a.buildAsks()
+	a.acts = a.buildActs()
 	a.audit = newAuditLog(src.AuditPath)
 	return a
 }
@@ -321,7 +317,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	hello := fmt.Sprintf("✅ <b>statix-agent started</b> on %s", esc(a.src.Hostname))
 	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, hello, telegram.Keyboard{{
 		{Text: "🏠 Home", Data: callData(tgui.Open(scrHome))},
-		{Text: "👁 Watching", Data: "watching"},
+		{Text: "👁 Watching", Data: callData(tgui.Open(scrWatching))},
 	}}); err != nil {
 		log.Printf("agent: hello: %v", err)
 	}
@@ -732,12 +728,12 @@ func (a *Agent) buildRouter() *bot.Router {
 		case "start", "ssh", "ssl", "http", "update":
 			continue // they take arguments; below
 		}
-		r.Handle(cmd, func(ctx context.Context, _ []string) string { return a.screenReply(ctx, id) })
+		r.Handle(cmd, a.screenCommand(id))
 	}
 	// /start is a new user's first message ever — it must explain what the
 	// bot does on its own and hand over the entry points, not point at docs.
 	// A deep link, /start <view>, opens that view instead.
-	r.Handle("start", func(ctx context.Context, args []string) string {
+	r.Handle("start", func(ctx context.Context, args []string) tgui.View {
 		if len(args) > 0 {
 			return a.screenReply(ctx, a.deepLink(args[0]))
 		}
@@ -755,11 +751,11 @@ func (a *Agent) buildRouter() *bot.Router {
 			fmt.Fprintf(&b, "• 📰 send a daily digest at %02d:00\n", hour)
 		}
 		b.WriteString("\nAlerts carry buttons for the next step. Start here:")
-		_, kb := a.screen(ctx, tgui.Open(scrHome))
-		a.stashKB(kb)
-		return b.String()
+		home := a.screenReply(ctx, scrHome)
+		home.Text = b.String()
+		return home
 	})
-	r.Handle("ssh", func(ctx context.Context, args []string) string {
+	r.Handle("ssh", func(ctx context.Context, args []string) tgui.View {
 		sub := ""
 		if len(args) > 0 {
 			sub = strings.ToLower(args[0])
@@ -772,22 +768,22 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		return a.screenReply(ctx, scrSessions)
 	})
-	r.Handle("ssl", func(ctx context.Context, args []string) string {
+	r.Handle("ssl", func(ctx context.Context, args []string) tgui.View {
 		if len(args) == 0 {
 			return a.screenReply(ctx, scrSSL)
 		}
-		return a.sslView(ctx, args)
+		return tgui.View{Text: a.sslView(ctx, args)}
 	})
-	r.Handle("http", func(ctx context.Context, args []string) string {
+	r.Handle("http", func(ctx context.Context, args []string) tgui.View {
 		if len(args) == 0 {
 			return a.screenReply(ctx, scrHTTP)
 		}
-		return a.httpView(ctx, args)
+		return tgui.View{Text: a.httpView(ctx, args)}
 	})
 	// /ping answers "can this server reach X, and how fast?" — the vantage
 	// point is the VPS itself, which is the question when debugging from
 	// the outside.
-	r.Handle("ping", func(ctx context.Context, args []string) string {
+	r.Handle("ping", bot.Text(func(ctx context.Context, args []string) string {
 		if a.src.Latency == nil {
 			return "Latency checks are not available in this build."
 		}
@@ -800,8 +796,8 @@ func (a *Agent) buildRouter() *bot.Router {
 			return "🏓 " + esc(addr) + " — unreachable: " + esc(err.Error())
 		}
 		return fmt.Sprintf("🏓 %s — <b>%s</b>", esc(addr), fmtLatency(d))
-	})
-	r.Handle("update", func(ctx context.Context, args []string) string {
+	}))
+	r.Handle("update", func(ctx context.Context, args []string) tgui.View {
 		if len(args) > 0 && strings.EqualFold(args[0], "confirm") {
 			return a.typedConfirm(ctx, actUpdate, "agent") // legacy "/update confirm" form
 		}
@@ -810,10 +806,10 @@ func (a *Agent) buildRouter() *bot.Router {
 	// Typed /update_confirm and /clear_chat only ask: the action runs from
 	// the Yes button's confirm token, which goes through authorize again
 	// when pressed and only for the user who typed the command.
-	r.Handle("update_confirm", func(ctx context.Context, _ []string) string {
+	r.Handle("update_confirm", func(ctx context.Context, _ []string) tgui.View {
 		return a.typedConfirm(ctx, actUpdate, "agent")
 	})
-	r.Handle("clear_chat", func(ctx context.Context, _ []string) string {
+	r.Handle("clear_chat", func(ctx context.Context, _ []string) tgui.View {
 		return a.typedConfirm(ctx, actClear, "chat")
 	})
 	a.registerWatchHandlers(r)

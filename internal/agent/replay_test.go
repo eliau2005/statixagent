@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
@@ -58,10 +59,10 @@ func replayAgent(send *fakeSender, fu *fakeUpdates, path string) *Agent {
 // run counter.
 func countHandler(a *Agent, cmd string) *int {
 	n := new(int)
-	a.router.Handle(cmd, func(context.Context, []string) string {
+	a.router.Handle(cmd, bot.Text(func(context.Context, []string) string {
 		*n++
 		return "done"
-	})
+	}))
 	return n
 }
 
@@ -80,10 +81,10 @@ func TestBotLoopPanicDoesNotReplay(t *testing.T) {
 	}}
 	a := replayAgent(send, fu, filepath.Join(t.TempDir(), "tg-offset"))
 	booms := 0
-	a.router.Handle("boom", func(context.Context, []string) string {
+	a.router.Handle("boom", bot.Text(func(context.Context, []string) string {
 		booms++
 		panic("poison update")
-	})
+	}))
 	acts := countHandler(a, "act")
 
 	// Run restarts the loop after a panic; do the same by hand.
@@ -150,11 +151,11 @@ func TestOffsetSavedBeforeStateChange(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "tg-offset")
 			a := replayAgent(&fakeSender{}, &fakeUpdates{}, path)
 			saved := ""
-			a.router.Handle("act", func(context.Context, []string) string {
+			a.router.Handle("act", bot.Text(func(context.Context, []string) string {
 				data, _ := os.ReadFile(path)
 				saved = string(data)
 				return "done"
-			})
+			}))
 			a.offset = tc.u.ID + 1
 			a.handleUpdate(context.Background(), tc.u)
 			data, err := os.ReadFile(path)

@@ -31,7 +31,7 @@ func trustAgent(send *fakeSender, dir string, cfgTrusted ...string) *Agent {
 
 func (a *Agent) cmd(name string, args ...string) string {
 	out, _ := a.router.Invoke(context.Background(), name, args)
-	return out
+	return out.Text
 }
 
 func plainLogin(ip string) string {
@@ -376,7 +376,7 @@ func TestTrustButtonConfirmFlow(t *testing.T) {
 	if got := labels(m.kb[len(m.kb)-1:]); got != "✅ Trusted 10.0.0.7" {
 		t.Errorf("result line = %q", got)
 	}
-	if hasData(m.kb, "tip:") || !hasData(m.kb, "snz:") || !hasData(m.kb, "~1o|ses") || !strings.Contains(labels(m.kb), "📋 Copy IP") {
+	if hasData(m.kb, "tip:") || !hasData(m.kb, "~1sz|") || !hasData(m.kb, "~1o|ses") || !strings.Contains(labels(m.kb), "📋 Copy IP") {
 		t.Errorf("restored keyboard = %s", labels(m.kb))
 	}
 	if n := loginAlerts(a, send, plainLogin("10.0.0.7"), now.Add(time.Minute)); n != 0 {

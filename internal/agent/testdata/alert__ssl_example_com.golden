@@ -1,3 +1,4 @@
 ssl:example.com
 --- keyboard ---
-[📜 Certificates] → ~1o|ssl  [🏠 Home] → ~1o|home  [🔕 1h] → snz:d:ssl:example.com
+[📜 Certificates] → ~1o|ssl  [🏠 Home] → ~1o|home
+[🔕 1h] → ~1sz|1h|k|ssl:example.com  [🔕 8h] → ~1sz|8h|k|ssl:example.com  [🔕 24h] → ~1sz|24h|k|ssl:example.com

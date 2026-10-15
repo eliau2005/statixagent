@@ -16,7 +16,7 @@ func dispatchText(t *testing.T, a *Agent, text string) string {
 	if !ok {
 		t.Fatalf("Dispatch(%q): not handled", text)
 	}
-	return reply
+	return reply.Text
 }
 
 func TestTopCommand(t *testing.T) {

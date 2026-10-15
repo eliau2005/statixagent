@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -279,7 +280,8 @@ func checkButtons(t *testing.T, a *Agent, where string, kb telegram.Keyboard, sc
 				t.Errorf("%s: %q re-encodes as %q", where, b.Data, enc)
 			}
 			_, ask := a.asks[c.Act]
-			if !ask && !a.ui.Known(c.Act) {
+			_, act := a.acts[c.Act]
+			if !ask && !act && !a.ui.Known(c.Act) {
 				t.Errorf("%s: act %q of %q is not registered", where, c.Act, b.Text)
 			}
 			if (c.Act == tgui.ActView || c.Act == tgui.ActOpen) && !slices.Contains(screens, c.Args[0]) {
@@ -292,12 +294,19 @@ func checkButtons(t *testing.T, a *Agent, where string, kb telegram.Keyboard, sc
 	}
 }
 
-// Ask acts and the built-in acts share one namespace.
+// Ask acts, config acts and the built-in acts share one namespace.
 func TestAskActsDistinct(t *testing.T) {
 	a := testAgent(&fakeSender{})
-	for act := range a.asks {
+	acts := slices.Collect(maps.Keys(a.asks))
+	for act := range a.acts {
+		acts = append(acts, act)
+		if _, ask := a.asks[act]; ask {
+			t.Errorf("config act %q is also an ask act", act)
+		}
+	}
+	for _, act := range acts {
 		if a.ui.Known(act) || act == tgui.ActYes || act == tgui.ActNo {
-			t.Errorf("ask act %q collides", act)
+			t.Errorf("act %q collides", act)
 		}
 		if _, err := tgui.Encode(tgui.Call{Act: act}); err != nil {
 			t.Errorf("ask act %q: %v", act, err)
@@ -448,6 +457,7 @@ func TestCommandsReplyWithScreens(t *testing.T) {
 		"/trusted": scrTrusted, "/firewall": scrFirewall, "/settings": scrSettings, "/update": scrUpdate,
 		"/help": scrHelp, "/digest": scrDigest, "/start cpu": scrCPU, "/start ses": scrSessions,
 		"/start nope": scrHome, "/start <b>": scrHome, "/start update_confirm": scrHome,
+		"/watching": scrWatching, "/services_scan": scrScanServices, "/ports_scan": scrScanPorts, "/start wat": scrWatching,
 	} {
 		send := &fakeSender{}
 		a := screenAgent(t, send)
@@ -490,7 +500,7 @@ func TestAlertViewsOpenNewMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	kb := send.keyboards[0]
-	for i, b := range kb[0][:len(kb[0])-1] { // all but snooze
+	for i, b := range kb[0] { // the views; snooze is the row below
 		cb := &telegram.Callback{ID: fmt.Sprint("v", i), ChatID: 42, ChatType: "private", FromID: 42, MessageID: alertID, Data: b.Data}
 		a.handleCallback(ctx, cb)
 		sent := send.all()
@@ -503,12 +513,12 @@ func TestAlertViewsOpenNewMessages(t *testing.T) {
 			t.Errorf("%s: new message %q, want screen %q", b.Text, sent[i+1], id.Args[0])
 		}
 	}
-	// Snooze answers; neither it nor the views edit the alert.
-	a.handleCallback(ctx, &telegram.Callback{ID: "s", ChatID: 42, MessageID: alertID, Data: kb[0][len(kb[0])-1].Data})
-	if len(send.edits) != 0 || len(send.markups) != 0 {
+	// Snooze changes only the alert's keyboard; the views never edit it.
+	a.handleCallback(ctx, &telegram.Callback{ID: "s", ChatID: 42, ChatType: "private", FromID: 42, MessageID: alertID, Data: kb[1][0].Data})
+	if len(send.edits) != 0 || len(send.markups) != 1 || send.markups[0].id != alertID {
 		t.Errorf("the alert was edited: %v %v", send.edits, send.markups)
 	}
-	if len(send.answered) != len(kb[0]) {
+	if len(send.answered) != len(kb[0])+1 {
 		t.Errorf("answered = %v, want each press once", send.answered)
 	}
 

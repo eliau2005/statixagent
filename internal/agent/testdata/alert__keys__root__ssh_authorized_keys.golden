@@ -1,3 +1,4 @@
 keys:/root/.ssh/authorized_keys
 --- keyboard ---
-[👥 Sessions] → ~1o|ses  [🚫 Failed] → ~1o|fai  [🛡 Firewall] → ~1o|fw  [🔕 1h] → snz:d:keys:/root/.ssh/authorized_keys
+[👥 Sessions] → ~1o|ses  [🚫 Failed] → ~1o|fai  [🛡 Firewall] → ~1o|fw
+[🔕 1h] → ~1sz|1h|k|keys:/root/.ssh/authorized_keys  [🔕 8h] → ~1sz|8h|k|keys:/root/.ssh/authorized_keys  [🔕 24h] → ~1sz|24h|k|keys:/root/.ssh/authorized_keys

@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/eliau2005/statixagent/internal/telegram"
 )
 
 func TestStartOnboarding(t *testing.T) {
@@ -21,7 +24,8 @@ func TestStartOnboarding(t *testing.T) {
 	}
 
 	// The reply carries Home's keyboard: the way into every section.
-	kb := a.popKB()
+	v, _, _ := a.router.Dispatch(context.Background(), telegram.Update{ChatID: 42, Text: "/start"})
+	_, kb := encodeView(v)
 	if kb == nil || len(kb) != 3 || kb[0][0].Data != "~1v|met" || kb[1][1].Data != "~1v|set" || kb[2][1].Data != "~1v|home" {
 		t.Errorf("/start keyboard = %+v", kb)
 	}
@@ -42,5 +46,4 @@ func TestStartReflectsConfig(t *testing.T) {
 	if !strings.Contains(reply, "2 services") {
 		t.Errorf("/start missing watch count: %q", reply)
 	}
-	a.popKB()
 }
