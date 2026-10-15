@@ -98,12 +98,25 @@ trusted_ips = ["203.0.113.7", "198.51.100.0/24", "2001:db8:42::/48"]
 ```
 
 The list is empty by default, which keeps the alert-on-every-login behavior.
-Invalid entries stop the agent at startup with an error naming the entry.
-A login from a trusted source (root included) still appears in
-`/ssh history` and the daily digest; only the push is skipped. Failed attempts
-are **not** exempt: a burst of failures from a trusted address still raises the
-brute-force alert. Edit `/etc/statix-agent/config.toml` and restart the
-service (`systemctl restart statix-agent`) to apply changes.
+Invalid entries stop the agent at startup with an error naming the entry, and
+so do ranges that would trust everything (`0.0.0.0/0`, `::/0`) or IPv4-mapped
+ranges shorter than `/96`.
+
+A suppressed login still appears in `/ssh history` and the daily digest; only
+the push is skipped. Some logins from a trusted address still alert:
+
+- **root** logins always raise the `ROOT SSH login` alert;
+- a login from an address that failed to authenticate within the last two
+  minutes alerts as usual, since a success right after failures is worth a
+  look;
+- failed attempts are never exempt, so a burst of failures from a trusted
+  address still raises the brute-force alert.
+
+The source must be logged as an IP address: if sshd logs hostnames
+(`UseDNS yes`), the trusted list cannot match and the agent logs why. Edit
+`/etc/statix-agent/config.toml` and restart the service
+(`systemctl restart statix-agent`) to apply changes; re-running the installer
+keeps the existing `[ssh]` settings.
 
 ### Alerts and remediation
 

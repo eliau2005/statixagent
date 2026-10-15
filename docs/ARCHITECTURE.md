@@ -144,9 +144,11 @@ stream of messages:
   key change, cert expiry, container down / restart-loop — which have no
   threshold and use the cooldown/dedupe machinery only.
 - **Trusted SSH sources** — `ssh.trusted_ips` (addresses or CIDR ranges,
-  parsed with `net/netip` and validated at load) suppresses only the login
-  alert. The event is still recorded in history and the digest, and failed
-  attempts from those sources still feed the brute-force detector.
+  parsed once with `net/netip` when the config is decoded; `/0` ranges are
+  rejected) suppresses only the non-root login alert, and only while the
+  brute-force detector holds no recent failures for that source. The event
+  is still recorded in history and the digest, and failed attempts from
+  those sources still feed the brute-force detector.
 
 ## Update pipeline
 
