@@ -193,6 +193,26 @@ func (c *Client) EditMessageKB(ctx context.Context, chatID, messageID int64, htm
 	return err
 }
 
+// EditMessageMarkup replaces only the inline keyboard of a message, leaving
+// its text as sent: an alert keeps its details after a button acts on it.
+// A nil kb removes the keyboard. Like EditMessageKB, an edit that changes
+// nothing is reported as success.
+func (c *Client) EditMessageMarkup(ctx context.Context, chatID, messageID int64, kb Keyboard) error {
+	if kb == nil {
+		kb = Keyboard{}
+	}
+	payload := map[string]any{
+		"chat_id":      chatID,
+		"message_id":   messageID,
+		"reply_markup": map[string]any{"inline_keyboard": clampKeyboard(kb)},
+	}
+	err := c.call(ctx, "editMessageReplyMarkup", payload, nil)
+	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+		return nil
+	}
+	return err
+}
+
 // AnswerCallback acknowledges a button press (stops the client spinner).
 // text, when non-empty, shows as a small toast.
 func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) error {

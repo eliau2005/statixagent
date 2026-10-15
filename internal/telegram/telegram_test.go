@@ -50,6 +50,7 @@ func TestTransportErrorRedactsToken(t *testing.T) {
 	}{
 		{"sendMessage", func() error { return c.SendMessage(ctx, 42, "hi") }},
 		{"editMessageText", func() error { return c.EditMessageKB(ctx, 42, 1, "hi", nil) }},
+		{"editMessageReplyMarkup", func() error { return c.EditMessageMarkup(ctx, 42, 1, nil) }},
 		{"answerCallbackQuery", func() error { return c.AnswerCallback(ctx, "cb", "ok") }},
 		{"deleteMessages", func() error { return c.DeleteMessages(ctx, 42, []int64{1}) }},
 		{"setMyCommands", func() error { return c.SetMyCommands(ctx, []BotCommand{{Command: "status"}}) }},
@@ -459,4 +460,40 @@ func htmlBalanced(s string) error {
 		return fmt.Errorf("unclosed %v", stack)
 	}
 	return nil
+}
+
+func TestEditMessageMarkup(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/editMessageReplyMarkup" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		json.NewDecoder(r.Body).Decode(&got)
+		fmt.Fprint(w, `{"ok":true,"result":{}}`)
+	}))
+	defer srv.Close()
+
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL}
+	kb := Keyboard{{{Text: "✅ Trusted 203.0.113.7", Data: "noop"}}}
+	if err := c.EditMessageMarkup(context.Background(), 42, 7, kb); err != nil {
+		t.Fatal(err)
+	}
+	if got["chat_id"].(float64) != 42 || got["message_id"].(float64) != 7 {
+		t.Errorf("payload = %+v", got)
+	}
+	if _, hasText := got["text"]; hasText {
+		t.Error("a markup edit must not send text: the message keeps its own")
+	}
+	rows := got["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
+	if len(rows) != 1 || rows[0].([]any)[0].(map[string]any)["callback_data"] != "noop" {
+		t.Errorf("reply_markup = %+v", got["reply_markup"])
+	}
+
+	// nil removes the keyboard: an empty inline_keyboard, never a null.
+	if err := c.EditMessageMarkup(context.Background(), 42, 7, nil); err != nil {
+		t.Fatal(err)
+	}
+	if rows := got["reply_markup"].(map[string]any)["inline_keyboard"].([]any); len(rows) != 0 {
+		t.Errorf("nil keyboard sent %v", rows)
+	}
 }
