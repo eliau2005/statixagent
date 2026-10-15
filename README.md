@@ -106,11 +106,22 @@ A suppressed login still appears in `/ssh history` and the daily digest; only
 the push is skipped. Some logins from a trusted address still alert:
 
 - **root** logins always raise the `ROOT SSH login` alert;
+- a key login with a key that user has never logged in with before raises a
+  `SSH login with new key` alert (once per user and key; see below);
 - a login from an address that failed to authenticate within the last two
   minutes alerts as usual, since a success right after failures is worth a
   look;
 - failed attempts are never exempt, so a burst of failures from a trusted
   address still raises the brute-force alert.
+
+To recognise new keys, the agent remembers the user and SHA256 fingerprint of
+every key login it sees, from any source, in
+`/etc/statix-agent/known_keys` (`0600`, one `user fingerprint` per line).
+SSH history is not kept across restarts, so there is nothing to learn from on
+the first start: after upgrading, the first key login per user and key from a
+trusted address alerts once, and later ones stay quiet. Deleting the file
+resets this. Password and keyboard-interactive logins carry no fingerprint and
+stay suppressed from trusted addresses.
 
 The source must be logged as an IP address: if sshd logs hostnames
 (`UseDNS yes`), the trusted list cannot match and the agent logs why. Edit
@@ -295,7 +306,8 @@ The decentralized design has deliberate costs:
   servers is not seen as one pattern.
 - **No aggregated view** — an "all servers" query means asking each bot.
 - **History is in memory** — a restart loses SSH/alert history; there is no
-  database, by design.
+  database, by design. Only the small list of known SSH key fingerprints is
+  kept on disk.
 
 ## Roadmap
 
