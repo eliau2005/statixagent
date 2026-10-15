@@ -3,8 +3,9 @@
 // past a margin) plus a cooldown so a flapping metric cannot spam the chat.
 // A rule may also demand the violation hold for several consecutive samples,
 // which is what keeps an instantaneous sensor (temperature) from alerting on
-// a two-second spike. Event alerts (new login, power loss) dedupe by key +
-// cooldown only.
+// a two-second spike. Pass/fail checks (a watched unit, port or endpoint)
+// follow the same rules with a boolean in place of a value. Event alerts
+// (new login, power loss) dedupe by key + cooldown only.
 package alert
 
 import (
@@ -127,31 +128,9 @@ func (e *Engine) Threshold(o ThresholdOpts, now time.Time) *Alert {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-
-	// Count the run of violating samples first, so a snoozed key still has an
-	// accurate streak when the snooze lifts.
-	if violating {
-		e.streak[o.Key]++
-	} else {
-		e.streak[o.Key] = 0
-	}
-	sustained := violating && e.streak[o.Key] >= max(o.Sustain, 1)
-
-	if e.snoozed(o.Key, now) {
-		// Stay quiet. Recovery clears the firing state silently so that a
-		// violation still present (or back) after the snooze fires fresh.
-		if recovered {
-			e.active[o.Key] = false
-		}
-		return nil
-	}
+	fire, resolve := e.step(o.Key, violating, recovered, o.Sustain, now)
 	switch {
-	case sustained && !e.active[o.Key]:
-		if last, ok := e.lastFired[o.Key]; ok && now.Sub(last) < e.Cooldown {
-			return nil // refuse to flap inside the cooldown
-		}
-		e.active[o.Key] = true
-		e.lastFired[o.Key] = now
+	case fire:
 		cmp := "above"
 		if o.Below {
 			cmp = "below"
@@ -160,14 +139,69 @@ func (e *Engine) Threshold(o ThresholdOpts, now time.Time) *Alert {
 			Key: o.Key, Severity: o.Severity, Title: o.Title, At: now,
 			Body: fmt.Sprintf("%.1f%s is %s the %.1f%s threshold", o.Value, o.Unit, cmp, o.Threshold, o.Unit),
 		}
-	case recovered && e.active[o.Key]:
-		e.active[o.Key] = false
+	case resolve:
 		return &Alert{
 			Key: o.Key, Severity: Info, Title: o.Title, Resolved: true, At: now,
 			Body: fmt.Sprintf("recovered: now %.1f%s", o.Value, o.Unit),
 		}
 	}
 	return nil
+}
+
+// Check is Threshold for a check that either passes or fails, such as a
+// unit being active: fire when it starts failing, resolve when it passes
+// again after a fire, with the same cooldown and snooze. A failure that
+// was not alerted (cooldown, snooze) resolves silently; one still in
+// progress when they end fires then.
+func (e *Engine) Check(key string, failing bool, now time.Time) (fire, resolve bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.step(key, failing, !failing, 1, now)
+}
+
+// Seed records whether a check is failing without alerting, for a
+// watcher's first look after startup: a failure already there is not
+// news, but its recovery is.
+func (e *Engine) Seed(key string, failing bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.active[key] = failing
+	e.streak[key] = 0
+}
+
+// step moves key's firing state for one sample and reports whether it
+// fires or resolves. Callers hold e.mu.
+func (e *Engine) step(key string, violating, recovered bool, sustain int, now time.Time) (fire, resolve bool) {
+	// Count the run of violating samples first, so a snoozed key still has an
+	// accurate streak when the snooze lifts.
+	if violating {
+		e.streak[key]++
+	} else {
+		e.streak[key] = 0
+	}
+	sustained := violating && e.streak[key] >= max(sustain, 1)
+
+	if e.snoozed(key, now) {
+		// Stay quiet. Recovery clears the firing state silently so that a
+		// violation still present (or back) after the snooze fires fresh.
+		if recovered {
+			e.active[key] = false
+		}
+		return false, false
+	}
+	switch {
+	case sustained && !e.active[key]:
+		if last, ok := e.lastFired[key]; ok && now.Sub(last) < e.Cooldown {
+			return false, false // refuse to flap inside the cooldown
+		}
+		e.active[key] = true
+		e.lastFired[key] = now
+		return true, false
+	case recovered && e.active[key]:
+		e.active[key] = false
+		return false, true
+	}
+	return false, false
 }
 
 // Event emits an event alert unless the same key fired within the cooldown.

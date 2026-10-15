@@ -70,7 +70,11 @@ func alertViews(prefix string) []tgui.Button {
 // text as a record; only snooze and trust touch it, and then only its
 // keyboard. extra rows (a login's source) go above the snooze row.
 func (a *Agent) alertKeyboard(key string, extra ...[]telegram.Button) telegram.Keyboard {
-	kb := telegram.Keyboard{alertViewRow(key)}
+	row, ok := a.watchAlertRow(key)
+	if !ok {
+		row = alertViewRow(key)
+	}
+	kb := telegram.Keyboard{row}
 	for _, row := range extra {
 		if len(row) > 0 {
 			kb = append(kb, row)

@@ -228,6 +228,12 @@ type Agent struct {
 	prevContainers map[string]string
 	dockerPoll     time.Duration
 
+	// svcSeen holds the alert keys of the watched checks servicesLoop
+	// has read a state for; only it touches it. servicesPoll is its
+	// period, set once in New and overridden only by tests.
+	svcSeen      map[string]bool
+	servicesPoll time.Duration
+
 	// offset is the getUpdates cursor. It lives on the Agent so a botLoop
 	// restarted after a panic resumes past the update that panicked
 	// instead of replaying its batch. Only botLoop touches it.
@@ -280,6 +286,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		digestPoll:   30 * time.Second,
 		sslInterval:  12 * time.Hour,
 		dockerPoll:   time.Minute,
+		servicesPoll: time.Minute,
 		snoozeKeys:   map[string]string{},
 		offset:       loadOffset(src.OffsetPath),
 		boot:         time.Now(),
@@ -342,6 +349,8 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.src.Docker != nil && a.cfg.Monitors.Docker {
 		loop("docker", a.dockerLoop)
 	}
+	// Always run: items can be watched from the bot at any time.
+	loop("services", a.servicesLoop)
 	a.registerCommands(ctx)
 	hello := fmt.Sprintf("✅ <b>statix-agent started</b> on %s", esc(a.src.Hostname))
 	if _, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, hello, telegram.Keyboard{{

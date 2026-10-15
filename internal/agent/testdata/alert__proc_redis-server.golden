@@ -1,0 +1,4 @@
+proc:redis-server
+--- keyboard ---
+[🔍 Open] → ~1o|prc
+[🔕 1h] → ~1sz|1h|k|proc:redis-server  [🔕 8h] → ~1sz|8h|k|proc:redis-server  [🔕 24h] → ~1sz|24h|k|proc:redis-server

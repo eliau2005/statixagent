@@ -179,12 +179,17 @@ func TestEmittedCallbackDataRoutes(t *testing.T) {
 		kbs = append(kbs, kb)
 	}
 	for _, key := range []string{"ssh-login:x", "cpu", "mem", "disk:/", "temp", "ssl:x", "docker:x", "battery", "other",
+		"svc:nginx.service", "port:22", "http:0123456789abcdef", "proc:x",
 		"a-very-long-alert-key-that-needs-the-hashed-snooze-form-to-fit-in-64-bytes"} {
 		kbs = append(kbs, a.alertKeyboard(key))
 	}
 	// A snoozed alert's Undo.
 	a.engine.Snooze("cpu", time.Now().Add(time.Hour))
 	kbs = append(kbs, a.alertKeyboard("cpu"))
+	// A watched unit's alert with service actions on carries Restart.
+	a.cfg.Watch.Services = []string{"nginx"}
+	a.cfg.Actions.Enabled = true
+	kbs = append(kbs, a.alertKeyboard("svc:nginx.service"))
 	for _, kb := range kbs {
 		for _, row := range kb {
 			for _, b := range row {

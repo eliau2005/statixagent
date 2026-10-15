@@ -97,6 +97,7 @@ func TestGoldenAlertKeyboards(t *testing.T) {
 		"ssh-login:alice@203.0.113.9", "ssh-newkey:alice", "ssh-brute:198.51.100.7", "keys:/root/.ssh/authorized_keys",
 		"cpu", "mem", "disk:/", "temp", "ssl:example.com", "docker:web", "docker-up:web", "docker-restart:web",
 		"battery", "power-loss", "power-restored", "reboot",
+		"svc:nginx.service", "port:5432", "http:" + callbackDigest("https://api.example/hz"), "proc:redis-server",
 		// Over 64 bytes as snz:d:<key>: the snooze button falls back to a digest.
 		"disk:/var/lib/docker/overlay2/0123456789abcdef0123456789abcdef/merged",
 	}
@@ -108,6 +109,10 @@ func TestGoldenAlertKeyboards(t *testing.T) {
 	a.now = func() time.Time { return time.Date(2026, 10, 15, 14, 5, 0, 0, time.Local) }
 	a.engine.Snooze("cpu", a.now().Add(8*time.Hour))
 	checkGolden(t, "alert__cpu_snoozed", "cpu", a.alertKeyboard("cpu"))
+	// A watched unit, with service actions on: Restart asks from the alert.
+	a.cfg.Watch.Services = []string{"nginx"}
+	a.cfg.Actions.Enabled = true
+	checkGolden(t, "alert__svc_nginx_service_actions", "svc:nginx.service", a.alertKeyboard("svc:nginx.service"))
 }
 
 func TestGoldenSettings(t *testing.T) {
