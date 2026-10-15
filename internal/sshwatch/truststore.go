@@ -131,7 +131,7 @@ func FormatPrefix(p netip.Prefix) string {
 	return p.String()
 }
 
-// save rewrites the file (see writeStateFile). Callers hold s.mu.
+// save rewrites the file (see WriteStateFile). Callers hold s.mu.
 func (s *TrustStore) save() error {
 	if s.path == "" {
 		return nil
@@ -147,7 +147,7 @@ func (s *TrustStore) save() error {
 	for _, l := range s.bad {
 		b.WriteString(l + "\n")
 	}
-	if err := writeStateFile(s.path, []byte(b.String())); err != nil {
+	if err := WriteStateFile(s.path, []byte(b.String())); err != nil {
 		return fmt.Errorf("trusted ips: %w", err)
 	}
 	return nil

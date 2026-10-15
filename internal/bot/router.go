@@ -35,19 +35,32 @@ func (r *Router) Handle(cmd string, h Handler) {
 // the update should be ignored (wrong chat, not a command). Unknown
 // commands from the allowed chat get a help pointer.
 func (r *Router) Dispatch(ctx context.Context, u telegram.Update) (string, string, bool) {
-	if u.ChatID != r.allowedChat || !strings.HasPrefix(u.Text, "/") {
+	if u.ChatID != r.allowedChat {
 		return "", "", false
 	}
-	fields := strings.Fields(u.Text)
-	cmd := strings.TrimPrefix(fields[0], "/")
-	// "/status@my_bot" form used in groups
-	cmd, _, _ = strings.Cut(cmd, "@")
-	cmd = strings.ToLower(cmd)
-	reply, ok := r.Invoke(ctx, cmd, fields[1:])
+	cmd, args, ok := Parse(u.Text)
+	if !ok {
+		return "", "", false
+	}
+	reply, ok := r.Invoke(ctx, cmd, args)
 	if !ok {
 		return "Unknown command. Try /help", cmd, true
 	}
 	return reply, cmd, true
+}
+
+// Parse splits command text into the lowercased command name (without the
+// slash or a "@bot" suffix) and its arguments; ok is false for text that
+// is not a command.
+func Parse(text string) (cmd string, args []string, ok bool) {
+	if !strings.HasPrefix(text, "/") {
+		return "", nil, false
+	}
+	fields := strings.Fields(text)
+	cmd = strings.TrimPrefix(fields[0], "/")
+	// "/status@my_bot" form used in groups
+	cmd, _, _ = strings.Cut(cmd, "@")
+	return strings.ToLower(cmd), fields[1:], true
 }
 
 // Invoke runs a command handler directly (used for keyboard callbacks,

@@ -94,6 +94,28 @@ func TestCanceledContextRedactsToken(t *testing.T) {
 	}
 }
 
+func TestGetUpdatesParsesMessageDate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"ok":true,"result":[`+
+			`{"update_id":7,"message":{"text":"/status","date":1760000000,"chat":{"id":42}}},`+
+			`{"update_id":8,"callback_query":{"id":"cb","data":"status","message":{"message_id":3,"date":1700000000,"chat":{"id":42}}}}]}`)
+	}))
+	defer srv.Close()
+	c := &Client{HTTP: srv.Client(), BaseURL: srv.URL + "/bot" + fakeToken}
+	ups, err := c.GetUpdates(context.Background(), 0, time.Second)
+	if err != nil || len(ups) != 2 {
+		t.Fatalf("GetUpdates = %+v, %v", ups, err)
+	}
+	if !ups[0].Date.Equal(time.Unix(1760000000, 0)) {
+		t.Errorf("message date = %v", ups[0].Date)
+	}
+	// message.date on a callback is when the keyboard was sent, not the
+	// press, so it must not surface as the update's date.
+	if !ups[1].Date.IsZero() {
+		t.Errorf("callback date = %v, want zero", ups[1].Date)
+	}
+}
+
 func TestTimeoutRedactsToken(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -133,7 +133,8 @@ service). Its outward actions are deliberately narrow:
   `/firewall` states that it cannot manage this host's firewall rather than
   acting through a different backend.
 - **Writes** only its config file, its binary (on update), its start-count
-  state file, and — only once some SSH source is trusted — its list of known
+  state file, its Telegram update cursor (`tg-offset`, so a restart cannot
+  replay a command), and — only once some SSH source is trusted — its list of known
   SSH key fingerprints (`known_keys`) and the SSH sources trusted from the bot
   (`trusted_ips`), both next to the config, `0600`, written atomically.
 - **Network:** talks to the Telegram Bot API, to GitHub (release checks), and to

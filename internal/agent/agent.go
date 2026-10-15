@@ -83,6 +83,10 @@ type Sources struct {
 	// KnownKeysPath is where the user+key fingerprints seen in SSH key
 	// logins are remembered across restarts; empty means in-memory only.
 	KnownKeysPath string
+	// OffsetPath is where the Telegram update cursor is saved before a
+	// state-changing update runs, so a restart does not replay it (see
+	// replay.go); empty means Telegram is asked to confirm it instead.
+	OffsetPath string
 	// ListListeners returns the local TCP ports in LISTEN state.
 	ListListeners func() ([]int, error)
 
@@ -191,6 +195,14 @@ type Agent struct {
 	// set once in New and overridden only by tests.
 	prevContainers map[string]string
 	dockerPoll     time.Duration
+
+	// offset is the getUpdates cursor. It lives on the Agent so a botLoop
+	// restarted after a panic resumes past the update that panicked
+	// instead of replaying its batch. Only botLoop touches it.
+	offset int64
+	// boot is when the agent started; text commands sent well before it
+	// were queued while it was down (see queued).
+	boot time.Time
 }
 
 // trendPoint is one sampled reading kept for sparkline rendering.
@@ -221,6 +233,8 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		sslInterval:  12 * time.Hour,
 		dockerPoll:   time.Minute,
 		snoozeKeys:   map[string]string{},
+		offset:       loadOffset(src.OffsetPath),
+		boot:         time.Now(),
 	}
 	a.configTrusted = configPrefixes(cfg.SSH.TrustedIPs)
 	store, err := sshwatch.LoadTrustStore(src.TrustPath, config.ParseTrustedIP)
@@ -653,10 +667,11 @@ func (a *Agent) keysLoop(ctx context.Context) {
 
 // ---- bot ----
 
+// botLoop long-polls for updates. The cursor moves past each update before
+// it is handled, so one that panics is skipped rather than retried forever.
 func (a *Agent) botLoop(ctx context.Context) {
-	var offset int64
 	for ctx.Err() == nil {
-		ups, err := a.updates.GetUpdates(ctx, offset, 50*time.Second)
+		ups, err := a.updates.GetUpdates(ctx, a.offset, 50*time.Second)
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("agent: getUpdates: %v", err)
@@ -665,16 +680,10 @@ func (a *Agent) botLoop(ctx context.Context) {
 			continue
 		}
 		for _, u := range ups {
-			if u.ID >= offset {
-				offset = u.ID + 1
+			if u.ID >= a.offset {
+				a.offset = u.ID + 1
 			}
-			if u.Callback != nil {
-				a.handleCallback(ctx, u.Callback)
-				continue
-			}
-			if reply, cmd, ok := a.router.Dispatch(ctx, u); ok {
-				a.reply(ctx, cmd, reply)
-			}
+			a.handleUpdate(ctx, u)
 		}
 	}
 }
