@@ -131,10 +131,10 @@ func pressRoutes(t *testing.T, data string) bool {
 // button of the keyboards built at run time, must still reach a handler.
 func TestEmittedCallbackDataRoutes(t *testing.T) {
 	prefixes, dynamic := emittedDataPrefixes(t)
-	// Navigation, settings, watching and snooze moved to "~1" calls,
-	// swept per screen and keyboard below; the legacy literals left are
-	// Live, trust and their labels.
-	if len(prefixes) < 5 {
+	// Navigation, settings, watching, snooze and Live moved to "~1"
+	// calls, swept per screen and keyboard below; the legacy literals
+	// left are trust and its labels.
+	if len(prefixes) < 4 {
 		t.Fatalf("found only %d Data literals; is the scan broken?", len(prefixes))
 	}
 	slices.Sort(prefixes)

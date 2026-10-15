@@ -31,6 +31,12 @@ var legacyViews = map[string]string{
 	"ssh_history": scrHistory, "ssh_fails": scrFailed,
 }
 
+// Names of the legacy Live rules, which manage the session themselves.
+const (
+	legacyLive     = "live"
+	legacyLiveStop = "live_stop"
+)
+
 // Yes and Cancel buttons of the update and clear-chat prompts of older
 // versions. Today's prompts carry confirm tokens (confirm.go); these are
 // still decoded, and a Yes among them only ever asks again.
@@ -167,17 +173,12 @@ func (a *Agent) buildLegacy() *tgui.LegacyTable {
 		tgui.LegacyRule{Name: "dismiss", Exact: []string{"dismiss"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
 			a.finishCallback(ctx, cb, false, "Update postponed — /update any time.", nil, "")
 		}},
-		tgui.LegacyRule{Name: "live", Exact: []string{"live"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
-			a.answer(ctx, cb, "Live mode active (tap Stop to exit)")
-			a.startLive(ctx, cb.ChatID, cb.MessageID)
+		// Live and Stop of older versions; both return to Home.
+		tgui.LegacyRule{Name: legacyLive, Exact: []string{"live"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
+			a.livePress(ctx, cb, tgui.Call{Act: actLive})
 		}},
-		tgui.LegacyRule{Name: "live_stop", Exact: []string{"live_stop"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
-			a.answer(ctx, cb, "")
-			if !a.stopLive(cb.MessageID) {
-				// No session on this message (agent restarted, or a newer
-				// session took over): restore Status instead of a dead end.
-				a.finishLive(cb.ChatID, cb.MessageID)
-			}
+		tgui.LegacyRule{Name: legacyLiveStop, Exact: []string{"live_stop"}, Handle: func(ctx context.Context, cb *telegram.Callback, _ bool) {
+			a.livePress(ctx, cb, tgui.Call{Act: actLiveStop})
 		}},
 		tgui.LegacyRule{Name: "firewall-apply", Exact: []string{"fw_close", "fw_open"}, Handle: a.firewallCallback},
 		tgui.LegacyRule{Name: "firewall", Exact: []string{"firewall", "fw_close_ask", "fw_open_ask"}, Handle: a.firewallCallback},
@@ -220,7 +221,7 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	// A press counts as a view only for the navigation views.
 	_, view := legacyViews[cb.Data]
 	v := a.authorize(ctx, sender{chatID: cb.ChatID, fromID: cb.FromID, chatType: cb.ChatType}, view)
-	if v == ignored {
+	if v == ignored || !a.admitPress(ctx, cb, nil) {
 		return
 	}
 	if cb.Inaccessible {
@@ -235,6 +236,10 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	if !ok {
 		a.refuseCallback(ctx, cb, false)
 		return
+	}
+	if rule.Name != legacyLive && rule.Name != legacyLiveStop {
+		// The press edits its message: a Live session there stops first.
+		a.stopLive(cb.ChatID, cb.MessageID)
 	}
 	if rule.Slow {
 		a.answer(ctx, cb, rule.Ack)

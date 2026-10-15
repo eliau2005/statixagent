@@ -277,12 +277,12 @@ func TestLiveStopOtherMessage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	a.startLive(ctx, 42, 7)
+	a.startLive(ctx, 42, 7, "")
 	waitFor(t, func() bool { return send.editCount() >= 1 }, "live frame")
 	a.handleCallback(ctx, &telegram.Callback{ID: "c", ChatID: 42, MessageID: 8, Data: "live_stop"})
 
 	a.mu.Lock()
-	running := a.liveCancel != nil && a.liveMsg == 7
+	running := a.live != nil && a.live.messageID == 7
 	a.mu.Unlock()
 	if !running {
 		t.Error("a Stop on another message must not end the running session")
@@ -298,7 +298,7 @@ func TestLiveStopOtherMessage(t *testing.T) {
 	if !restored {
 		t.Error("the stale message must be restored to Status")
 	}
-	a.stopLive(7)
+	a.stopLive(42, 7)
 }
 
 // TestLiveStopAfterSessionEnded: once a session hits its ceiling, a later
@@ -309,11 +309,11 @@ func TestLiveStopAfterSessionEnded(t *testing.T) {
 	a.liveInterval = 5 * time.Millisecond
 	a.liveDuration = 20 * time.Millisecond
 
-	a.startLive(context.Background(), 42, 7)
+	a.startLive(context.Background(), 42, 7, "")
 	waitFor(t, func() bool {
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		return a.liveCancel == nil
+		return a.live == nil
 	}, "session to end")
 
 	before := send.editCount()

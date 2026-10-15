@@ -182,12 +182,11 @@ type Agent struct {
 	lastServiceScan []string
 	lastPortScan    []int
 
-	// Live-mode session state (live.go). Guarded by mu; intervals are set
-	// once in New and overridden only by tests. liveDuration serves as a
-	// safety ceiling (default 1h).
-	liveCancel   context.CancelFunc
-	liveMsg      int64  // message the running session edits
-	liveSeq      uint64 // bumped per session so a stale exit cannot clear a newer one
+	// Live-mode session state (live.go). live is the running session, nil
+	// when none; guarded by mu. Intervals are set once in New and
+	// overridden only by tests. liveDuration serves as a safety ceiling
+	// (default 1h).
+	live         *liveSession
 	liveInterval time.Duration
 	liveDuration time.Duration
 
@@ -241,6 +240,8 @@ type Agent struct {
 	// boot is when the agent started; text commands sent well before it
 	// were queued while it was down (see queued).
 	boot time.Time
+	// presses rate-limits button presses per actor (ratelimit.go).
+	presses *pressLimiter
 	// groupNoticeSent records that this process already told a group
 	// chat without admin_user_ids about it. Only botLoop touches it.
 	groupNoticeSent bool
@@ -282,6 +283,7 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		geo:          sshwatch.NewGeoResolver(),
 		liveInterval: 5 * time.Second,
 		liveDuration: time.Hour,
+		presses:      &pressLimiter{burst: pressBurst, every: pressEvery},
 		digest:       digestStats{since: time.Now()},
 		digestPoll:   30 * time.Second,
 		sslInterval:  12 * time.Hour,

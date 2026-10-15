@@ -18,7 +18,8 @@ import (
 // navigation button is "~1" data, so it survives restarts. Buttons that
 // change the bot's settings are config acts carrying absolute values, and
 // host changes open a confirm token through an ask act, both below; Live
-// and trust on alerts still carry the legacy data their handlers decode.
+// has its own acts (live.go), and trust on alerts still carries the legacy
+// data its handler decodes.
 
 // Screen IDs. A screen that is a Back target ("^from") needs 1-3 letters.
 const (
@@ -313,11 +314,16 @@ func isHex(s string) bool {
 func (a *Agent) handleCall(ctx context.Context, cb *telegram.Callback) {
 	c, decErr := tgui.Decode(cb.Data)
 	slow := decErr == nil && a.ui.Slow(c)
+	live := decErr == nil && (c.Act == actLive || c.Act == actLiveStop)
+	var decoded *tgui.Call
+	if decErr == nil {
+		decoded = &c
+	}
 	answered := false
 	gate := func(class tgui.Class) bool {
 		v := a.authorize(ctx, sender{chatID: cb.ChatID, fromID: cb.FromID, chatType: cb.ChatType}, class == tgui.ClassView)
 		switch {
-		case v == ignored:
+		case v == ignored, !a.admitPress(ctx, cb, decoded):
 			return false
 		case cb.Inaccessible:
 			a.answer(ctx, cb, inaccessibleToast)
@@ -326,12 +332,24 @@ func (a *Agent) handleCall(ctx context.Context, cb *telegram.Callback) {
 			a.answer(ctx, cb, adminOnlyToast)
 			return false
 		}
+		if !live {
+			// The press edits its message: a Live session there stops
+			// first, so its frames cannot overwrite the new view.
+			a.stopLive(cb.ChatID, cb.MessageID)
+		}
 		if slow {
 			// Seconds of work ahead: stop the spinner first.
 			a.answer(ctx, cb, "")
 			answered = true
 		}
 		return true
+	}
+	if live {
+		// Live mode only shows the status snapshot.
+		if gate(tgui.ClassView) {
+			a.livePress(ctx, cb, c)
+		}
+		return
 	}
 	if decErr == nil {
 		// Yes and Cancel name a confirm token, ask acts a confirm to
