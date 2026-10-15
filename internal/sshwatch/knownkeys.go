@@ -9,8 +9,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // KnownKeys remembers which public keys (by SHA256 fingerprint) each user
@@ -27,11 +29,19 @@ type KnownKeys struct {
 
 	mu   sync.Mutex
 	keys map[knownKey]struct{}
+	// bad holds lines that did not parse; save writes them back verbatim
+	// so a damaged file never loses entries it could not read.
+	bad []string
+	// readOnly is set when the file exists but could not be read: saving
+	// would replace it with a smaller set, so new pairs stay in memory.
+	readOnly bool
 }
 
 type knownKey struct{ user, fingerprint string }
 
 // LoadKnownKeys reads the set from path. A missing file is an empty set.
+// Malformed lines are skipped and reported, one error per line, in the
+// joined error; the returned set is always usable.
 func LoadKnownKeys(path string) (*KnownKeys, error) {
 	k := &KnownKeys{path: path, keys: map[knownKey]struct{}{}}
 	if path == "" {
@@ -42,7 +52,8 @@ func LoadKnownKeys(path string) (*KnownKeys, error) {
 		return k, nil
 	}
 	if err != nil {
-		return k, fmt.Errorf("known keys: %w", err)
+		k.readOnly = true
+		return k, fmt.Errorf("known keys: %w (new keys will not be saved)", err)
 	}
 	defer f.Close()
 	if err := k.parse(f); err != nil {
@@ -51,29 +62,91 @@ func LoadKnownKeys(path string) (*KnownKeys, error) {
 	return k, nil
 }
 
-// parse adds the "user fingerprint" pairs from r. Blank lines and #
-// comments are skipped; a malformed line is an error, but the pairs parsed
-// before it are kept.
+// parse adds the pairs from r. Blank lines and # comments are skipped;
+// each malformed line is kept in k.bad and reported. A read error leaves
+// the set read-only, since the rest of the file was never seen.
 func (k *KnownKeys) parse(r io.Reader) error {
+	var errs []error
 	sc := bufio.NewScanner(r)
 	for n := 1; sc.Scan(); n++ {
-		line := strings.TrimSpace(sc.Text())
+		raw := sc.Text()
+		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) != 2 || !strings.HasPrefix(fields[1], "SHA256:") {
-			return fmt.Errorf("line %d: want \"user SHA256:fingerprint\"", n)
+		user, fp, err := parseKnownKeyLine(line)
+		if err != nil {
+			k.bad = append(k.bad, raw)
+			errs = append(errs, fmt.Errorf("line %d skipped: %w", n, err))
+			continue
 		}
-		k.keys[knownKey{fields[0], fields[1]}] = struct{}{}
+		k.keys[knownKey{user, fp}] = struct{}{}
 	}
-	return sc.Err()
+	if err := sc.Err(); err != nil {
+		k.readOnly = true
+		errs = append(errs, fmt.Errorf("%w (new keys will not be saved)", err))
+	}
+	return errors.Join(errs...)
+}
+
+// parseKnownKeyLine splits `user SHA256:fingerprint`. The user is written
+// Go-quoted when it would not survive a bare field (see formatUser).
+func parseKnownKeyLine(line string) (user, fp string, err error) {
+	rest := line
+	if strings.HasPrefix(line, `"`) {
+		q, err := strconv.QuotedPrefix(line)
+		if err != nil {
+			return "", "", errors.New("bad quoted user")
+		}
+		user, _ = strconv.Unquote(q)
+		rest = line[len(q):]
+		if rest != "" && !unicode.IsSpace(rune(rest[0])) {
+			return "", "", errors.New("want \"user SHA256:fingerprint\"")
+		}
+	} else if i := strings.IndexFunc(line, unicode.IsSpace); i >= 0 {
+		user, rest = line[:i], line[i:]
+	} else {
+		user, rest = line, ""
+	}
+	fields := strings.Fields(rest)
+	if len(fields) != 1 || !validFingerprint(fields[0]) {
+		return "", "", errors.New("want \"user SHA256:fingerprint\"")
+	}
+	return user, fields[0], nil
+}
+
+// formatUser writes a user name so parseKnownKeyLine reads it back
+// unchanged: plain when it is a single bare word, Go-quoted when it is
+// empty, contains whitespace or control characters, or starts with a
+// comment or quote character.
+func formatUser(user string) string {
+	if user == "" || strings.HasPrefix(user, "#") || strings.HasPrefix(user, `"`) ||
+		strings.IndexFunc(user, func(r rune) bool { return unicode.IsSpace(r) || !unicode.IsPrint(r) }) >= 0 {
+		return strconv.Quote(user)
+	}
+	return user
+}
+
+func validFingerprint(fp string) bool {
+	return strings.HasPrefix(fp, "SHA256:") && len(fp) > len("SHA256:") &&
+		strings.IndexFunc(fp, func(r rune) bool { return unicode.IsSpace(r) || !unicode.IsPrint(r) }) < 0
+}
+
+// Known reports whether user has logged in with fingerprint before.
+func (k *KnownKeys) Known(user, fingerprint string) bool {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	_, ok := k.keys[knownKey{user, fingerprint}]
+	return ok
 }
 
 // Learn records that user logged in with fingerprint and reports whether
 // the pair was new. A new pair is remembered in memory even if persisting
 // it fails; the error is returned so the caller can log it.
 func (k *KnownKeys) Learn(user, fingerprint string) (bool, error) {
+	if !validFingerprint(fingerprint) {
+		return false, fmt.Errorf("known keys: invalid fingerprint %q", fingerprint)
+	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	key := knownKey{user, fingerprint}
@@ -91,17 +164,28 @@ func (k *KnownKeys) Len() int {
 	return len(k.keys)
 }
 
-// save rewrites the file atomically with owner-only permissions. Callers
+// save rewrites the file atomically with owner-only permissions, syncing
+// the data before the rename and the directory after it so a power loss
+// leaves either the old file or the new one, never an empty one. Callers
 // hold k.mu.
 func (k *KnownKeys) save() error {
 	if k.path == "" {
 		return nil
 	}
+	if k.readOnly {
+		return errors.New("known keys: not saved, the existing file could not be read")
+	}
 	lines := make([]string, 0, len(k.keys))
 	for key := range k.keys {
-		lines = append(lines, key.user+" "+key.fingerprint+"\n")
+		lines = append(lines, formatUser(key.user)+" "+key.fingerprint+"\n")
 	}
 	sort.Strings(lines)
+	var b strings.Builder
+	b.WriteString("# user fingerprint, learned from SSH key logins\n")
+	b.WriteString(strings.Join(lines, ""))
+	for _, l := range k.bad {
+		b.WriteString(l + "\n")
+	}
 
 	dir := filepath.Dir(k.path)
 	tmp, err := os.CreateTemp(dir, ".known_keys-*")
@@ -114,7 +198,11 @@ func (k *KnownKeys) save() error {
 		tmp.Close()
 		return fmt.Errorf("known keys: %w", err)
 	}
-	if _, err := io.WriteString(tmp, "# user fingerprint, learned from SSH key logins\n"+strings.Join(lines, "")); err != nil {
+	if _, err := io.WriteString(tmp, b.String()); err != nil {
+		tmp.Close()
+		return fmt.Errorf("known keys: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
 		tmp.Close()
 		return fmt.Errorf("known keys: %w", err)
 	}
@@ -123,6 +211,12 @@ func (k *KnownKeys) save() error {
 	}
 	if err := os.Rename(tmpName, k.path); err != nil {
 		return fmt.Errorf("known keys: %w", err)
+	}
+	// Best effort: make the rename itself durable. Not every platform
+	// supports syncing a directory, and the data is already safe.
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
 	}
 	return nil
 }

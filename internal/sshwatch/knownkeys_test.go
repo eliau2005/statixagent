@@ -117,3 +117,95 @@ func TestKnownKeysSaveFailureKeepsMemory(t *testing.T) {
 		t.Error("pair must be remembered in memory despite the save error")
 	}
 }
+
+func TestKnownKeysMalformedLinesSkippedAndPreserved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_keys")
+	body := "deploy SHA256:aaa\ngarbage\nalice SHA256:bbb\ndeploy MD5:x\nbob SHA256:ccc\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	k, err := LoadKnownKeys(path)
+	if err == nil || !strings.Contains(err.Error(), "line 2 skipped") || !strings.Contains(err.Error(), "line 4 skipped") {
+		t.Errorf("err = %v, want one report per bad line", err)
+	}
+	if k.Len() != 3 {
+		t.Fatalf("len = %d, want the 3 good pairs, including those after a bad line", k.Len())
+	}
+
+	if added, err := k.Learn("carol", "SHA256:ddd"); !added || err != nil {
+		t.Fatalf("Learn = %v, %v", added, err)
+	}
+	raw, _ := os.ReadFile(path)
+	for _, want := range []string{"deploy SHA256:aaa\n", "alice SHA256:bbb\n", "bob SHA256:ccc\n", "carol SHA256:ddd\n", "garbage\n", "deploy MD5:x\n"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("rewritten file lost %q:\n%s", want, raw)
+		}
+	}
+}
+
+func TestKnownKeysUnreadableFileNeverOverwritten(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reading a directory as a file behaves differently on windows")
+	}
+	// A directory opens but cannot be read, like a file with a bad sector.
+	path := t.TempDir()
+	k, err := LoadKnownKeys(path)
+	if err == nil {
+		t.Fatal("want a read error")
+	}
+	added, err := k.Learn("deploy", "SHA256:aaa")
+	if !added || err == nil {
+		t.Errorf("Learn = %v, %v; want new in memory and a not-saved error", added, err)
+	}
+	if info, statErr := os.Stat(path); statErr != nil || !info.IsDir() {
+		t.Errorf("unreadable store was replaced: %v", statErr)
+	}
+}
+
+func TestKnownKeysUserRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "known_keys")
+	k, err := LoadKnownKeys(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := []string{
+		"deploy",
+		"#looks-like-a-comment",
+		`"starts-with-quote`,
+		"has space",
+		"tab\tuser",
+		"new\nline",
+		"ünïcode",
+		"",
+	}
+	for _, u := range users {
+		if added, err := k.Learn(u, "SHA256:aaa"); !added || err != nil {
+			t.Fatalf("Learn(%q) = %v, %v", u, added, err)
+		}
+	}
+	reloaded, err := LoadKnownKeys(path)
+	if err != nil {
+		raw, _ := os.ReadFile(path)
+		t.Fatalf("reload: %v\n%s", err, raw)
+	}
+	if reloaded.Len() != len(users) {
+		t.Errorf("len = %d, want %d", reloaded.Len(), len(users))
+	}
+	for _, u := range users {
+		if !reloaded.Known(u, "SHA256:aaa") {
+			t.Errorf("user %q did not survive a save and reload", u)
+		}
+	}
+	if reloaded.Known("has", "SHA256:aaa") {
+		t.Error("a name with a space must not split into another user")
+	}
+}
+
+func TestKnownKeysRejectsBadFingerprint(t *testing.T) {
+	k, _ := LoadKnownKeys("")
+	for _, fp := range []string{"", "SHA256:", "MD5:aa", "SHA256:a b", "SHA256:a\nb"} {
+		if added, err := k.Learn("deploy", fp); added || err == nil {
+			t.Errorf("Learn(%q) = %v, %v; want rejected", fp, added, err)
+		}
+	}
+}
