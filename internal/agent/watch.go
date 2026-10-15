@@ -298,7 +298,7 @@ func (a *Agent) portsAdd(ctx context.Context, args []string) string {
 
 	port, err := resolvePort(args[0], scan)
 	if err != nil {
-		return err.Error()
+		return esc(err.Error())
 	}
 	label := strings.Join(args[1:], " ")
 	for _, p := range a.watchCopy().Ports {

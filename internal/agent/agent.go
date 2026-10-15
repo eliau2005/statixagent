@@ -147,6 +147,8 @@ type Agent struct {
 	// once in New and overridden only by tests. liveDuration serves as a
 	// safety ceiling (default 1h).
 	liveCancel   context.CancelFunc
+	liveMsg      int64  // message the running session edits
+	liveSeq      uint64 // bumped per session so a stale exit cannot clear a newer one
 	liveInterval time.Duration
 	liveDuration time.Duration
 
@@ -752,7 +754,7 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		procs, err := a.src.TopProcs(ctx)
 		if err != nil {
-			return "Could not read processes: " + err.Error()
+			return "Could not read processes: " + esc(err.Error())
 		}
 		a.mu.Lock()
 		memTotal := a.snap.Mem.Total
@@ -790,7 +792,7 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		cts, err := a.src.Docker.ListContainers(ctx)
 		if err != nil {
-			return "Docker unreachable: " + err.Error()
+			return "Docker unreachable: " + esc(err.Error())
 		}
 		for i := range cts {
 			if cts[i].State == "running" {
@@ -806,8 +808,10 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		switch sub {
 		case "history":
+			a.stashKB(navKeyboard("ssh_history"))
 			return a.sshHistoryView()
 		case "fails":
+			a.stashKB(navKeyboard("ssh_fails"))
 			return a.sshFailsView()
 		default:
 			text, kb := a.sshSessionsView(ctx)
@@ -846,7 +850,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			return "Self-update is not configured in this build."
 		}
 		if err := a.src.UpdateApply(ctx); err != nil {
-			return "Update failed: " + err.Error()
+			return "Update failed: " + esc(err.Error())
 		}
 		return "Updating — the agent will restart."
 	}
@@ -859,12 +863,12 @@ func (a *Agent) buildRouter() *bot.Router {
 		}
 		ver, available, err := a.src.UpdateCheck(ctx)
 		if err != nil {
-			return "Update check failed: " + err.Error()
+			return "Update check failed: " + esc(err.Error())
 		}
 		if !available {
-			return "Already up to date (" + ver + ")."
+			return "Already up to date (" + esc(ver) + ")."
 		}
-		return "New version available: <b>" + ver + "</b>\nTap /update_confirm to install."
+		return "New version available: <b>" + esc(ver) + "</b>\nTap /update_confirm to install."
 	})
 	r.Handle("update_confirm", func(ctx context.Context, _ []string) string {
 		return applyUpdate(ctx)
@@ -873,14 +877,14 @@ func (a *Agent) buildRouter() *bot.Router {
 		chatID := a.cfg.Telegram.ChatID
 		anchor, err := a.send.SendMessageID(ctx, chatID, "🧹")
 		if err != nil {
-			return "Could not clear: " + err.Error()
+			return "Could not clear: " + esc(err.Error())
 		}
 		ids := make([]int64, 0, 301)
 		for id := anchor; id > anchor-301 && id > 0; id-- {
 			ids = append(ids, id)
 		}
 		if err := a.send.DeleteMessages(ctx, chatID, ids); err != nil {
-			return "Could not clear: " + err.Error()
+			return "Could not clear: " + esc(err.Error())
 		}
 		return "🧹 cleared"
 	})

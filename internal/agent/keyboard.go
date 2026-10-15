@@ -24,6 +24,8 @@ var navViews = map[string]bool{
 	"status": true, "cpu": true, "mem": true, "disk": true, "net": true,
 	"temp": true, "battery": true, "services": true, "docker": true, "ssh": true,
 	"top": true, "digest": true, "ssl": true, "http": true,
+	// Alert-button views: the keyboard's Refresh re-runs the same view.
+	"ssh_history": true, "ssh_fails": true,
 }
 
 // navKeyboard renders the navigation rows; the active view is highlighted.
@@ -184,7 +186,11 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 		return
 	case "live_stop":
 		a.send.AnswerCallback(ctx, cb.ID, "")
-		a.stopLive()
+		if !a.stopLive(cb.MessageID) {
+			// No session on this message (agent restarted, or a newer
+			// session took over): restore Status instead of a dead end.
+			a.finishLive(cb.ChatID, cb.MessageID)
+		}
 		return
 	}
 	if text, kb, toast, handled := a.handleFirewallCallback(ctx, cb.Data); handled {
