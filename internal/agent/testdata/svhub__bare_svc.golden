@@ -1,0 +1,13 @@
+🧩 <b>Services</b> · 0 OK · 0 failing
+<pre>Units           —  n/a
+Docker          —  n/a
+HTTP            0
+Certificates    0
+Ports           0
+Processes       0</pre>
+--- keyboard ---
+[🧩 Units] → ~1v|un  [🐳 Docker] → ~1v|dk
+[🌐 HTTP] → ~1v|htp  [📜 Certificates] → ~1v|ssl
+[🔌 Ports] → ~1v|prt  [🧵 Processes] → ~1v|prc
+[👁 Watching] → ~1v|wat^svc
+[⬅️ Back] → ~1v|home  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|svc

@@ -6,7 +6,7 @@ Disk  72%  /
 Net   ↓1.1M/s ↑293.0K/s</pre>
 ❌ 1 failing · 👥 3 SSH sessions
 --- keyboard ---
-[❌ 1 failing] → ~1v|svc
+[❌ 1 failing] → ~1v|svf
 [📈 Metrics] → ~1v|met  [🧩 Services] → ~1v|svc
 [🔐 Security] → ~1v|sec  [⚙️ Settings] → ~1v|set
 [▶️ Live] → live  [🔄 Refresh] → ~1v|home

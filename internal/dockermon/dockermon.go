@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,24 @@ func NewUnixSocket(socketPath string) *Client {
 // ListContainers returns all containers (running and stopped) with restart
 // counts from per-container inspect.
 func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
+	out, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i, ct := range out {
+		var insp struct {
+			RestartCount int `json:"RestartCount"`
+		}
+		if err := c.get(ctx, "/containers/"+ct.ID+"/json", &insp); err == nil {
+			out[i].RestartCount = insp.RestartCount
+		}
+	}
+	return out, nil
+}
+
+// List returns all containers (running and stopped) from one list
+// request, without per-container inspect: RestartCount stays zero.
+func (c *Client) List(ctx context.Context) ([]Container, error) {
 	var raw []struct {
 		ID     string   `json:"Id"`
 		Names  []string `json:"Names"`
@@ -77,15 +96,62 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 		if len(r.Names) > 0 {
 			ct.Name = strings.TrimPrefix(r.Names[0], "/")
 		}
-		var insp struct {
-			RestartCount int `json:"RestartCount"`
-		}
-		if err := c.get(ctx, "/containers/"+r.ID+"/json", &insp); err == nil {
-			ct.RestartCount = insp.RestartCount
-		}
 		out = append(out, ct)
 	}
 	return out, nil
+}
+
+// Inspection is one container's detail, as Inspect reads it.
+type Inspection struct {
+	Image        string // as configured, "ghcr.io/acme/web:1.4"
+	State        string
+	ExitCode     int
+	Health       string // healthy, unhealthy, starting; "" without a healthcheck
+	StartedAt    time.Time
+	FinishedAt   time.Time // zero while it has never stopped
+	RestartCount int
+}
+
+// idRE is a container ID as the daemon prints it, full or short.
+var idRE = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+
+// Inspect reads one container's detail. id must be a hex container ID,
+// so the request path is always the fixed inspect template.
+func (c *Client) Inspect(ctx context.Context, id string) (Inspection, error) {
+	if !idRE.MatchString(id) {
+		return Inspection{}, fmt.Errorf("docker: invalid container ID")
+	}
+	var raw struct {
+		RestartCount int `json:"RestartCount"`
+		Config       struct {
+			Image string `json:"Image"`
+		} `json:"Config"`
+		State struct {
+			Status     string    `json:"Status"`
+			ExitCode   int       `json:"ExitCode"`
+			StartedAt  time.Time `json:"StartedAt"`
+			FinishedAt time.Time `json:"FinishedAt"`
+			Health     *struct {
+				Status string `json:"Status"`
+			} `json:"Health"`
+		} `json:"State"`
+	}
+	if err := c.get(ctx, "/containers/"+id+"/json", &raw); err != nil {
+		return Inspection{}, err
+	}
+	in := Inspection{Image: raw.Config.Image, State: raw.State.Status, ExitCode: raw.State.ExitCode,
+		StartedAt: raw.State.StartedAt, FinishedAt: raw.State.FinishedAt, RestartCount: raw.RestartCount}
+	if raw.State.Health != nil {
+		in.Health = raw.State.Health.Status
+	}
+	// Docker writes "0001-01-01T00:00:00Z" for a time that never was.
+	if in.FinishedAt.Year() <= 1 {
+		in.FinishedAt = time.Time{}
+	}
+	if in.StartedAt.Year() <= 1 {
+		in.StartedAt = time.Time{}
+	}
+	return in, nil
 }
 
 // PublishedPort is a host port a running container publishes.

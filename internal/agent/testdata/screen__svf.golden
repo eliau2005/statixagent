@@ -1,0 +1,9 @@
+❌ <b>Failing</b> · 3 items
+<pre>❌ 🧩 postgresql    failed
+❌ 🐳 web           exited(1)
+⚠️ 🧩 x&lt;evil&gt;&amp;      activating</pre>
+Tap a unit or container for details
+--- keyboard ---
+[❌ postgresql] → ~1v|ud|9b6164c99187eff9^svf  [❌ web] → ~1v|cd|3f2a9b7c1d0e^svf
+[⚠️ x<evil>&] → ~1v|ud|dc3a7e3deb256b85^svf
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|svf

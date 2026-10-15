@@ -9,7 +9,7 @@
 /digest — daily summary (auto-sent each morning)
 
 🧩 <b>Services</b>
-/services — units, processes, ports
+/services — hub: units, containers, checks, ports
 /docker — containers
 /http — endpoint checks (/http add url)
 /ssl — certificate expiry (/ssl add host)

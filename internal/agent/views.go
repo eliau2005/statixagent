@@ -78,9 +78,8 @@ func (a *Agent) homeView(ctx context.Context, c tgui.Call) tgui.View {
 
 	var kb [][]tgui.Button
 	if failing > 0 {
-		// Until the services hub has a Failing filter, the services
-		// report lists failures last, under the healthy ones.
-		kb = append(kb, []tgui.Button{{Label: fmt.Sprintf("❌ %d failing", failing), Call: tgui.Open(scrServices)}})
+		// The hub's Failing list: everything not OK, failing first.
+		kb = append(kb, []tgui.Button{{Label: fmt.Sprintf("❌ %d failing", failing), Call: tgui.Open(scrFailing)}})
 	}
 	kb = append(kb,
 		[]tgui.Button{{Label: "📈 Metrics", Call: tgui.Open(scrMetrics)}, {Label: "🧩 Services", Call: tgui.Open(scrServices)}},
@@ -90,9 +89,10 @@ func (a *Agent) homeView(ctx context.Context, c tgui.Call) tgui.View {
 	return tgui.View{Text: b.String(), Rows: kb}
 }
 
-// watchResults checks everything watched. HTTP checks go over the
-// network, so Home leaves them to the services view (withHTTP false).
-func (a *Agent) watchResults(ctx context.Context, withHTTP bool) []services.Result {
+// watchResults checks the watched units, processes and ports. HTTP and
+// certificate checks go over the network, so Home leaves them to the
+// services hub.
+func (a *Agent) watchResults(ctx context.Context) []services.Result {
 	watch := a.watchCopy()
 	var results []services.Result
 	if a.src.Runner != nil && len(watch.Services) > 0 {
@@ -110,29 +110,18 @@ func (a *Agent) watchResults(ctx context.Context, withHTTP bool) []services.Resu
 		}
 		results = append(results, services.CheckPorts(ctx, defaultDialer(), specs)...)
 	}
-	if withHTTP && len(watch.HTTPChecks) > 0 {
-		specs := make([]services.HTTPSpec, len(watch.HTTPChecks))
-		for i, h := range watch.HTTPChecks {
-			specs[i] = services.HTTPSpec{URL: h.URL, ExpectStatus: h.ExpectStatus, Timeout: h.Timeout.Duration}
-		}
-		results = append(results, services.CheckHTTP(ctx, httpClient, specs)...)
-	}
 	return results
 }
 
 // failingCount is how many local watched checks are not OK.
 func (a *Agent) failingCount(ctx context.Context) int {
 	n := 0
-	for _, r := range a.watchResults(ctx, false) {
+	for _, r := range a.watchResults(ctx) {
 		if r.State != services.StateOK {
 			n++
 		}
 	}
 	return n
-}
-
-func (a *Agent) servicesReply(ctx context.Context) string {
-	return bot.ServiceResults(a.watchResults(ctx, true))
 }
 
 // metricsView is the Metrics section: one line per reading, a button
@@ -223,22 +212,6 @@ func (a *Agent) topText(ctx context.Context) string {
 	memTotal := a.snap.Mem.Total
 	a.mu.Unlock()
 	return bot.Top(procs, memTotal)
-}
-
-func (a *Agent) dockerText(ctx context.Context) string {
-	if a.src.Docker == nil || !a.cfg.Monitors.Docker {
-		return "Docker monitoring is not enabled."
-	}
-	cts, err := a.src.Docker.ListContainers(ctx)
-	if err != nil {
-		return "Docker unreachable: " + esc(err.Error())
-	}
-	for i := range cts {
-		if cts[i].State == "running" {
-			a.src.Docker.Stats(ctx, &cts[i])
-		}
-	}
-	return bot.Docker(cts)
 }
 
 // failedWindow is how far back the Failed logins screen and the Security
@@ -418,7 +391,7 @@ const helpText = "🏠 <b>Home</b>\n" +
 	"/top — heaviest processes\n" +
 	"/digest — daily summary (auto-sent each morning)\n\n" +
 	"🧩 <b>Services</b>\n" +
-	"/services — units, processes, ports\n" +
+	"/services — hub: units, containers, checks, ports\n" +
 	"/docker — containers\n" +
 	"/http — endpoint checks (/http add url)\n" +
 	"/ssl — certificate expiry (/ssl add host)\n" +

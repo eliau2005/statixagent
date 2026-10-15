@@ -20,6 +20,7 @@ import (
 	"github.com/eliau2005/statixagent/internal/bot"
 	"github.com/eliau2005/statixagent/internal/collect"
 	"github.com/eliau2005/statixagent/internal/config"
+	"github.com/eliau2005/statixagent/internal/dockermon"
 	"github.com/eliau2005/statixagent/internal/procfs"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
@@ -54,7 +55,8 @@ func geoServer(t *testing.T) *sshwatch.GeoResolver {
 // screenAgent is an agent with something on every screen: readings,
 // sessions (IPv4, full IPv6, a hostile user), SSH history over several
 // pages, trusted sources from both lists, a ufw that has SSH open, an
-// update on offer, and a watched unit that cannot be checked.
+// update on offer, a watched unit that cannot be checked, a systemd that
+// lists units (one failed) and a Docker with one container down.
 func screenAgent(t *testing.T, send *fakeSender) *Agent {
 	t.Helper()
 	cfg := testConfig()
@@ -80,7 +82,11 @@ func screenAgent(t *testing.T, send *fakeSender) *Agent {
 	a.thermal = sysfs.Thermal{Sensors: []sysfs.TempSensor{{Label: "Package id 0", Celsius: 54}}}
 	a.power = sysfs.Power{HasAC: true, ACOnline: true, HasBattery: true,
 		Batteries: []sysfs.Battery{{Name: "BAT0", Percent: 80, Status: "Charging", HealthPercent: 91}}}
-	a.src.Runner = ufwOnly("Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n", nil)
+	a.src.Runner = &unitRunner{
+		next: ufwOnly("Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n", nil),
+		list: hubUnits, show: hubShow,
+	}
+	a.src.Docker, _ = dockerEngine(t)
 	a.src.Sessions = func() ([]sshwatch.Session, error) {
 		return []sshwatch.Session{
 			{User: "alice", TTY: "pts/0", Host: "203.0.113.4", Since: screenEpoch.Add(-2 * time.Hour)},
@@ -188,6 +194,15 @@ func TestScreenInvariants(t *testing.T) {
 			IP: fmt.Sprintf("2001:db8:ffff:ffff:ffff:ffff:ffff:%x", i), At: screenEpoch})
 	}
 	crowded.cfg.Watch.Services = []string{strings.Repeat("s", 250) + ".service"}
+	crowded.src.Runner.(*unitRunner).list = longUnits(300)
+	engine := &fakeEngine{}
+	for i := range 100 {
+		engine.cts = append(engine.cts, map[string]any{"Id": fmt.Sprintf("%064x", i+1), "Names": []string{"/" + strings.Repeat("c", 200) + strconv.Itoa(i)},
+			"State": "exited", "Status": "Exited (137) 1 hour ago"})
+	}
+	srv := httptest.NewServer(engine)
+	t.Cleanup(srv.Close)
+	crowded.src.Docker = dockermon.New(srv.Client(), srv.URL)
 
 	agents := map[string]*Agent{"populated": screenAgent(t, &fakeSender{}), "bare": testAgent(&fakeSender{}), "crowded": crowded}
 	for name, a := range agents {

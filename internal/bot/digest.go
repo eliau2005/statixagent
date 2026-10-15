@@ -27,10 +27,10 @@ func Digest(hostname string, d DigestData, s collect.Snapshot, now time.Time) st
 	L = append(L, fmt.Sprintf(" last %s · up %s", Dur(now.Sub(d.Since)), Dur(s.Uptime)))
 	L = append(L, divider)
 	L = append(L, fmt.Sprintf(" peak  CPU %s  RAM %s",
-		pad(fmt.Sprintf("%.0f%%", d.PeakCPU), -4), pad(fmt.Sprintf("%.0f%%", d.PeakMem), -4)))
+		Pad(fmt.Sprintf("%.0f%%", d.PeakCPU), -4), Pad(fmt.Sprintf("%.0f%%", d.PeakMem), -4)))
 	L = append(L, fmt.Sprintf(" now   CPU %s  RAM %s",
-		pad(fmt.Sprintf("%.0f%%", s.CPUTotal.Percent), -4),
-		pad(fmt.Sprintf("%.0f%%", s.Mem.UsedPercent()), -4)))
+		Pad(fmt.Sprintf("%.0f%%", s.CPUTotal.Percent), -4),
+		Pad(fmt.Sprintf("%.0f%%", s.Mem.UsedPercent()), -4)))
 	if len(s.Mounts) > 0 {
 		var parts []string
 		for _, m := range s.Mounts {

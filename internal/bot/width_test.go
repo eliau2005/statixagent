@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/eliau2005/statixagent/internal/collect"
-	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
 )
@@ -72,7 +71,7 @@ func TestFormatsFitPhone(t *testing.T) {
 		CPU(s, "▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█"), Mem(s, ""), Disk(s), Net(s, "", ""),
 		Temp(sysfs.Thermal{Sensors: []sysfs.TempSensor{{Label: long, Celsius: 99}}, Throttled: true}),
 		Battery(sysfs.Power{HasBattery: true, Batteries: []sysfs.Battery{{Name: "BAT0", Percent: 100, HealthPercent: 100, Watts: 12.5, TimeToEmpty: time.Hour}}}),
-		ServiceResults([]services.Result{{Name: long, State: services.StateDown, Detail: long}}),
+		serviceRows(long),
 		Top([]collect.Proc{{PID: 4194304, Comm: long, CPUPercent: 100.0, RSSBytes: 1 << 40}}, 1<<41),
 		Sessions([]sshwatch.Session{{User: long, TTY: "pts/100", Host: "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", Since: now.Add(-50 * time.Hour)}}, nil, now),
 		Digest("h", DigestData{Since: now.Add(-24 * time.Hour), Logins: 12345, Fails: 67890, Alerts: 999, Crits: 99}, s, now),
@@ -84,4 +83,17 @@ func TestFormatsFitPhone(t *testing.T) {
 			}
 		}
 	}
+}
+
+// serviceRows builds every services hub row shape from long, emoji-rich
+// input, as a <pre> block.
+func serviceRows(long string) string {
+	var rows []string
+	for _, icon := range []string{"✅", "⭐", "❌", "⚠️", "❔"} {
+		rows = append(rows, ItemRow(icon, "🧩 "+long, long), ItemRow(icon, long, "✅✅✅✅✅✅✅✅"))
+		rows = append(rows, ItemRows(icon, long, long)...)
+	}
+	rows = append(rows, HubRow(long, "123456", "❌ 300"))
+	rows = append(rows, KV(long, "🐳"+long)...)
+	return "<pre>" + strings.Join(rows, "\n") + "</pre>"
 }

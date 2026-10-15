@@ -1,0 +1,15 @@
+❌ <b>Failing</b> · 10 items · 1/2
+<pre>❌ 🧩 postgresql    failed
+❌ 🐳 web           exited(1)
+❌ 🌐 down.example… Get "http:/…
+❌ 📜 old.example   x509: &lt;expi…
+❌ 🔌 1     &lt;tcpmu… closed
+❌ 🧵 redis-server  not running
+❔ 🧩 gone          not found
+⚠️ 🧩 x&lt;evil&gt;&amp;      activating</pre>
+Tap a unit or container for details
+--- keyboard ---
+[❌ postgresql] → ~1v|ud|9b6164c99187eff9^svf  [❌ web] → ~1v|cd|3f2a9b7c1d0e^svf
+[❔ gone] → ~1v|ud|e083385225669820^svf  [⚠️ x<evil>&] → ~1v|ud|dc3a7e3deb256b85^svf
+[1/2] → ~1v|svf|1  [Next ▶️] → ~1v|svf|2
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|svf

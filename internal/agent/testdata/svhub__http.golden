@@ -1,0 +1,8 @@
+🌐 <b>HTTP checks</b> · 2 checks · 2 failing
+<pre>❌ down.example/&lt;x&gt;&amp;
+   Get "http://down.example/%3C…
+⚠️ api.example.com/hz
+   got 503, want 200</pre>
+Add: <code>/http add url</code> · remove: <code>/http remove url</code>
+--- keyboard ---
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|htp

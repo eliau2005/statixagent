@@ -10,7 +10,6 @@ import (
 	"github.com/eliau2005/statixagent/internal/alert"
 	"github.com/eliau2005/statixagent/internal/collect"
 	"github.com/eliau2005/statixagent/internal/procfs"
-	"github.com/eliau2005/statixagent/internal/services"
 	"github.com/eliau2005/statixagent/internal/sshwatch"
 	"github.com/eliau2005/statixagent/internal/sysfs"
 	"github.com/eliau2005/statixagent/internal/telegram"
@@ -81,14 +80,21 @@ func TestFormatHelpers(t *testing.T) {
 	if got := bar(73); got != "▰▰▰▰▰▰▰▱▱▱" {
 		t.Errorf("bar = %q", got)
 	}
-	if got := pad("abc", 5); got != "abc  " {
-		t.Errorf("pad right = %q", got)
+	if got := Pad("abc", 5); got != "abc  " {
+		t.Errorf("Pad right = %q", got)
 	}
-	if got := pad("abc", -5); got != "  abc" {
-		t.Errorf("pad left = %q", got)
+	if got := Pad("abc", -5); got != "  abc" {
+		t.Errorf("Pad left = %q", got)
 	}
-	if got := pad("abcdefgh", 4); got != "abcd" {
-		t.Errorf("pad truncate = %q", got)
+	if got := Pad("abcdefgh", 4); got != "abc…" {
+		t.Errorf("Pad truncate = %q", got)
+	}
+	// Emoji count as two columns, so rows with them still line up.
+	if got := Pad("✅ ok", 6); got != "✅ ok " {
+		t.Errorf("Pad emoji = %q", got)
+	}
+	if got := Pad("⭐⭐⭐", 5); Width(got) != 5 || !strings.HasSuffix(got, "…") {
+		t.Errorf("Pad emoji truncate = %q (%d columns)", got, Width(got))
 	}
 }
 
@@ -252,18 +258,45 @@ func TestBatteryFormat(t *testing.T) {
 	}
 }
 
-func TestServiceAndSSHFormats(t *testing.T) {
-	out := ServiceResults([]services.Result{
-		{Name: "db.service", State: services.StateDown, Detail: "failed/failed"},
-		{Name: "nginx.service", State: services.StateOK, Detail: "active/running"},
-	})
-	if !strings.Contains(out, "1/2 up") {
-		t.Errorf("services header:\n%s", out)
+func TestServiceRows(t *testing.T) {
+	if got := ItemRow("❌", "postgresql", "failed"); got != "❌ postgresql       failed" {
+		t.Errorf("ItemRow = %q", got)
 	}
-	if strings.Index(out, "nginx") > strings.Index(out, "db.service") {
-		t.Errorf("healthy services must sort first:\n%s", out)
+	if got := ItemRow("✅", "cron", ""); got != "✅ cron" {
+		t.Errorf("ItemRow without status = %q", got)
 	}
+	long := strings.Repeat("u", 256)
+	if got := ItemRow("⭐", long, "deactivating-sigterm"); Width(got) != PreCols || !strings.Contains(got, "uuu… deactivat") {
+		t.Errorf("ItemRow long = %q (%d columns)", got, Width(got))
+	}
+	if got := ItemRows("⚠️", "api.example.com/hz", "got 503, want 200"); len(got) != 2 || got[1] != "   got 503, want 200" {
+		t.Errorf("ItemRows = %q", got)
+	}
+	if got := HubRow("Units", "12", "❌ 1"); got != "Units          12  ❌ 1" {
+		t.Errorf("HubRow = %q", got)
+	}
+	if got := KV("State", "failed (exit-code)"); len(got) != 1 || got[0] != "State    failed (exit-code)" {
+		t.Errorf("KV = %q", got)
+	}
+	if got := KV("Memory", ""); got[0] != "Memory   —" {
+		t.Errorf("KV empty = %q", got)
+	}
+	image := KV("Image", "ghcr.io/acme/very-long-organisation/web:1.4")
+	if len(image) != 2 || image[1] != "         organisation/web:1.4" {
+		t.Errorf("KV wraps = %q", image)
+	}
+	if got := KV("Image", long); len(got) != 3 || !strings.HasSuffix(got[2], "…") {
+		t.Errorf("KV clips = %q", got)
+	}
+	for d, want := range map[time.Duration]string{-time.Second: "0s", 45 * time.Second: "45s", 150 * time.Second: "2m",
+		3*time.Hour + 59*time.Minute: "3h", 12*24*time.Hour + time.Hour: "12d"} {
+		if got := Age(d); got != want {
+			t.Errorf("Age(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
 
+func TestSSHFormat(t *testing.T) {
 	now := time.Date(2026, 6, 12, 18, 0, 0, 0, time.UTC)
 	sess := Sessions(
 		[]sshwatch.Session{{User: "alice", TTY: "pts/0", Host: "203.0.113.7", Since: now.Add(-30 * time.Minute)}},

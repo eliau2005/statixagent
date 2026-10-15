@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -104,6 +106,88 @@ func CheckSystemdUnits(ctx context.Context, r Runner, units []string) []Result {
 		out = append(out, res)
 	}
 	return out
+}
+
+// listTimeout bounds one list-units or show call (docs §6).
+const listTimeout = 5 * time.Second
+
+// Unit is one line of `systemctl list-units`.
+type Unit struct {
+	Name        string
+	Load        string // loaded, not-found, masked, ...
+	Active      string // active, failed, inactive, activating, ...
+	Sub         string // running, exited, dead, ...
+	Description string
+}
+
+// ListUnits lists every loaded service, socket and timer, whatever its
+// state, in one systemctl call. Names are as systemd prints them and may
+// carry escapes ("\x2d"), so callers check ValidUnitName before handing
+// one back to systemctl.
+func ListUnits(ctx context.Context, r Runner) ([]Unit, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	out, err := r.Run(ctx, "systemctl", "list-units", "--all", "--type=service,socket,timer",
+		"--no-legend", "--plain", "--no-pager", "--no-ask-password")
+	if err != nil {
+		return nil, err
+	}
+	var units []Unit
+	for line := range strings.SplitSeq(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) > 0 && f[0] == "●" { // a failed unit's marker on older systemd
+			f = f[1:]
+		}
+		if len(f) < 4 || strings.HasPrefix(f[0], "-") {
+			continue
+		}
+		units = append(units, Unit{Name: f[0], Load: f[1], Active: f[2], Sub: f[3], Description: strings.Join(f[4:], " ")})
+	}
+	return units, nil
+}
+
+// UnitDetail is what `systemctl show` reports about one unit.
+type UnitDetail struct {
+	Load, Active, Sub string
+	// Result is how the last run ended: success, exit-code, signal, ...
+	Result string
+	// UnitFile is whether it starts at boot: enabled, disabled, static, ...
+	UnitFile string
+	// Since is the last state change; zero when systemd has none.
+	Since    time.Time
+	Restarts string // "" when unknown
+	// Memory is the unit's current memory use; ok is false when systemd
+	// does not account it.
+	Memory   uint64
+	MemoryOK bool
+}
+
+// ShowUnit reads one unit's state with `systemctl show`. name must pass
+// ValidUnitName; it always follows "--".
+func ShowUnit(ctx context.Context, r Runner, name string) (UnitDetail, error) {
+	if !ValidUnitName(name) {
+		return UnitDetail{}, fmt.Errorf("invalid unit name")
+	}
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	raw, err := r.Run(ctx, "systemctl", "show",
+		"--property=LoadState,ActiveState,SubState,Result,UnitFileState,StateChangeTimestamp,NRestarts,MemoryCurrent",
+		"--no-pager", "--no-ask-password", "--", name)
+	if err != nil {
+		return UnitDetail{}, err
+	}
+	p := parseKV(raw)
+	d := UnitDetail{Load: p["LoadState"], Active: p["ActiveState"], Sub: p["SubState"], Result: p["Result"],
+		UnitFile: p["UnitFileState"], Restarts: p["NRestarts"]}
+	// "Thu 2026-10-15 12:41:00 UTC", in the host's zone (LC_ALL=C).
+	if t, err := time.Parse("Mon 2006-01-02 15:04:05 MST", p["StateChangeTimestamp"]); err == nil {
+		d.Since = t
+	}
+	// Unaccounted memory reads "[not set]", or as the maximum uint64.
+	if n, err := strconv.ParseUint(p["MemoryCurrent"], 10, 64); err == nil && n != math.MaxUint64 {
+		d.Memory, d.MemoryOK = n, true
+	}
+	return d, nil
 }
 
 func parseKV(s string) map[string]string {

@@ -1,0 +1,10 @@
+🧩 <b>Watched units</b> · 3 units · 2 failing
+<pre>❌ postgresql       failed
+❔ gone             not found
+⭐ nginx            running</pre>
+⭐ = watched · tap a unit for details
+--- keyboard ---
+[❌ postgresql] → ~1v|ud|9b6164c99187eff9^uw  [❔ gone] → ~1v|ud|e083385225669820^uw
+[⭐ nginx] → ~1v|ud|23376c0b9c578ed7^uw
+[⭐ Watched only] → ~1v|uw  [🔤 All units] → ~1v|un
+[⬅️ Back] → ~1v|svc  [🏠 Home] → ~1v|home  [🔄 Refresh] → ~1v|uw

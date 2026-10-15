@@ -8,31 +8,15 @@ import (
 	"time"
 
 	"github.com/eliau2005/statixagent/internal/alert"
-	"github.com/eliau2005/statixagent/internal/bot"
 )
 
-// Certificate expiry watching: /ssl checks the configured hosts on demand
-// and manages the list; sslLoop re-checks twice a day and alerts as expiry
-// approaches. Wired from config watch.ssl_hosts.
+// Certificate expiry watching: /ssl opens the Certificates list (svhub.go)
+// and /ssl add|remove manage it; sslLoop re-checks twice a day and alerts
+// as expiry approaches. Wired from config watch.ssl_hosts.
 
 // Re-alert just under the check cadence so an expiring cert nags once per
 // check round until renewed, not once ever.
 const sslAlertCooldown = 11 * time.Hour
-
-// sslView checks all watched hosts and renders the result.
-func (a *Agent) sslView(ctx context.Context, args []string) string {
-	if len(args) > 0 {
-		return a.sslManage(args)
-	}
-	hosts := a.watchCopy().SSLHosts
-	if len(hosts) == 0 {
-		return "🔒 No SSL hosts watched yet.\nAdd one: <code>/ssl add example.com</code>"
-	}
-	if a.src.CheckCerts == nil {
-		return "SSL checks are not available in this build."
-	}
-	return bot.SSLCerts(a.src.CheckCerts(ctx, hosts))
-}
 
 // sslUsage is HTML: raw angle brackets would make Telegram reject the reply.
 const sslUsage = "Usage: /ssl add &lt;host[:port]&gt; · /ssl remove &lt;host&gt;"
