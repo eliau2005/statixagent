@@ -102,13 +102,20 @@ func (a *Agent) alertKeyboard(key string) telegram.Keyboard {
 // pushAlert renders and sends an alert with its context buttons, returning
 // the send error (already logged) for callers that act on delivery.
 func (a *Agent) pushAlert(ctx context.Context, al alert.Alert) error {
+	_, err := a.pushAlertKB(ctx, al, a.alertKeyboard(al.Key))
+	return err
+}
+
+// pushAlertKB is pushAlert with a caller-built keyboard; it also returns
+// the sent message's ID.
+func (a *Agent) pushAlertKB(ctx context.Context, al alert.Alert, kb telegram.Keyboard) (int64, error) {
 	a.noteAlert(al)
 	html := bot.AlertMsg(a.src.Hostname, al)
-	_, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, a.alertKeyboard(al.Key))
+	id, err := a.send.SendMessageKB(ctx, a.cfg.Telegram.ChatID, html, kb)
 	if err != nil {
 		log.Printf("agent: alert push failed: %v", err)
 	}
-	return err
+	return id, err
 }
 
 // stashKB lets a handler attach a custom keyboard to its pending reply.
@@ -161,6 +168,9 @@ func (a *Agent) handleCallback(ctx context.Context, cb *telegram.Callback) {
 	}
 	if strings.HasPrefix(cb.Data, "snz:") {
 		a.send.AnswerCallback(ctx, cb.ID, "stale snooze")
+		return
+	}
+	if a.handleTrustCallback(ctx, cb) {
 		return
 	}
 	switch cb.Data {

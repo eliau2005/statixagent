@@ -13,6 +13,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/eliau2005/statixagent/internal/alert"
@@ -33,6 +34,7 @@ type Sender interface {
 	SendMessageID(ctx context.Context, chatID int64, html string) (int64, error)
 	SendMessageKB(ctx context.Context, chatID int64, html string, kb telegram.Keyboard) (int64, error)
 	EditMessageKB(ctx context.Context, chatID, messageID int64, html string, kb telegram.Keyboard) error
+	EditMessageMarkup(ctx context.Context, chatID, messageID int64, kb telegram.Keyboard) error
 	AnswerCallback(ctx context.Context, callbackID, text string) error
 	DeleteMessages(ctx context.Context, chatID int64, ids []int64) error
 	SetMyCommands(ctx context.Context, commands []telegram.BotCommand) error
@@ -75,6 +77,9 @@ type Sources struct {
 	// ConfigPath is where watch-list changes are persisted; empty means
 	// in-memory only (replies say so).
 	ConfigPath string
+	// TrustPath is where SSH sources trusted from the bot (/trust)
+	// are kept across restarts; empty means in-memory only.
+	TrustPath string
 	// KnownKeysPath is where the user+key fingerprints seen in SSH key
 	// logins are remembered across restarts; empty means in-memory only.
 	KnownKeysPath string
@@ -105,14 +110,20 @@ type Agent struct {
 	geo    *sshwatch.GeoResolver
 	router *bot.Router
 
-	// trusted holds ssh.trusted_ips; non-root logins from these sources
-	// skip the alert (see trustedLogin). Built once in New: the list is
-	// only changed by editing the config file and restarting.
-	trusted *sshwatch.TrustedIPs
+	// trusted is the merged matcher for ssh.trusted_ips (configTrusted,
+	// static) and the bot-managed trustStore; non-root logins from these
+	// sources skip the alert (see trustedLogin). The matcher itself is
+	// immutable: /trust, /untrust and the "Trust this IP" button build a
+	// new one and swap it in (trust.go), so the auth loop never locks.
+	trusted       atomic.Pointer[sshwatch.TrustedIPs]
+	configTrusted []netip.Prefix
+	trustStore    *sshwatch.TrustStore
+	// trustMu serializes trust-list changes (store write + matcher swap).
+	trustMu sync.Mutex
 	// knownKeys remembers user+key fingerprints from key logins, so a
-	// trusted source logging in with a new key still alerts. Nil when
-	// ssh.trusted_ips is empty.
-	knownKeys *sshwatch.KnownKeys
+	// trusted source logging in with a new key still alerts. Nil until
+	// the merged trust list is first non-empty.
+	knownKeys atomic.Pointer[sshwatch.KnownKeys]
 
 	mu      sync.Mutex
 	snap    collect.Snapshot
@@ -156,6 +167,11 @@ type Agent struct {
 	// New and overridden only by tests.
 	digest     digestStats
 	digestPoll time.Duration
+
+	// trustAlerts maps a sent plain-login alert to its alert key, so the
+	// trust confirm screen's Cancel restores the exact keyboard. Bounded
+	// by maxTrustAlerts; guarded by mu.
+	trustAlerts map[int64]string
 
 	// unmatchable holds SSH sources (e.g. hostnames under UseDNS) already
 	// logged as not matchable against ssh.trusted_ips. Guarded by mu.
@@ -204,17 +220,14 @@ func New(cfg config.Config, send Sender, updates Updates, src Sources) *Agent {
 		sslInterval:  12 * time.Hour,
 		dockerPoll:   time.Minute,
 		snoozeKeys:   map[string]string{},
-		trusted:      trustedIPs(cfg.SSH.TrustedIPs),
 	}
-	if !a.trusted.Empty() {
-		known, err := sshwatch.LoadKnownKeys(src.KnownKeysPath)
-		if err != nil {
-			// Keep what was read: bad lines are skipped (and kept on disk),
-			// so at worst a known key alerts once more as new.
-			log.Printf("agent: %v", err)
-		}
-		a.knownKeys = known
+	a.configTrusted = configPrefixes(cfg.SSH.TrustedIPs)
+	store, err := sshwatch.LoadTrustStore(src.TrustPath, config.ParseTrustedIP)
+	if err != nil {
+		log.Printf("agent: %v", err)
 	}
+	a.trustStore = store
+	a.rebuildTrust()
 	a.router = a.buildRouter()
 	return a
 }
@@ -493,7 +506,8 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 		// above; only the push (and the geo lookup feeding it) is skipped,
 		// unless it used a key this user has never logged in with.
 		trusted := a.trustedLogin(e, now)
-		newKey := trusted && e.KeyPrint != "" && !a.knownKeys.Known(e.User, e.KeyPrint)
+		known := a.knownKeys.Load()
+		newKey := trusted && e.KeyPrint != "" && (known == nil || !known.Known(e.User, e.KeyPrint))
 		if trusted && !newKey {
 			return
 		}
@@ -509,6 +523,7 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 		key := "ssh-login:" + e.User + "@" + e.IP
 		var sev alert.Severity
 		var title string
+		plain := false
 		switch {
 		case e.Root:
 			sev, title = alert.Critical, "ROOT SSH login"
@@ -517,11 +532,21 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 			body += fmt.Sprintf("\nThe source IP is trusted, but %s has never logged in with key %s before.", e.User, e.KeyPrint)
 			key = "ssh-newkey:" + e.User + " " + e.KeyPrint
 		default:
-			sev, title = alert.Info, "SSH login"
+			sev, title, plain = alert.Info, "SSH login", true
 		}
 		pushed := false
 		if al := a.engine.Event(key, title, body, sev, now, 10*time.Second); al != nil {
-			pushed = a.pushAlert(ctx, *al) == nil
+			// Only a plain login offers "Trust this IP": trusting would not
+			// silence a root or new-key login anyway.
+			kb := a.alertKeyboard(al.Key)
+			if plain {
+				kb = a.loginKeyboard(al.Key, e.IP)
+			}
+			id, err := a.pushAlertKB(ctx, *al, kb)
+			pushed = err == nil
+			if pushed && plain {
+				a.rememberTrustAlert(id, al.Key)
+			}
 		}
 		// A new key is only known once its alert went out; if the alert was
 		// snoozed or failed to send, the next login with it alerts again.
@@ -549,10 +574,11 @@ func (a *Agent) handleAuthLine(ctx context.Context, line string, now time.Time) 
 // that failed to authenticate within the brute-force window: a success
 // right after failures is exactly the login worth seeing.
 func (a *Agent) trustedLogin(e sshwatch.Event, now time.Time) bool {
-	if e.Root || a.trusted.Empty() {
+	trusted := a.trusted.Load()
+	if e.Root || trusted.Empty() {
 		return false
 	}
-	ok, err := a.trusted.Match(e.IP)
+	ok, err := trusted.Match(e.IP)
 	if err != nil {
 		if a.firstUnmatchable(e.IP) {
 			log.Printf("agent: ssh.trusted_ips not applied to logins from this source: %v", err)
@@ -582,26 +608,27 @@ func (a *Agent) firstUnmatchable(src string) bool {
 }
 
 // learnKey remembers the user+fingerprint of a key login. It is a no-op
-// without ssh.trusted_ips (the store only matters for trusted sources, so
-// no file is written for users who never opted in) and for logins without
-// a fingerprint (password, keyboard-interactive).
+// while no source is trusted (the store only matters for trusted sources,
+// so no file is written for users who never opted in) and for logins
+// without a fingerprint (password, keyboard-interactive).
 func (a *Agent) learnKey(e sshwatch.Event) {
-	if a.knownKeys == nil || e.KeyPrint == "" {
+	known := a.knownKeys.Load()
+	if known == nil || a.trusted.Load().Empty() || e.KeyPrint == "" {
 		return
 	}
-	if _, err := a.knownKeys.Learn(e.User, e.KeyPrint); err != nil {
+	if _, err := known.Learn(e.User, e.KeyPrint); err != nil {
 		log.Printf("agent: %v", err)
 	}
 }
 
-// trustedIPs builds the matcher for ssh.trusted_ips from the prefixes
-// already parsed when the config was decoded.
-func trustedIPs(entries []config.TrustedIP) *sshwatch.TrustedIPs {
+// configPrefixes extracts the prefixes of ssh.trusted_ips, already parsed
+// when the config was decoded.
+func configPrefixes(entries []config.TrustedIP) []netip.Prefix {
 	prefixes := make([]netip.Prefix, len(entries))
 	for i, e := range entries {
 		prefixes[i] = e.Prefix
 	}
-	return sshwatch.NewTrustedIPs(prefixes)
+	return prefixes
 }
 
 func (a *Agent) keysLoop(ctx context.Context) {
@@ -693,6 +720,7 @@ func (a *Agent) buildRouter() *bot.Router {
 			"/ssh history — recent logins\n" +
 			"/ssh fails — failed attempts\n" +
 			"/firewall — open/close SSH port 22\n" +
+			"/trusted — trusted SSH sources (/trust ip · /untrust ip)\n" +
 			"/ssl — certificate expiry (/ssl add host)\n\n" +
 			"👁 <b>Watching</b>\n" +
 			"/watching — manage everything with buttons\n" +
@@ -857,6 +885,7 @@ func (a *Agent) buildRouter() *bot.Router {
 		return "🧹 cleared"
 	})
 	a.registerWatchHandlers(r)
+	a.registerTrustHandlers(r)
 	return r
 }
 
@@ -889,6 +918,9 @@ var commandMenu = []telegram.BotCommand{
 	{Command: "watching", Description: "manage everything watched (buttons)"},
 	{Command: "settings", Description: "tune alert thresholds (buttons)"},
 	{Command: "firewall", Description: "open/close SSH port 22 (ufw)"},
+	{Command: "trusted", Description: "trusted SSH sources (no login alert)"},
+	{Command: "trust", Description: "trust an SSH source: /trust ip-or-cidr"},
+	{Command: "untrust", Description: "stop trusting: /untrust ip-or-cidr"},
 	{Command: "ssl", Description: "certificate expiry for watched hosts"},
 	{Command: "http", Description: "endpoint health checks"},
 	{Command: "ping", Description: "TCP latency from this server"},

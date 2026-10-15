@@ -291,7 +291,7 @@ func TestTrustedNewKeyLearnedOnlyAfterDelivery(t *testing.T) {
 	now := time.Now()
 
 	a.handleAuthLine(context.Background(), keyLogin("deploy", "10.0.0.7", "SHA256:aaa"), now)
-	if a.knownKeys.Known("deploy", "SHA256:aaa") {
+	if a.knownKeys.Load().Known("deploy", "SHA256:aaa") {
 		t.Fatal("key must not be learned while its alert could not be sent")
 	}
 
@@ -300,7 +300,7 @@ func TestTrustedNewKeyLearnedOnlyAfterDelivery(t *testing.T) {
 	if !send.find("SSH login with new key") {
 		t.Errorf("undelivered new-key alert must be retried on the next login: %v", send.all())
 	}
-	if !a.knownKeys.Known("deploy", "SHA256:aaa") {
+	if !a.knownKeys.Load().Known("deploy", "SHA256:aaa") {
 		t.Error("key must be learned once its alert was delivered")
 	}
 }
